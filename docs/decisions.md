@@ -54,3 +54,41 @@ Cada entrada: qué se probó, qué número dio, qué quedó y qué se descartó.
 - Crates desde `static.crates.io` verificados con el `checksum` de `Cargo.lock`, vendorizados con `.cargo-checksum.json` y `source.crates-io` reemplazado. `cargo build --locked --offline` sin red, con `CARGO_TARGET_DIR` fuera del repo.
 - El binario se linkea contra la glibc del host: la base de runtime se elige con glibc ≥ la del host (`distroless/cc-debian12` hasta 2.36, `cc-debian13` hasta 2.41); si el host es más nuevo, el build falla explícitamente.
 - Pendiente: usar `zig cc` como linker para fijar la versión de glibc objetivo y no depender de un `cc` en el host.
+
+## D10. Política de versiones compatible con Railpack
+
+- Los rangos se convierten a una versión "difusa" igual que Railpack: `>=20.0.0` → `20`, `^18.2` → `18`, `~22.1` → `22.1`, `20.x` → `20`, y se toma el último parche. Para Node eso permite elegir el tag `node:<v>-bookworm-slim` sin bajar `index.json`.
+- Motivo: el ejemplo `node-oldest` (`engines: >=20.0.0`) espera Node 20; con "última versión que satisface" daba 26.
+
+## D11. Arranque directo con entorno del gestor de paquetes
+
+- Railpack arranca con `npm run start`/`pnpm run start`. Acropolis ejecuta el comando directo (un proceso menos, menos memoria, señales correctas) pero define `npm_config_user_agent`, `npm_lifecycle_event` y `npm_package_name`, y si el proyecto usa pnpm agrega el CLI (`pnpm` desde el registry de npm, verificado) en `/usr/local`.
+
+## D12. Fallback de Docker Hub a un mirror verificado
+
+- Durante las pruebas esta VM perdió conectividad con AWS us-east-1 (S3, STS y `registry-1.docker.io` colgaban en SYN; CloudFront y Cloudflare respondían). Si la conexión a Docker Hub (registry o `auth.docker.io`) falla, Acropolis cambia a `mirror.gcr.io`. Es seguro porque cada manifest y blob se verifica por digest. Timeout de conexión: 5 s.
+
+## D13. Pasos fuera del host: rootfs de imagen con overlayfs
+
+- Para lenguajes sin binarios reubicables (Ruby, Python con extensiones, PHP, Java, .NET, Elixir) y para paquetes apt, los pasos corren dentro del rootfs de la imagen oficial: capas desempaquetadas una vez como `lowerdir`, `upper` propio por paso, namespaces de mount/UTS/IPC (y de red si el paso es de build). El `upper` se convierte en capa OCI traduciendo whiteouts de overlay a whiteouts OCI.
+- Costo: desempaquetar la imagen base (justo lo que se evita en Node/Go/Rust). Por eso solo se usa donde no hay alternativa.
+
+## D14. Bundler propio para SPAs de Vite: instalación perezosa con índice por paquete
+
+- Rolldown 1.2.12 como motor (crate de crates.io), con un plugin propio de `resolve_id`/`load`:
+  - Un import "bare" busca el paquete en el plan del lockfile (resolución de Node por la cadena de `node_modules` del importador), baja ese tarball del store y lo indexa en memoria. No se extrae el paquete: se resuelven `exports` (condiciones `import`/`module`/`browser`/`production`/`default`, o `require`), `imports` (`#`), `browser`, `module`, `main` y extensiones contra el índice, sin syscalls, y solo se escribe a disco el archivo resuelto (más los `package.json` del camino, para `type`).
+  - Al indexar un paquete se precargan sus `dependencies`/`peerDependencies` en segundo plano para cortar las "olas" secuenciales del grafo.
+  - `sideEffects` del `package.json` se pasa a Rolldown para el tree-shaking.
+  - CSS: Rolldown ya no empaqueta CSS. Los `.css` importados se recolectan en el orden de módulos de los chunks y se procesan con lightningcss (minify, `@import` inline, `url()` a `/assets/<nombre>-<hash>`).
+  - Assets como Vite: archivo con hash bajo `/assets/` o data URL si pesa menos de 4 KB; imports absolutos contra `public/`.
+  - Si el resolver propio no puede (campo `browser` como objeto, etc.) extrae el paquete completo y deja resolver a Rolldown.
+- Se activa solo si `vite.config` no tiene más plugins que `@vitejs/plugin-react(-swc)`, no hay PostCSS/Tailwind y el script de build es `[tsc ... &&] vite build`. `ACRO_BUNDLER=vite` fuerza el camino de Vite.
+- El type-check (`tsc -b`) se conserva: corre en paralelo con el bundle sobre la instalación completa; el build falla si falla.
+- Medido (5 vCPU, frío):
+  - Vite + React: el bundle baja 3 de 174 paquetes (1,4 MB) y tarda 0,43–0,49 s; build total 3,5–4,0 s contra 9,1 s con Vite.
+  - React + MUI: 85 de 231 paquetes (7,1 MB) en 1,4–1,5 s; build total 7,1 s contra 15,6 s. Antes del índice por archivo el bundle tardaba 4,7 s: `@mui/icons-material` son 175 MB y ~49.000 archivos en disco para usar 2 íconos.
+  - Equivalencia: mismo DOM (normalizando hashes y espacios entre tags), capturas idénticas pixel a pixel y sin errores de consola en Chromium headless (`tests/render/compare.mjs`).
+
+## D15. Recursos de la VM durante las pruebas
+
+- Compilar Rolldown en paralelo con el e2e disparó el OOM killer (7,7 GB). El e2e corre con 2 trabajos y cada build usa su propio directorio de rootfs que se borra al terminar el caso (sin eso el rootfs compartido llegó a 6,7 GB y llenó el disco).

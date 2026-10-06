@@ -266,6 +266,8 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
     b.fact("framework", format!("{:?}", app.framework).to_ascii_lowercase());
     let manager = match app.pm {
         PackageManager::Npm => "npm",
+        PackageManager::Pnpm if app.lockfile.is_none() => "npm",
+        PackageManager::Bun if app.lockfile.is_none() => "npm",
         PackageManager::Pnpm => "pnpm",
         PackageManager::Bun if app.lockfile.as_deref() == Some("bun.lock") => "bun",
         PackageManager::Bun if app.lockfile.as_deref() == Some("bun.lockb") => return plan_bun_binary_lock(app, env, b),
@@ -429,7 +431,11 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
                     run_env.insert(k.clone(), v.clone());
                 }
             }
-            let network = matches!(app.framework, Framework::Next) || env.flag("BUILD_NETWORK");
+            let adapter_auto = app.framework == Framework::SvelteKit && app.has_dep("@sveltejs/adapter-auto");
+            if adapter_auto {
+                run_env.insert("GCP_BUILDPACKS".to_string(), "true".to_string());
+            }
+            let network = matches!(app.framework, Framework::Next) || adapter_auto || env.flag("BUILD_NETWORK");
             if network {
                 b.plan.warnings.push("the build step runs with network access (next build may fetch fonts); it is not hermetic".into());
             }
@@ -506,7 +512,7 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
                             .or_else(|_| std::fs::read_to_string(app.dir.join("Caddyfile.template")))?
                             .replace("{{.DIST_DIR}}", "/app/dist")
                     } else {
-                        spa_caddyfile("/app/dist", !env.config("SPA_INDEX_FALLBACK").map(|(v, _)| v == "false").unwrap_or(false))
+                        spa_caddyfile("/app/dist", spa_fallback(app, env))
                     };
                     files.insert("Caddyfile".to_string(), caddyfile);
                     b.step(
@@ -671,13 +677,16 @@ fn plan_yarn_berry(app: &NodeApp, env: &Env, mut b: PlanBuilder) -> Result<Plan>
             b.step("layer-app", "layer app + dependencies", Action::Layer { dest: "app".into(), from: LayerFrom::WorkDir { path: ".".into(), exclude: vec![] } }, &[&last]);
             b.step("push", "push image", Action::Push, &["base", "copy-base", "layer-app"]);
             b.plan.image.layers = vec!["layer-app".into()];
-            b.plan.image.cmd = Some(command_argv(&start));
             if pnp {
-                let mut opts = "--require /app/.pnp.cjs".to_string();
-                if app.dir.join(".pnp.loader.mjs").exists() || yarn_version.split('.').next().and_then(|m| m.parse::<u32>().ok()).unwrap_or(4) >= 3 {
-                    opts.push_str(" --experimental-loader /app/.pnp.loader.mjs");
-                }
-                image_env.push(("NODE_OPTIONS".into(), opts));
+                b.plan.image.cmd = Some(vec![
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    format!(
+                        "export NODE_OPTIONS=\"--require /app/.pnp.cjs${{NODE_OPTIONS:+ $NODE_OPTIONS}}\"; [ -f /app/.pnp.loader.mjs ] && export NODE_OPTIONS=\"$NODE_OPTIONS --experimental-loader /app/.pnp.loader.mjs\"; exec {start}"
+                    ),
+                ]);
+            } else {
+                b.plan.image.cmd = Some(command_argv(&start));
             }
             image_env.push(("PATH".into(), NODE_PATH_ENV.into()));
         }
@@ -814,7 +823,7 @@ fn plan_native_spa(
     let mut files = BTreeMap::new();
     files.insert(
         "Caddyfile".to_string(),
-        spa_caddyfile("/app/dist", !env.config("SPA_INDEX_FALLBACK").map(|(v, _)| v == "false").unwrap_or(false)),
+        spa_caddyfile("/app/dist", spa_fallback(app, env)),
     );
     b.step("layer-caddy", "layer Caddyfile", Action::Layer { dest: "".into(), from: LayerFrom::Inline { files } }, &[]);
     let deps: Vec<&str> = site_deps.iter().map(|s| s.as_str()).collect();
@@ -848,7 +857,7 @@ fn pnpm_spec(app: &NodeApp) -> String {
     match ver.as_deref() {
         Some(v) if v.starts_with('5') => "7".into(),
         Some(v) if v.starts_with('6') => "8".into(),
-        _ => "latest".into(),
+        _ => "9".into(),
     }
 }
 
@@ -877,6 +886,8 @@ fn add_package_manager(b: &mut PlanBuilder, app: &NodeApp, env: &Env, image_env:
             let tail = b.plan.steps.remove(push_idx);
             b.plan.steps.insert(last, tail);
             b.plan.image.layers.insert(0, "layer-pm".into());
+            image_env.push(("npm_config_verify_deps_before_run".into(), "false".into()));
+            image_env.push(("COREPACK_ENABLE_STRICT".into(), "0".into()));
             format!("pnpm/{spec} npm/? node/v{} linux x64", app.node.spec)
         }
         PackageManager::Yarn1 | PackageManager::YarnBerry => {
@@ -890,6 +901,19 @@ fn add_package_manager(b: &mut PlanBuilder, app: &NodeApp, env: &Env, image_env:
     if let Some(n) = app.package_json.get("name").and_then(|n| n.as_str()) {
         image_env.push(("npm_package_name".into(), n.into()));
     }
+}
+
+fn spa_fallback(app: &NodeApp, env: &Env) -> bool {
+    if let Some((v, _)) = env.config("SPA_INDEX_FALLBACK") {
+        return v != "false";
+    }
+    if app.dir.join("Staticfile").exists() {
+        let text = std::fs::read_to_string(app.dir.join("Staticfile")).unwrap_or_default();
+        if let Some(v) = text.lines().find_map(|l| l.trim().strip_prefix("index_fallback:")) {
+            return v.trim() == "true";
+        }
+    }
+    true
 }
 
 fn uses_bun(cmd: &str) -> bool {
@@ -910,6 +934,11 @@ fn bun_spec(app: &NodeApp, env: &Env) -> String {
     }
     if let Some(v) = crate::detect::tool_version(&app.dir, "bun") {
         return v.spec;
+    }
+    if let Ok(t) = std::fs::read_to_string(app.dir.join(".bun-version"))
+        && let Some(v) = t.lines().next().map(|l| l.trim().trim_start_matches('v').to_string()).filter(|v| !v.is_empty())
+    {
+        return v;
     }
     "latest".into()
 }

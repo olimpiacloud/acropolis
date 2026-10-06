@@ -29,14 +29,14 @@ pub fn plan_app(dir: &Path, env: &Env) -> Result<Plan> {
     let env = &env;
     let name = app_name(dir);
     if let Some((root, fallback)) = providers::simple::staticfile_root(dir, env)
-        && (dir.join("Staticfile").exists() || env.config("STATIC_FILE_ROOT").is_some() || !dir.join("package.json").exists())
+        && (env.config("STATIC_FILE_ROOT").is_some() || !detect::has_package_json(dir))
     {
         return providers::simple::plan_static(dir, env, &name, &root, fallback);
     }
     let forced = env.config("PROVIDER").map(|(p, _)| p);
     if (forced.as_deref() == Some("shell")
         || (forced.is_none()
-            && !dir.join("package.json").exists()
+            && !detect::has_package_json(dir)
             && !dir.join("go.mod").exists()
             && !dir.join("Cargo.toml").exists()))
         && let Some(script) = providers::simple::shell_script(dir, env)
@@ -54,7 +54,7 @@ pub fn plan_app(dir: &Path, env: &Env) -> Result<Plan> {
     }
     if (forced.as_deref() == Some("python")
         || (forced.is_none()
-            && !dir.join("package.json").exists()
+            && !detect::has_package_json(dir)
             && !dir.join("go.mod").exists()
             && !dir.join("Cargo.toml").exists()))
         && providers::python::is_python(dir)
@@ -63,7 +63,7 @@ pub fn plan_app(dir: &Path, env: &Env) -> Result<Plan> {
         apply_deploy_apt(&mut plan, env)?;
         return Ok(plan);
     }
-    if forced.as_deref().map(|f| !matches!(f, "node" | "go" | "rust" | "python" | "ruby" | "shell")).unwrap_or(!dir.join("package.json").exists())
+    if forced.as_deref().map(|f| !matches!(f, "node" | "go" | "rust" | "python" | "ruby" | "shell")).unwrap_or(!detect::has_package_json(dir))
         && let Some(spec) = providers::images::detect(dir, env)
     {
         let mut plan = providers::images::plan(dir, env, &name, spec?)?;

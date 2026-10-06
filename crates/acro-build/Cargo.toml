@@ -23,6 +23,7 @@ tokio.workspace = true
 futures.workspace = true
 rayon.workspace = true
 json5.workspace = true
+serde_yaml = "0.9"
 reqwest.workspace = true
 hex.workspace = true
 libc.workspace = true

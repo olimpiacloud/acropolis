@@ -60,7 +60,7 @@ pub struct RustRelease {
 
 pub fn channel_name(spec: &str) -> String {
     let s = spec.trim();
-    if s.is_empty() { DEFAULT_RUST.to_string() } else { s.to_string() }
+    if s.is_empty() || s == "latest" { DEFAULT_RUST.to_string() } else { s.to_string() }
 }
 
 pub async fn resolve(fetcher: &Fetcher, spec: &str, targets: &[String]) -> Result<RustRelease> {

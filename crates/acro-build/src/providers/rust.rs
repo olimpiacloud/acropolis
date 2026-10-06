@@ -45,7 +45,19 @@ pub fn detect(dir: &Path, env: &Env) -> Result<RustApp> {
         (b, None)
     } else if !project.workspace_members.is_empty() {
         let mut found = None;
+        let mut members = Vec::new();
         for m in &project.workspace_members {
+            if let Some(base) = m.strip_suffix("/*") {
+                let mut v: Vec<String> = std::fs::read_dir(dir.join(base))
+                    .map(|rd| rd.flatten().filter(|e| e.path().join("Cargo.toml").exists()).map(|e| format!("{base}/{}", e.file_name().to_string_lossy())).collect())
+                    .unwrap_or_default();
+                v.sort();
+                members.extend(v);
+            } else {
+                members.push(m.clone());
+            }
+        }
+        for m in &members {
             let mdir = dir.join(m);
             if mdir.join("src/main.rs").exists()
                 && let Ok(p) = acro_cargo::read_project(&mdir)
@@ -74,7 +86,69 @@ fn normalize_channel(spec: &str) -> String {
     s.to_string()
 }
 
+const SYSTEM_SYS_CRATES: &[&str] = &["openssl-sys", "libpq-sys", "pq-sys", "mysqlclient-sys", "libsqlite3-sys", "curl-sys", "libgit2-sys", "libssh2-sys", "zstd-sys", "rdkafka-sys", "librocksdb-sys"];
+
+fn needs_system_libs(dir: &Path) -> bool {
+    let lock = std::fs::read_to_string(dir.join("Cargo.lock")).unwrap_or_default();
+    let toml = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap_or_default();
+    SYSTEM_SYS_CRATES.iter().any(|c| lock.contains(&format!("name = \"{c}\"")) || toml.contains(c))
+        && !toml.contains("vendored")
+}
+
+fn plan_in_image(app: &RustApp, env: &Env, dir: &Path, name: &str) -> Result<Plan> {
+    let mut b = PlanBuilder::new(name, "rust");
+    b.fact("rust", format!("{} ({})", app.rust.spec, app.rust.source));
+    b.fact("binary", app.bin.clone());
+    b.fact("build", "inside rust image (system libraries needed by -sys crates)".to_string());
+    let tag = match app.rust.spec.as_str() {
+        "stable" | "latest" | "" => "1".to_string(),
+        v => acro_semver::fuzzy_version(v),
+    };
+    let image = format!("rust:{tag}-bookworm");
+    let base = "gcr.io/distroless/cc-debian12";
+    b.step("base", format!("resolve {base}"), Action::ResolveBase { image: base.into() }, &[]);
+    b.step("copy-base", "copy base layers", Action::CopyBase, &["base"]);
+    b.step("source", "copy source", Action::CopySource { exclude: vec!["target".into()] }, &[]);
+    let mut cmd = "cargo build --release".to_string();
+    if dir.join("Cargo.lock").exists() {
+        cmd.push_str(" --locked");
+    }
+    match &app.package {
+        Some(p) => cmd.push_str(&format!(" --package {p}")),
+        None => cmd.push_str(&format!(" --bin {}", app.bin)),
+    }
+    let mut run_env = BTreeMap::new();
+    run_env.insert("CARGO_HOME".to_string(), "/app/.acro-cargo".to_string());
+    for (k, v) in &env.vars {
+        if !k.starts_with("ACRO_") && !k.starts_with("RAILPACK_") {
+            run_env.insert(k.clone(), v.clone());
+        }
+    }
+    b.step(
+        "build",
+        format!("{cmd} (in {image})"),
+        Action::ImageRun { image, commands: vec![cmd], env: run_env, network: true, mount_app: true, after: None, tools: vec![] },
+        &["source"],
+    );
+    b.step(
+        "layer-bin",
+        "layer binary",
+        Action::Layer { dest: "app".into(), from: LayerFrom::Paths { items: vec![(format!("target/release/{}", app.bin), format!("bin/{}", app.bin))] } },
+        &["build"],
+    );
+    b.step("push", "push image", Action::Push, &["base", "copy-base", "layer-bin"]);
+    b.plan.warnings.push("crates with system libraries are built inside the rust image with network access".into());
+    b.plan.image.layers = vec!["layer-bin".into()];
+    b.plan.image.workdir = Some("/app".into());
+    b.plan.image.cmd = Some(vec![format!("/app/bin/{}", app.bin)]);
+    b.plan.image.entrypoint = Some(vec![]);
+    Ok(b.finish())
+}
+
 pub fn plan(app: &RustApp, env: &Env, dir: &Path, name: &str) -> Result<Plan> {
+    if needs_system_libs(dir) {
+        return plan_in_image(app, env, dir, name);
+    }
     let mut b = PlanBuilder::new(name, "rust");
     b.fact("rust", format!("{} ({})", app.rust.spec, app.rust.source));
     b.fact("binary", app.bin.clone());

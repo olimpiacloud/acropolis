@@ -191,10 +191,10 @@ pub fn tool_version(dir: &Path, tool: &str) -> Option<VersionSpec> {
 }
 
 pub fn detect(dir: &Path, env: &Env) -> Result<App> {
-    if dir.join("package.json").exists() {
+    if has_package_json(dir) {
         return Ok(App::Node(detect_node(dir, env)?));
     }
-    if dir.join("go.mod").exists() || dir.join("main.go").exists() {
+    if dir.join("go.mod").exists() || dir.join("go.work").exists() || dir.join("main.go").exists() {
         return Ok(App::Go(detect_go(dir, env)?));
     }
     if dir.join("Cargo.toml").exists() {
@@ -203,8 +203,23 @@ pub fn detect(dir: &Path, env: &Env) -> Result<App> {
     bail!("could not detect how to build {}: no package.json or go.mod", dir.display())
 }
 
+pub fn has_package_json(dir: &Path) -> bool {
+    dir.join("package.json").exists() || dir.join("package.json5").exists() || dir.join("package.yaml").exists()
+}
+
+pub fn read_package_json(dir: &Path) -> Result<Value> {
+    if dir.join("package.json").exists() {
+        return read_json_lenient(&dir.join("package.json"));
+    }
+    if dir.join("package.json5").exists() {
+        return read_json_lenient(&dir.join("package.json5"));
+    }
+    let text = std::fs::read_to_string(dir.join("package.yaml")).context("reading package.yaml")?;
+    serde_yaml::from_str(&text).context("parsing package.yaml")
+}
+
 pub fn detect_node(dir: &Path, env: &Env) -> Result<NodeApp> {
-    let pj = read_json_lenient(&dir.join("package.json"))?;
+    let pj = read_package_json(dir)?;
     let scripts: BTreeMap<String, String> = pj
         .get("scripts")
         .and_then(|s| s.as_object())
@@ -229,6 +244,14 @@ pub fn detect_node(dir: &Path, env: &Env) -> Result<NodeApp> {
             pm = m;
             lockfile = Some(file.to_string());
             break;
+        }
+    }
+    if lockfile.is_none() && pm_field.is_none() {
+        let eng = |k: &str| pj.get("engines").and_then(|e| e.get(k)).and_then(|v| v.as_str()).map(|s| s.to_string());
+        if eng("pnpm").is_some() || dir.join("pnpm-workspace.yaml").exists() || dir.join("package.json5").exists() || dir.join("package.yaml").exists() {
+            pm = PackageManager::Pnpm;
+        } else if eng("bun").is_some() {
+            pm = PackageManager::Bun;
         }
     }
     let mut pm_version = None;
@@ -343,6 +366,11 @@ pub fn detect_go(dir: &Path, env: &Env) -> Result<GoApp> {
         VersionSpec { spec: t, source: "go.mod toolchain".into() }
     } else if let Some(g) = gomod.as_ref().and_then(|m| m.go.clone()) {
         VersionSpec { spec: g, source: "go.mod go".into() }
+    } else if let Some(g) = std::fs::read_to_string(dir.join("go.work"))
+        .ok()
+        .and_then(|t| t.lines().find_map(|l| l.trim().strip_prefix("go ").map(|v| v.trim().to_string())))
+    {
+        VersionSpec { spec: g, source: "go.work".into() }
     } else {
         VersionSpec { spec: acro_toolchain::go::DEFAULT_GO.into(), source: "default".into() }
     };
@@ -352,6 +380,8 @@ pub fn detect_go(dir: &Path, env: &Env) -> Result<GoApp> {
         ".".to_string()
     } else if let Some(cmd) = first_dir(&dir.join("cmd")) {
         format!("./cmd/{cmd}")
+    } else if let Some(m) = workspace_main(dir) {
+        format!("./{m}")
     } else {
         ".".to_string()
     };
@@ -363,6 +393,40 @@ pub fn detect_go(dir: &Path, env: &Env) -> Result<GoApp> {
         package,
         cgo,
         has_sum: dir.join("go.sum").exists(),
+    })
+}
+
+fn workspace_main(dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(dir.join("go.work")).ok()?;
+    let mut uses = Vec::new();
+    let mut in_block = false;
+    for line in text.lines() {
+        let l = line.split("//").next().unwrap_or("").trim();
+        if l.starts_with("use (") {
+            in_block = true;
+            continue;
+        }
+        if in_block {
+            if l == ")" {
+                in_block = false;
+                continue;
+            }
+            if !l.is_empty() {
+                uses.push(l.trim_start_matches("./").to_string());
+            }
+        } else if let Some(u) = l.strip_prefix("use ") {
+            uses.push(u.trim().trim_start_matches("./").to_string());
+        }
+    }
+    uses.into_iter().find(|u| {
+        std::fs::read_dir(dir.join(u))
+            .map(|rd| {
+                rd.flatten().any(|e| {
+                    e.file_name().to_string_lossy().ends_with(".go")
+                        && std::fs::read_to_string(e.path()).map(|t| t.contains("package main")).unwrap_or(false)
+                })
+            })
+            .unwrap_or(false)
     })
 }
 

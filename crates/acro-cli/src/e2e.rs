@@ -165,7 +165,7 @@ fn run_output_check(image: &str, case: &TestCase, network: Option<&str>, name: &
             }
             if !found.contains(&false) {
                 let _ = tx.send(Ok(all.clone()));
-                return;
+                found.push(false);
             }
         }
         let ok = expected2.iter().all(|e| all.contains(e.as_str()));

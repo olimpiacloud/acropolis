@@ -82,6 +82,9 @@ pub fn detect(dir: &Path, env: &Env) -> Option<Result<ImageBuild>> {
     if is("java", dir.join("pom.xml").exists() || dir.join("gradlew").exists() || dir.join("build.gradle").exists() || dir.join("build.gradle.kts").exists()) {
         return Some(java(dir, env));
     }
+    if is("elixir", dir.join("mix.exs").exists()) {
+        return Some(elixir(dir, env));
+    }
     if is("cpp", dir.join("CMakeLists.txt").exists() || dir.join("meson.build").exists()) {
         return Some(cpp(dir, env));
     }
@@ -278,5 +281,54 @@ fn cpp(dir: &Path, env: &Env) -> Result<ImageBuild> {
         cmd: format!("./build/{exe}"),
         image_env: vec![],
         facts: vec![("executable".into(), exe)],
+    })
+}
+
+fn elixir(dir: &Path, env: &Env) -> Result<ImageBuild> {
+    let mix = read(dir, "mix.exs");
+    let app = mix
+        .split("app:")
+        .nth(1)
+        .and_then(|r| r.trim_start().strip_prefix(':'))
+        .map(|r| r.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect::<String>())
+        .filter(|s| !s.is_empty());
+    let Some(app) = app else { bail!("could not find the application name in mix.exs") };
+    let version = env
+        .config("ELIXIR_VERSION")
+        .map(|(v, _)| v)
+        .or_else(|| tool_version(dir, "elixir").map(|v| v.spec))
+        .unwrap_or_else(|| "1.18".into());
+    let tag = if version == "latest" { "latest".to_string() } else { acro_semver::fuzzy_version(&version) };
+    let image = format!("elixir:{tag}");
+    let mut commands = vec![
+        "mkdir -p config deps _build".to_string(),
+        "mix local.hex --force".to_string(),
+        "mix local.rebar --force".to_string(),
+        "mix deps.get --only prod".to_string(),
+        "mix deps.compile".to_string(),
+        "mix compile".to_string(),
+    ];
+    if mix.contains("\"assets.deploy\"") || mix.contains("assets.deploy:") {
+        commands.push("mix assets.deploy".into());
+    }
+    if mix.contains("\"ecto.deploy\"") || mix.contains("ecto.deploy:") {
+        commands.push("mix ecto.deploy".into());
+    }
+    commands.push("mix release --overwrite".into());
+    let mut e = BTreeMap::new();
+    for (k, v) in [("MIX_ENV", "prod"), ("MIX_HOME", "/app/.mix"), ("HEX_HOME", "/app/.hex"), ("ELIXIR_ERL_OPTIONS", "+fnu"), ("LANG", "C.UTF-8")] {
+        e.insert(k.to_string(), v.to_string());
+    }
+    let rel = format!("_build/prod/rel/{app}");
+    Ok(ImageBuild {
+        provider: "elixir",
+        base: Action::ResolveBase { image: image.clone() },
+        build_image: "@base".into(),
+        commands,
+        env: e,
+        outputs: vec![(rel.clone(), rel.clone())],
+        cmd: format!("/app/{rel}/bin/{app} start"),
+        image_env: vec![("MIX_ENV".into(), "prod".into()), ("LANG".into(), "C.UTF-8".into()), ("PORT".into(), "4000".into())],
+        facts: vec![("elixir".into(), tag), ("app".into(), app)],
     })
 }

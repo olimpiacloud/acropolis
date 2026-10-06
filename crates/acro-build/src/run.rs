@@ -342,8 +342,12 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
         }
         Action::NpmFetch { manager, lockfile, dev, .. } => {
             let opts = InstallOptions { include_dev: *dev, include_optional: true, platform: Default::default() };
-            let plan = if lockfile.is_empty() {
-                let pj: serde_json::Value = serde_json::from_slice(&std::fs::read(ctx.opts.app_dir.join("package.json"))?)?;
+            let out_of_sync = manager == "npm" && !lockfile.is_empty() && npm_lock_out_of_sync(&ctx.opts.app_dir, lockfile);
+            if out_of_sync {
+                acro_events::log(&step.id, "warning: package-lock.json is out of sync with package.json; resolving from the registry like `npm install`");
+            }
+            let plan = if lockfile.is_empty() || out_of_sync {
+                let pj = crate::detect::read_package_json(&ctx.opts.app_dir)?;
                 let ws = acro_npm::yarn::expand_workspaces(&ctx.opts.app_dir, &pj);
                 acro_npm::resolve::plan_without_lockfile(&ctx.fetcher, &pj, &ws, &opts).await?
             } else {
@@ -748,6 +752,23 @@ async fn image_rootfs(ctx: &Arc<Ctx>, image: &str) -> Result<(Vec<PathBuf>, BTre
     });
     let dirs = futures::future::try_join_all(futs).await?;
     Ok((dirs, env))
+}
+
+fn npm_lock_out_of_sync(app_dir: &Path, lockfile: &str) -> bool {
+    let Ok(pj) = crate::detect::read_package_json(app_dir) else { return false };
+    let Ok(bytes) = std::fs::read(app_dir.join(lockfile)) else { return false };
+    let Ok(lock) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return false };
+    let root = lock.get("packages").and_then(|p| p.get(""));
+    for k in ["dependencies", "devDependencies", "optionalDependencies"] {
+        let want = pj.get(k).and_then(|d| d.as_object()).cloned().unwrap_or_default();
+        let have = root.and_then(|r| r.get(k)).and_then(|d| d.as_object()).cloned().unwrap_or_default();
+        for (name, range) in &want {
+            if have.get(name) != Some(range) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn with_config_excludes(ctx: &Ctx, base: &[String]) -> Vec<String> {

@@ -88,7 +88,7 @@ impl Registry {
 
     fn mark_down(&self, host: &str) -> bool {
         if host == "registry-1.docker.io" && !self.hub_down.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            acro_events::log("registry", format!("registry-1.docker.io is unreachable, falling back to {HUB_FALLBACK} (content is verified by digest)"));
+            acro_events::log("registry", format!("registry-1.docker.io is unreachable or rate limited, falling back to {HUB_FALLBACK} (content is verified by digest)"));
             return true;
         }
         host == "registry-1.docker.io"
@@ -169,6 +169,10 @@ impl Registry {
                     let header = self.authenticate(r, &challenge, &key.1).await?;
                     self.tokens.lock().unwrap().insert(key.clone(), header);
                     authed = true;
+                }
+                Ok(resp) if resp.status() == StatusCode::TOO_MANY_REQUESTS && key.0 == "registry-1.docker.io" => {
+                    self.mark_down(&key.0);
+                    return Err(anyhow!(Unreachable(key.0.clone())));
                 }
                 Ok(resp)
                     if (resp.status().is_server_error() || resp.status() == StatusCode::TOO_MANY_REQUESTS)

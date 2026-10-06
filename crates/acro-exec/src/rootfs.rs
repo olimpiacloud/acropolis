@@ -132,8 +132,14 @@ pub async fn run(spec: RootfsRun) -> Result<Vec<String>> {
         }
         binds.push((cpath(&b.host)?, cpath(&spec.merged.join(guest_rel))?, b.readonly));
     }
-    for d in ["proc", "dev", "sys", "etc", "tmp"] {
+    for d in ["proc", "dev", "sys", "etc"] {
         std::fs::create_dir_all(spec.upper.join(d))?;
+    }
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = spec.upper.join("tmp");
+        std::fs::create_dir_all(&tmp)?;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o1777))?;
     }
     let resolv = Path::new("/run/systemd/resolve/resolv.conf");
     let resolv_src = if spec.network {
