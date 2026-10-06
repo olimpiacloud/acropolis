@@ -115,3 +115,42 @@ mod tests {
         assert!(is_exact("v23.5.0"));
     }
 }
+
+pub fn fuzzy_version(spec: &str) -> String {
+    let v = spec.trim();
+    if v.is_empty() || v == "*" {
+        return "latest".into();
+    }
+    if v.contains(">=") || v.contains('<') {
+        let parts: Vec<&str> = v.split_whitespace().collect();
+        for (i, part) in parts.iter().enumerate() {
+            if let Some(after) = part.strip_prefix(">=") {
+                let x = if after.is_empty() { parts.get(i + 1).copied().unwrap_or("") } else { after };
+                return x.trim().trim_start_matches('v').split('.').next().unwrap_or("").to_string();
+            }
+        }
+    }
+    if let Some(after) = v.strip_prefix('^') {
+        return after.trim_start_matches('v').split('.').next().unwrap_or("").to_string();
+    }
+    let v = v.trim_start_matches('~').trim_start_matches('v');
+    let v = v.replace(".x", "");
+    v.trim_end_matches('.').to_string()
+}
+
+#[cfg(test)]
+mod fuzzy_tests {
+    use super::fuzzy_version;
+
+    #[test]
+    fn railpack_compatible() {
+        assert_eq!(fuzzy_version(">=20.0.0"), "20");
+        assert_eq!(fuzzy_version(">= 18"), "18");
+        assert_eq!(fuzzy_version(">=22 <23"), "22");
+        assert_eq!(fuzzy_version("^18.2.0"), "18");
+        assert_eq!(fuzzy_version("~22.1"), "22.1");
+        assert_eq!(fuzzy_version("20.x"), "20");
+        assert_eq!(fuzzy_version("v23.5.0"), "23.5.0");
+        assert_eq!(fuzzy_version(""), "latest");
+    }
+}

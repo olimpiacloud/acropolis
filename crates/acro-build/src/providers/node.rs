@@ -7,7 +7,8 @@ pub const NODE_PATH_ENV: &str = "/app/node_modules/.bin:/usr/local/sbin:/usr/loc
 pub const CADDY_IMAGE: &str = "caddy:2-alpine";
 
 pub fn node_base_tag(spec: &str) -> Option<String> {
-    let s = spec.trim().trim_start_matches('v');
+    let fuzzy = acro_semver::fuzzy_version(spec);
+    let s = fuzzy.as_str();
     let lower = s.to_ascii_lowercase();
     if lower == "lts" || lower == "lts/*" {
         return Some("node:lts-bookworm-slim".into());
@@ -136,29 +137,118 @@ enum Runtime {
     Spa { out: String },
 }
 
+fn read_first(app: &NodeApp, files: &[&str]) -> String {
+    files.iter().find_map(|f| std::fs::read_to_string(app.dir.join(f)).ok()).unwrap_or_default()
+}
+
+fn config_string(text: &str, key: &str) -> Option<String> {
+    let idx = text.find(key)?;
+    let rest = &text[idx + key.len()..];
+    let rest = rest.trim_start().strip_prefix(':')?.trim_start();
+    let q = rest.chars().next()?;
+    if !matches!(q, '"' | '\'' | '`') {
+        return None;
+    }
+    let after = &rest[1..];
+    let end = after.find(q)?;
+    Some(after[..end].trim_start_matches("./").trim_end_matches('/').to_string())
+}
+
+fn astro_server(app: &NodeApp) -> bool {
+    let cfg = read_first(app, &["astro.config.mjs", "astro.config.ts", "astro.config.js", "astro.config.mts"]);
+    cfg.contains("output: 'server'") || cfg.contains("output: \"server\"") || cfg.contains("output: 'hybrid'") || cfg.contains("adapter:")
+}
+
+fn react_router_spa(app: &NodeApp) -> bool {
+    let cfg = read_first(app, &["react-router.config.ts", "react-router.config.js"]);
+    cfg.contains("ssr: false") || cfg.contains("ssr:false")
+}
+
+fn angular_out(app: &NodeApp, env: &Env) -> Option<String> {
+    let text = std::fs::read_to_string(app.dir.join("angular.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let projects = v.get("projects")?.as_object()?;
+    let wanted = env.config("ANGULAR_PROJECT").map(|(p, _)| p);
+    for (name, p) in projects {
+        if wanted.as_ref().map(|w| w != name).unwrap_or(false) {
+            continue;
+        }
+        let build = p.get("architect").and_then(|a| a.get("build"))?;
+        let out = build.get("options").and_then(|o| o.get("outputPath")).and_then(|o| o.as_str()).unwrap_or("dist").to_string();
+        let builder = build.get("builder").and_then(|b| b.as_str()).unwrap_or("");
+        let browser = build.get("options").and_then(|o| o.get("browser")).is_some();
+        if builder == "@angular-devkit/build-angular:application" || builder == "@angular/build:application" || browser {
+            return Some(format!("{out}/browser"));
+        }
+        return Some(out);
+    }
+    None
+}
+
+fn expo_spa(app: &NodeApp) -> bool {
+    if !app.has_dep("expo") || !app.has_dep("react-native-web") {
+        return false;
+    }
+    let Ok(text) = std::fs::read_to_string(app.dir.join("app.json")) else { return false };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return false };
+    let out = v.pointer("/expo/web/output").and_then(|o| o.as_str()).unwrap_or("").to_ascii_lowercase();
+    out == "static" || out == "single"
+}
+
 fn runtime(app: &NodeApp, env: &Env) -> Result<Runtime> {
     let start = start_command(app, env);
     let has_build = app.script("build").is_some() || env.config("BUILD_CMD").is_some();
     if let Some((dir, _)) = env.config("SPA_OUTPUT_DIR") {
         return Ok(Runtime::Spa { out: dir });
     }
+    let custom_start = env.config("START_CMD").is_some();
+    let start_script = app.script("start").unwrap_or("").to_string();
+    let default_start = |defaults: &[&str]| start_script.is_empty() || defaults.iter().any(|d| start_script.trim() == *d);
+    if has_build && !custom_start && !env.flag("NO_SPA") {
+        match app.framework {
+            Framework::Vite if default_start(&["vite", "vite preview"]) => return Ok(Runtime::Spa { out: vite_out_dir(app) }),
+            Framework::Cra if default_start(&["react-scripts start"]) => return Ok(Runtime::Spa { out: "build".into() }),
+            Framework::Angular if default_start(&["ng serve"]) => {
+                if let Some(out) = angular_out(app, env) {
+                    return Ok(Runtime::Spa { out });
+                }
+            }
+            Framework::Astro if !astro_server(app) && default_start(&["astro dev", "astro preview"]) => {
+                let cfg = read_first(app, &["astro.config.mjs", "astro.config.ts", "astro.config.js", "astro.config.mts"]);
+                return Ok(Runtime::Spa { out: config_string(&cfg, "outDir").unwrap_or_else(|| "dist".into()) });
+            }
+            Framework::Next if default_start(&["next start"]) => {
+                let cfg = read_first(app, &["next.config.ts", "next.config.js", "next.config.mjs"]);
+                if cfg.contains("output: 'export'") || cfg.contains("output: \"export\"") {
+                    return Ok(Runtime::Spa { out: config_string(&cfg, "distDir").unwrap_or_else(|| "out".into()) });
+                }
+            }
+            Framework::ReactRouter if react_router_spa(app) => {
+                let cfg = read_first(app, &["react-router.config.ts", "react-router.config.js"]);
+                let out = config_string(&cfg, "buildDirectory").unwrap_or_else(|| "build".into());
+                return Ok(Runtime::Spa { out: format!("{out}/client") });
+            }
+            _ => {}
+        }
+        if expo_spa(app) {
+            return Ok(Runtime::Spa { out: "dist".into() });
+        }
+    }
     match app.framework {
-        Framework::Next if next_standalone(app) && has_build => return Ok(Runtime::NextStandalone),
+        Framework::Next if next_standalone(app) && has_build && !custom_start => return Ok(Runtime::NextStandalone),
         Framework::TanstackStart if tanstack_nitro(app) && app.script("start").is_none() && has_build => {
             return Ok(Runtime::Nitro);
         }
-        Framework::Vite if has_build && !env.flag("NO_SPA") => {
-            let custom_start = app.script("start").map(|s| !s.contains("vite")).unwrap_or(false)
-                || env.config("START_CMD").is_some();
-            if !custom_start {
-                return Ok(Runtime::Spa { out: vite_out_dir(app) });
-            }
-        }
-        Framework::Cra if has_build && app.script("start").map(|s| s.contains("react-scripts")).unwrap_or(true) => {
-            return Ok(Runtime::Spa { out: "build".into() });
-        }
+        Framework::Nuxt if app.script("start").is_none() && has_build && !custom_start => return Ok(Runtime::Nitro),
         _ => {}
     }
+    let start = start.or_else(|| match app.framework {
+        Framework::SvelteKit if has_build => Some("node build".into()),
+        Framework::Astro if has_build && astro_server(app) => Some("node ./dist/server/entry.mjs".into()),
+        Framework::ReactRouter if has_build => Some("react-router-serve ./build/server/index.js".into()),
+        Framework::TanstackStart if has_build => Some("srvx --prod -s ../client dist/server/server.js".into()),
+        _ => None,
+    });
     let Some(start) = start else {
         bail!("no start command found: add a \"start\" script to package.json or set ACRO_START_CMD");
     };
@@ -427,12 +517,9 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
                     b.step("push", "push image", Action::Push, &["base", "copy-base", "layer-caddy", "layer-site"]);
                     b.plan.image.layers = vec!["layer-caddy".into(), "layer-site".into()];
                     b.plan.image.cmd = Some(vec![
-                        "caddy".into(),
-                        "run".into(),
-                        "--config".into(),
-                        "/Caddyfile".into(),
-                        "--adapter".into(),
-                        "caddyfile".into(),
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        "exec caddy run --config /Caddyfile --adapter caddyfile 2>&1".into(),
                     ]);
                     b.plan.image.entrypoint = Some(vec![]);
                     b.plan.image.workdir = Some("/app".into());
@@ -474,8 +561,70 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
             b.plan.image.workdir = Some("/app".into());
         }
     }
+    add_package_manager(&mut b, app, env, &mut image_env);
+    if app.framework == Framework::Astro {
+        image_env.push(("HOST".into(), "0.0.0.0".into()));
+    }
     b.plan.image.env = image_env;
     Ok(b.finish())
+}
+
+fn pnpm_spec(app: &NodeApp) -> String {
+    if app.pm == PackageManager::Pnpm
+        && let Some(v) = &app.pm_version
+    {
+        return v.clone();
+    }
+    if let Some(v) = app.package_json.get("engines").and_then(|e| e.get("pnpm")).and_then(|v| v.as_str()) {
+        return acro_semver::fuzzy_version(v);
+    }
+    let lock = std::fs::read_to_string(app.dir.join("pnpm-lock.yaml")).unwrap_or_default();
+    let ver = lock.lines().find_map(|l| l.strip_prefix("lockfileVersion:")).map(|v| v.trim().trim_matches('\'').trim_matches('"').to_string());
+    match ver.as_deref() {
+        Some(v) if v.starts_with('5') => "7".into(),
+        Some(v) if v.starts_with('6') => "8".into(),
+        _ => "latest".into(),
+    }
+}
+
+fn add_package_manager(b: &mut PlanBuilder, app: &NodeApp, env: &Env, image_env: &mut Vec<(String, String)>) {
+    let _ = env;
+    let uses_node_base = matches!(b.plan.step("base").map(|s| &s.action), Some(Action::ResolveNodeBase { .. }))
+        || matches!(b.plan.step("base").map(|s| &s.action), Some(Action::ResolveBase { image }) if image.starts_with("node:"));
+    if !uses_node_base {
+        return;
+    }
+    let ua = match app.pm {
+        PackageManager::Pnpm => {
+            let spec = pnpm_spec(app);
+            b.step("pnpm", format!("pnpm {spec}"), Action::Toolchain { tool: "npm:pnpm".into(), spec: spec.clone(), parts: vec![] }, &[]);
+            b.step(
+                "layer-pm",
+                "layer pnpm CLI",
+                Action::Layer { dest: "usr/local".into(), from: LayerFrom::ToolTree { tool: "npm:pnpm".into() } },
+                &["pnpm"],
+            );
+            if let Some(push) = b.plan.steps.iter_mut().find(|s| s.id == "push") {
+                push.deps.push("layer-pm".into());
+            }
+            let push_idx = b.plan.steps.iter().position(|s| s.id == "push").unwrap();
+            let last = b.plan.steps.len() - 1;
+            let tail = b.plan.steps.remove(push_idx);
+            b.plan.steps.insert(last, tail);
+            b.plan.image.layers.insert(0, "layer-pm".into());
+            format!("pnpm/{spec} npm/? node/v{} linux x64", app.node.spec)
+        }
+        PackageManager::Yarn1 | PackageManager::YarnBerry => {
+            format!("yarn/{} npm/? node/v{} linux x64", app.pm_version.clone().unwrap_or_else(|| "1.22.22".into()), app.node.spec)
+        }
+        PackageManager::Bun => format!("bun/{} npm/? node/v{} linux x64", app.pm_version.clone().unwrap_or_default(), app.node.spec),
+        PackageManager::Npm => format!("npm/10 node/v{} linux x64", app.node.spec),
+    };
+    image_env.push(("npm_config_user_agent".into(), ua));
+    image_env.push(("npm_lifecycle_event".into(), "start".into()));
+    if let Some(n) = app.package_json.get("name").and_then(|n| n.as_str()) {
+        image_env.push(("npm_package_name".into(), n.into()));
+    }
 }
 
 fn uses_bun(cmd: &str) -> bool {

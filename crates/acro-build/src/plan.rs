@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 pub enum Action {
     ResolveBase { image: String },
     ResolveNodeBase { spec: String, variant: String },
+    ResolveBaseLatest { template: String, github: String },
     CopyBase,
     Toolchain { tool: String, spec: String, parts: Vec<String> },
     NpmFetch {
@@ -55,6 +56,7 @@ pub enum LayerFrom {
     WorkFile { path: String, mode: u32 },
     Paths { items: Vec<(String, String)> },
     Tool { tool: String, files: Vec<(String, String)> },
+    ToolTree { tool: String },
     Upper { step: String, include: Vec<String>, exclude: Vec<String> },
     Inline { files: BTreeMap<String, String> },
 }
@@ -70,7 +72,7 @@ fn default_manager() -> String {
 impl Action {
     pub fn class(&self) -> &'static str {
         match self {
-            Action::ResolveBase { .. } | Action::ResolveNodeBase { .. } | Action::Toolchain { .. } | Action::NpmFetch { .. } | Action::GoModules { .. } | Action::CargoVendor { .. } => {
+            Action::ResolveBase { .. } | Action::ResolveNodeBase { .. } | Action::ResolveBaseLatest { .. } | Action::Toolchain { .. } | Action::NpmFetch { .. } | Action::GoModules { .. } | Action::CargoVendor { .. } => {
                 "fetch"
             }
             Action::Run { network: true, .. } => "build+net",

@@ -215,6 +215,19 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             let version = acro_toolchain::node::resolve(&ctx.fetcher, spec).await?;
             resolve_base(ctx, step, &format!("node:{version}-{variant}")).await
         }
+        Action::ResolveBaseLatest { template, github } => {
+            let url = format!("https://github.com/{github}/releases/latest");
+            let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build()?;
+            acro_events::add_request();
+            let resp = client.get(&url).send().await?;
+            let loc = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .ok_or_else(|| anyhow!("{url} did not redirect to a release"))?;
+            let tag = loc.rsplit('/').next().unwrap_or("").to_string();
+            resolve_base(ctx, step, &template.replace("{tag}", &tag)).await
+        }
         Action::CopyBase => {
             let handle = ctx.base_copy.lock().unwrap().take();
             let Some(handle) = handle else { return Ok(Out::None) };
@@ -226,7 +239,8 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             let fetcher = &ctx.fetcher;
             match tool.as_str() {
                 "node" => {
-                    let version = acro_toolchain::node::resolve(fetcher, spec).await?;
+                    let fuzzy = acro_semver::fuzzy_version(spec);
+                    let version = acro_toolchain::node::resolve(fetcher, &fuzzy).await?;
                     let dest = ctx.opts.home.join("toolchains").join(format!("node-{version}"));
                     let marker = dest.join(".acro-complete");
                     if marker.exists() {
@@ -280,6 +294,18 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                     acro_events::log(&step.id, format!("bun {}", release.version));
                     Ok(Out::Tool(Installed { name: "bun".into(), version: release.version, bin_dir: dest.join("bin"), root: dest, archive: None }))
                 }
+                t if t.starts_with("npm:") => {
+                    let pkg = &t[4..];
+                    let release = acro_toolchain::npmpkg::resolve(fetcher, pkg, spec).await?;
+                    let dest = ctx.opts.home.join("toolchains").join(format!("npm-{}-{}", pkg.replace('/', "+"), release.version));
+                    if !dest.join(".acro-complete").exists() {
+                        let tmp = staging(&dest);
+                        acro_toolchain::npmpkg::install(fetcher, &release, &tmp).await?;
+                        publish(&tmp, &dest)?;
+                    }
+                    acro_events::log(&step.id, format!("{pkg} {}", release.version));
+                    Ok(Out::Tool(Installed { name: t.to_string(), version: release.version, bin_dir: dest.join("bin"), root: dest, archive: None }))
+                }
                 "uv" => {
                     let release = acro_toolchain::uv::resolve(fetcher, spec).await?;
                     let dest = ctx.opts.home.join("toolchains").join(format!("uv-{}", release.version));
@@ -318,7 +344,7 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             };
             for p in &plan.packages {
                 if let acro_npm::Source::Git { url } = &p.source {
-                    bail!("git dependency {} ({url}) is not supported yet", p.path);
+                    acro_events::log(&step.id, format!("warning: {} comes from git ({url}); it is pinned by commit, not by content hash", p.path));
                 }
             }
             let tarballs = acro_npm::install::fetch_all(&ctx.fetcher, &plan).await?;
@@ -328,7 +354,7 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
         Action::CopySource { exclude } => {
             let app = ctx.opts.app_dir.clone();
             let src = ctx.src.clone();
-            let ex = exclude.clone();
+            let ex = with_config_excludes(ctx, exclude);
             let n = tokio::task::spawn_blocking(move || {
                 let ig = Ignore::load(&app, &ex);
                 source::copy_tree(&app, &src, &ig)
@@ -448,7 +474,12 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             Ok(Out::None)
         }
         Action::ImageRun { image, commands, env, network, mount_app, after, tools } => {
-            let (mut lower, image_env) = image_rootfs(ctx, image).await?;
+            let image = if image == "@base" {
+                ctx.base().map(|b| b.reference.to_string()).ok_or_else(|| anyhow!("no base image resolved"))?
+            } else {
+                image.clone()
+            };
+            let (mut lower, image_env) = image_rootfs(ctx, &image).await?;
             if let Some(prev) = after {
                 match ctx.get(prev) {
                     Out::Upper(p) => lower.push(p),
@@ -675,6 +706,14 @@ async fn image_rootfs(ctx: &Arc<Ctx>, image: &str) -> Result<(Vec<PathBuf>, BTre
     Ok((dirs, env))
 }
 
+fn with_config_excludes(ctx: &Ctx, base: &[String]) -> Vec<String> {
+    let mut out = base.to_vec();
+    if let Some(extra) = ctx.opts.env.vars.get("ACRO_EXCLUDE") {
+        out.extend(extra.lines().map(|l| l.to_string()));
+    }
+    out
+}
+
 fn staging(dest: &Path) -> PathBuf {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -722,7 +761,7 @@ async fn build_layer(ctx: &Arc<Ctx>, step: &Step, dest: &str, from: &LayerFrom) 
     match from {
         LayerFrom::AppSource { exclude } => {
             let app = ctx.opts.app_dir.clone();
-            let ex = exclude.clone();
+            let ex = with_config_excludes(ctx, exclude);
             tokio::task::spawn_blocking(move || {
                 let ig = Ignore::load(&app, &ex);
                 source::dir_layer(&store, &app, &ig, &dest, &comment, opts)
@@ -772,6 +811,20 @@ async fn build_layer(ctx: &Arc<Ctx>, step: &Step, dest: &str, from: &LayerFrom) 
                 for (from, to) in &items {
                     let root = src.join(from);
                     if !root.exists() {
+                        continue;
+                    }
+                    if root.is_file() {
+                        let prefix = if dest.is_empty() { to.clone() } else { format!("{dest}/{to}") };
+                        let mut tw = TarWriter::new(Vec::new());
+                        let parent = Path::new(&prefix).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+                        for d in source::ancestors(&parent).into_iter().skip(source::ancestors(&dest).len()) {
+                            tw.dir(&d, 0o755)?;
+                        }
+                        let mut f = std::fs::File::open(&root)?;
+                        let meta = f.metadata()?;
+                        use std::os::unix::fs::PermissionsExt;
+                        tw.file_reader(&prefix, if meta.permissions().mode() & 0o111 != 0 { 0o755 } else { 0o644 }, meta.len(), &mut f)?;
+                        frags.push(std::mem::take(tw.get_mut()));
                         continue;
                     }
                     let prefix = if dest.is_empty() { to.clone() } else { format!("{dest}/{to}") };
@@ -841,6 +894,15 @@ async fn build_layer(ctx: &Arc<Ctx>, step: &Step, dest: &str, from: &LayerFrom) 
             let exclude = exclude.clone();
             tokio::task::spawn_blocking(move || {
                 let frags = source::upper_fragments(&upper, &dest, &include, &exclude)?;
+                layer::from_fragments(&store, &comment, frags, opts)
+            })
+            .await?
+        }
+        LayerFrom::ToolTree { tool } => {
+            let t = ctx.tools().into_iter().find(|t| &t.name == tool).ok_or_else(|| anyhow!("toolchain {tool} not installed"))?;
+            tokio::task::spawn_blocking(move || {
+                let entries = source::walk(&t.root, &Ignore::new(&[".acro-complete".into()]))?;
+                let frags = source::fragments_for(&t.root, &entries, &dest, true)?;
                 layer::from_fragments(&store, &comment, frags, opts)
             })
             .await?

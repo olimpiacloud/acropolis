@@ -56,7 +56,7 @@ pub fn plan_static(dir: &Path, env: &Env, name: &str, root: &str, fallback: bool
     b.step("layer-site", format!("layer {root}"), Action::Layer { dest: "app/dist".into(), from }, &[]);
     b.step("push", "push image", Action::Push, &["base", "copy-base", "layer-caddy", "layer-site"]);
     b.plan.image.layers = vec!["layer-caddy".into(), "layer-site".into()];
-    b.plan.image.cmd = Some(vec!["caddy".into(), "run".into(), "--config".into(), "/Caddyfile".into(), "--adapter".into(), "caddyfile".into()]);
+    b.plan.image.cmd = Some(vec!["/bin/sh".into(), "-c".into(), "exec caddy run --config /Caddyfile --adapter caddyfile 2>&1".into()]);
     b.plan.image.entrypoint = Some(vec![]);
     b.plan.image.workdir = Some("/app".into());
     b.plan.image.ports = vec![80];

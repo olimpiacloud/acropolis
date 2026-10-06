@@ -104,8 +104,20 @@ pub fn apply(cfg: &Config, env: &mut Env) -> Result<()> {
     if !cfg.build_apt_packages.is_empty() {
         unsupported.push(format!("buildAptPackages ({})", cfg.build_apt_packages.join(", ")));
     }
-    if !cfg.packages.is_empty() {
-        unsupported.push(format!("packages ({})", cfg.packages.keys().cloned().collect::<Vec<_>>().join(", ")));
+    let mut other_packages = Vec::new();
+    for (k, v) in &cfg.packages {
+        match k.as_str() {
+            "java" => {
+                env.vars.insert("ACRO_JAVA_PACKAGE".into(), v.clone());
+            }
+            "node" | "go" | "python" | "ruby" | "bun" | "deno" | "rust" => {
+                env.vars.entry(format!("ACRO_{}_VERSION", k.to_ascii_uppercase())).or_insert_with(|| v.clone());
+            }
+            other => other_packages.push(other.to_string()),
+        }
+    }
+    if !other_packages.is_empty() {
+        unsupported.push(format!("packages ({})", other_packages.join(", ")));
     }
     for (name, step) in &cfg.steps {
         let cmds = command_strings(step);

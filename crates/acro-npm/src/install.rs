@@ -209,11 +209,43 @@ pub fn default_registry_url(name: &str, version: &str) -> String {
 
 pub type Tarballs = HashMap<String, StoredBlob>;
 
+pub fn git_tarball_url(url: &str) -> Option<String> {
+    let (repo, commit) = url.rsplit_once('#')?;
+    if commit.len() < 7 || !commit.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let repo = repo
+        .trim_start_matches("git+")
+        .trim_start_matches("ssh://")
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_start_matches("git://")
+        .trim_start_matches("git@");
+    let path = if let Some(rest) = repo.strip_prefix("github:") {
+        rest.to_string()
+    } else if let Some(rest) = repo.strip_prefix("github.com/").or_else(|| repo.strip_prefix("github.com:")) {
+        rest.to_string()
+    } else if !repo.contains(':') && !repo.contains('.') && repo.matches('/').count() == 1 {
+        repo.to_string()
+    } else {
+        return None;
+    };
+    let path = path.trim_end_matches(".git");
+    Some(format!("https://codeload.github.com/{path}/tar.gz/{commit}"))
+}
+
 pub async fn fetch_all(fetcher: &Fetcher, plan: &InstallPlan) -> Result<Tarballs> {
     let mut unique: BTreeMap<String, Option<Integrity>> = BTreeMap::new();
-    for p in plan.registry_packages() {
-        if let Source::Registry { url, integrity } = &p.source {
-            unique.entry(url.clone()).or_insert_with(|| integrity.clone());
+    for p in &plan.packages {
+        match &p.source {
+            Source::Registry { url, integrity } => {
+                unique.entry(url.clone()).or_insert_with(|| integrity.clone());
+            }
+            Source::Git { url } => {
+                let t = git_tarball_url(url).ok_or_else(|| anyhow!("git dependency {} ({url}) is only supported for GitHub repositories pinned to a commit", p.path))?;
+                unique.entry(t).or_insert(None);
+            }
+            _ => {}
         }
     }
     let futs = unique.into_iter().map(|(url, integrity)| async move {
@@ -228,8 +260,13 @@ pub async fn fetch_all(fetcher: &Fetcher, plan: &InstallPlan) -> Result<Tarballs
 pub fn blob_for<'a>(tarballs: &'a Tarballs, p: &InstallPackage) -> Option<&'a StoredBlob> {
     match &p.source {
         Source::Registry { url, .. } => tarballs.get(url),
+        Source::Git { url } => git_tarball_url(url).and_then(|t| tarballs.get(&t)),
         _ => None,
     }
+}
+
+fn fetched(p: &InstallPackage) -> bool {
+    matches!(p.source, Source::Registry { .. } | Source::Git { .. })
 }
 
 fn clean_rel(path: &str) -> Option<String> {
@@ -441,7 +478,7 @@ pub fn node_modules_fragments(
     let mut fragments = vec![take(head)];
     let bodies: Vec<Result<(String, Vec<u8>, Vec<(String, String)>)>> = pkgs
         .par_iter()
-        .filter(|p| matches!(p.source, Source::Registry { .. }))
+        .filter(|p| fetched(p))
         .map(|p| {
             let blob = blob_for(tarballs, p).ok_or_else(|| anyhow!("missing tarball for {}", p.path))?;
             let (frag, bins) = package_fragment(prefix, p, &blob.path)?;
@@ -488,7 +525,7 @@ pub fn materialize(plan: &InstallPlan, tarballs: &Tarballs, root: &Path) -> Resu
     let pkgs: Vec<&InstallPackage> = plan.packages.iter().collect();
     let written: Vec<Result<(String, u64, Vec<(String, String)>)>> = pkgs
         .par_iter()
-        .filter(|p| matches!(p.source, Source::Registry { .. }))
+        .filter(|p| fetched(p))
         .map(|p| {
             let blob = blob_for(tarballs, p).ok_or_else(|| anyhow!("missing tarball for {}", p.path))?;
             let (n, bins) = extract_package(p, &blob.path, &root.join(&p.path))?;
@@ -584,6 +621,16 @@ mod tests {
         assert!(!platform_ok(&e, &p));
         e.os = Some(vec!["!win32".into()]);
         assert!(platform_ok(&e, &p));
+    }
+
+    #[test]
+    fn git_urls() {
+        assert_eq!(
+            git_tarball_url("git+ssh://git@github.com/iloveitaly/rehype-remove-images.git#6307a5d2b29f4b96f08fb4f62f6c2badf012cef2").unwrap(),
+            "https://codeload.github.com/iloveitaly/rehype-remove-images/tar.gz/6307a5d2b29f4b96f08fb4f62f6c2badf012cef2"
+        );
+        assert_eq!(git_tarball_url("github:a/b#abcdef1").unwrap(), "https://codeload.github.com/a/b/tar.gz/abcdef1");
+        assert!(git_tarball_url("git+https://gitlab.com/a/b.git#abcdef1").is_none());
     }
 
     #[test]

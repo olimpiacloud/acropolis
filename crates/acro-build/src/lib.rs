@@ -63,6 +63,13 @@ pub fn plan_app(dir: &Path, env: &Env) -> Result<Plan> {
         apply_deploy_apt(&mut plan, env)?;
         return Ok(plan);
     }
+    if forced.as_deref().map(|f| !matches!(f, "node" | "go" | "rust" | "python" | "ruby" | "shell")).unwrap_or(!dir.join("package.json").exists())
+        && let Some(spec) = providers::images::detect(dir, env)
+    {
+        let mut plan = providers::images::plan(dir, env, &name, spec?)?;
+        apply_deploy_apt(&mut plan, env)?;
+        return Ok(plan);
+    }
     let app = detect::detect(dir, env)?;
     let mut plan = match &app {
         App::Node(n) => providers::node::plan(n, env, &name)?,

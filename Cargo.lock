@@ -13,6 +13,7 @@ dependencies = [
  "acro-gomod",
  "acro-npm",
  "acro-oci",
+ "acro-semver",
  "acro-store",
  "acro-toolchain",
  "anyhow",
