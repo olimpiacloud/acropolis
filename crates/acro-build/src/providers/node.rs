@@ -1092,6 +1092,9 @@ fn add_package_manager(b: &mut PlanBuilder, app: &NodeApp, env: &Env, image_env:
             b.plan.steps.insert(last, tail);
             b.plan.image.layers.insert(0, "layer-pm".into());
             image_env.push(("npm_config_verify_deps_before_run".into(), "false".into()));
+            image_env.push(("pnpm_config_verify_deps_before_run".into(), "false".into()));
+            image_env.push(("npm_config_update_notifier".into(), "false".into()));
+            image_env.push(("pnpm_config_update_notifier".into(), "false".into()));
             image_env.push(("COREPACK_ENABLE_STRICT".into(), "0".into()));
             format!("pnpm/{{version:npm:pnpm|{spec}}} npm/? node/v{{version:node|{}}} linux x64", app.node.spec)
         }

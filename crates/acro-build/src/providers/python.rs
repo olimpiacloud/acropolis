@@ -239,7 +239,7 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     b.step("uv", "uv", Action::Toolchain { tool: "uv".into(), spec: uv_spec, parts: vec![] }, &[]);
     let install: Vec<String> = match m {
         Manager::Uv => vec!["uv sync --locked --no-dev --no-editable".into()],
-        Manager::Pip => vec!["uv venv /app/.venv".into(), "uv pip install -r requirements.txt".into()],
+        Manager::Pip => vec!["uv venv /app/.venv".into(), "uv pip install --python /app/.venv/bin/python -r requirements.txt".into()],
         Manager::Poetry => vec![
             "uv venv /app/.venv".into(),
             "uv tool run --from poetry poetry install --no-interaction --no-ansi --only main --no-root".into(),
@@ -252,7 +252,7 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
             let cmd = if dir.join("Pipfile.lock").exists() { "pipenv install --deploy --ignore-pipfile" } else { "pipenv install --skip-lock" };
             vec!["uv venv /app/.venv".into(), format!("PIPENV_VENV_IN_PROJECT=1 PIPENV_IGNORE_VIRTUALENVS=0 uv tool run --from pipenv {cmd}")]
         }
-        Manager::Pyproject => vec!["uv venv /app/.venv".into(), "uv pip install -r pyproject.toml".into()],
+        Manager::Pyproject => vec!["uv venv /app/.venv".into(), "uv pip install --python /app/.venv/bin/python -r pyproject.toml".into()],
         Manager::None => vec![],
     };
     let mut env_map = BTreeMap::new();

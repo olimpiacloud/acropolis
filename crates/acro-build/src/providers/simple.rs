@@ -82,6 +82,9 @@ pub fn plan_shell(dir: &Path, env: &Env, name: &str, script: &str) -> Result<Pla
     } else {
         "sh"
     };
+    if interp == "zsh" {
+        b.fact("runtime-packages", "zsh");
+    }
     let base = "debian:bookworm-slim";
     b.step("base", format!("resolve {base}"), Action::ResolveBase { image: base.into() }, &[]);
     b.step("copy-base", "copy base layers", Action::CopyBase, &["base"]);

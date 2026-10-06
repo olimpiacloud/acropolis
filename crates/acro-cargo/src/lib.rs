@@ -222,6 +222,7 @@ pub struct RustProject {
     pub workspace_members: Vec<String>,
     pub rust_version: Option<String>,
     pub default_run: Option<String>,
+    pub edition: Option<String>,
 }
 
 pub fn read_project(dir: &Path) -> Result<RustProject> {
@@ -232,6 +233,7 @@ pub fn read_project(dir: &Path) -> Result<RustProject> {
         p.package_name = pkg.get("name").and_then(|n| n.as_str()).map(|s| s.to_string());
         p.rust_version = pkg.get("rust-version").and_then(|n| n.as_str()).map(|s| s.to_string());
         p.default_run = pkg.get("default-run").and_then(|n| n.as_str()).map(|s| s.to_string());
+        p.edition = pkg.get("edition").and_then(|n| n.as_str()).map(|s| s.to_string());
     }
     if let Some(bins) = v.get("bin").and_then(|b| b.as_array()) {
         for b in bins {

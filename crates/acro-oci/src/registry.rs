@@ -40,6 +40,10 @@ impl std::error::Error for Unreachable {}
 
 pub const HUB_FALLBACK: &str = "mirror.gcr.io";
 
+const HEDGE_TAG_MS: u64 = 2500;
+const HEDGE_DIGEST_MS: u64 = 1200;
+const SLOW_REQUEST_MS: u128 = 1500;
+
 pub struct ResolvedImage {
     pub reference: Reference,
     pub manifest: Manifest,
@@ -92,6 +96,43 @@ impl Registry {
             return true;
         }
         host == "registry-1.docker.io"
+    }
+
+    fn hedge_target(&self, r: &Reference) -> Option<Reference> {
+        if r.registry != "docker.io" || self.mirrors.contains_key("docker.io") || self.hub_down.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
+        Some(Reference { registry: HUB_FALLBACK.to_string(), ..r.clone() })
+    }
+
+    async fn hedged<T, P, S, F>(&self, alt: Option<Reference>, delay_ms: u64, what: &str, primary: P, secondary: F) -> Result<T>
+    where
+        P: std::future::Future<Output = Result<T>>,
+        S: std::future::Future<Output = Result<T>>,
+        F: FnOnce(Reference) -> S,
+    {
+        tokio::pin!(primary);
+        let Some(alt) = alt else { return primary.await };
+        tokio::select! {
+            res = &mut primary => return res,
+            _ = tokio::time::sleep(Duration::from_millis(delay_ms)) => {}
+        }
+        acro_events::log("registry", format!("{what} from docker.io is slow after {delay_ms} ms, racing {HUB_FALLBACK}"));
+        let secondary = secondary(alt);
+        tokio::pin!(secondary);
+        tokio::select! {
+            res = &mut primary => match res {
+                Ok(v) => Ok(v),
+                Err(_) => secondary.await,
+            },
+            res = &mut secondary => match res {
+                Ok(v) => {
+                    acro_events::log("registry", format!("{what} served by {HUB_FALLBACK}"));
+                    Ok(v)
+                }
+                Err(_) => primary.await,
+            },
+        }
     }
 
     fn base(&self, r: &Reference) -> String {
@@ -157,7 +198,12 @@ impl Registry {
                 req = req.header(AUTHORIZATION, t.clone());
             }
             acro_events::add_request();
+            let started = std::time::Instant::now();
             let res = req.send().await;
+            let elapsed = started.elapsed().as_millis();
+            if elapsed > SLOW_REQUEST_MS {
+                acro_events::log("registry", format!("slow request to {} ({}): {elapsed} ms", key.0, key.1));
+            }
             match res {
                 Ok(resp) if resp.status() == StatusCode::UNAUTHORIZED && !authed => {
                     let challenge = resp
@@ -229,6 +275,14 @@ impl Registry {
     }
 
     pub async fn get_manifest(&self, r: &Reference, reference: &str) -> Result<(Bytes, String, String)> {
+        let delay = if reference.starts_with("sha256:") { HEDGE_DIGEST_MS } else { HEDGE_TAG_MS };
+        let what = format!("manifest {}:{reference}", r.repository);
+        let alt = self.hedge_target(r);
+        self.hedged(alt, delay, &what, self.get_manifest_retry(r, reference), |rr| async move { self.get_manifest_retry(&rr, reference).await })
+            .await
+    }
+
+    async fn get_manifest_retry(&self, r: &Reference, reference: &str) -> Result<(Bytes, String, String)> {
         match self.get_manifest_once(r, reference).await {
             Err(e) if e.downcast_ref::<Unreachable>().is_some() => self.get_manifest_once(r, reference).await,
             other => other,
@@ -316,6 +370,13 @@ impl Registry {
     }
 
     pub async fn get_blob_bytes(&self, r: &Reference, digest: &str) -> Result<Bytes> {
+        let what = format!("blob {}@{}", r.repository, &digest[..digest.len().min(19)]);
+        let alt = self.hedge_target(r);
+        self.hedged(alt, HEDGE_DIGEST_MS, &what, self.get_blob_bytes_once(r, digest), |rr| async move { self.get_blob_bytes_once(&rr, digest).await })
+            .await
+    }
+
+    async fn get_blob_bytes_once(&self, r: &Reference, digest: &str) -> Result<Bytes> {
         let resp = self.get_blob(r, digest).await?;
         let b = resp.bytes().await?;
         acro_events::add_downloaded(b.len() as u64);

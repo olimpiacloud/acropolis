@@ -42,7 +42,7 @@ pub fn plan_app(dir: &Path, env: &Env) -> Result<Plan> {
         && let Some(script) = providers::simple::shell_script(dir, env)
     {
         let mut plan = providers::simple::plan_shell(dir, env, &name, &script)?;
-        apply_deploy_apt(&mut plan, env)?;
+        apply_runtime_packages(&mut plan, env)?;
         return Ok(plan);
     }
     if (forced.as_deref() == Some("php") || (forced.is_none() && !dir.join("go.mod").exists()))

@@ -4,6 +4,8 @@ use anyhow::{Result, bail};
 use std::collections::BTreeMap;
 use std::path::Path;
 
+pub const DEFAULT_RUST: &str = "1.89";
+
 #[derive(Clone, Debug)]
 pub struct RustApp {
     pub rust: VersionSpec,
@@ -15,21 +17,30 @@ pub struct RustApp {
 
 pub fn detect(dir: &Path, env: &Env) -> Result<RustApp> {
     let project = acro_cargo::read_project(dir)?;
-    let rust = if let Some((v, k)) = env.config("RUST_VERSION") {
-        VersionSpec { spec: v, source: k }
-    } else if let Some(v) = crate::detect::tool_version(dir, "rust") {
+    let edition_default = match project.edition.as_deref() {
+        Some("2015") => Some("1.30.0"),
+        Some("2018") => Some("1.55.0"),
+        Some("2021") => Some("1.84.0"),
+        Some("2024") => Some("1.85.1"),
+        _ => None,
+    };
+    let rust = if let Some(v) = crate::detect::tool_version(dir, "rust") {
         v
+    } else if let Some(c) = acro_cargo::toolchain_file(dir) {
+        VersionSpec { spec: c, source: "rust-toolchain".into() }
+    } else if let Some(v) = project.rust_version.clone() {
+        VersionSpec { spec: v, source: "Cargo.toml rust-version".into() }
     } else if let Some(v) = ["rust-version.txt", ".rust-version"]
         .iter()
         .find_map(|f| std::fs::read_to_string(dir.join(f)).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty()))
     {
         VersionSpec { spec: v, source: ".rust-version".into() }
-    } else if let Some(c) = acro_cargo::toolchain_file(dir) {
-        VersionSpec { spec: c, source: "rust-toolchain".into() }
-    } else if let Some(v) = project.rust_version.clone() {
-        VersionSpec { spec: v, source: "Cargo.toml rust-version".into() }
+    } else if let Some((v, k)) = env.config("RUST_VERSION") {
+        VersionSpec { spec: v, source: k }
+    } else if let Some(v) = edition_default {
+        VersionSpec { spec: v.into(), source: "Cargo.toml edition".into() }
     } else {
-        VersionSpec { spec: acro_cargo::DEFAULT_RUST.into(), source: "default".into() }
+        VersionSpec { spec: DEFAULT_RUST.into(), source: "default".into() }
     };
     let rust = VersionSpec { spec: normalize_channel(&rust.spec), source: rust.source };
     let (bin, package) = if let Some((b, _)) = env.config("CARGO_BIN") {
@@ -142,6 +153,7 @@ fn plan_in_image(app: &RustApp, env: &Env, dir: &Path, name: &str) -> Result<Pla
     b.plan.image.workdir = Some("/app".into());
     b.plan.image.cmd = Some(vec![format!("/app/bin/{}", app.bin)]);
     b.plan.image.entrypoint = Some(vec![]);
+    b.plan.image.env.push(("ROCKET_ADDRESS".into(), "0.0.0.0".into()));
     Ok(b.finish())
 }
 
@@ -226,5 +238,6 @@ pub fn plan(app: &RustApp, env: &Env, dir: &Path, name: &str) -> Result<Plan> {
     b.plan.image.workdir = Some("/app".into());
     b.plan.image.cmd = Some(vec![format!("/app/bin/{}", app.bin)]);
     b.plan.image.entrypoint = Some(vec![]);
+    b.plan.image.env.push(("ROCKET_ADDRESS".into(), "0.0.0.0".into()));
     Ok(b.finish())
 }

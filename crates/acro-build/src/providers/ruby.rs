@@ -101,6 +101,9 @@ pub fn start_command(dir: &Path, env: &Env) -> Option<String> {
 }
 
 fn image_for(spec: &str) -> String {
+    if matches!(spec.trim(), "latest" | "*") {
+        return "ruby:slim".into();
+    }
     let v: String = spec.trim().chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
     let v = if v.is_empty() { DEFAULT_RUBY.to_string() } else { v };
     format!("ruby:{v}-slim")
@@ -123,7 +126,7 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     b.step("source", "copy source", Action::CopySource { exclude: vec!["vendor/bundle".into(), "tmp".into(), "log/*.log".into()] }, &[]);
     let pg = has_gem(dir, "pg");
     let mysql = has_gem(dir, "mysql2");
-    let build_image = image.trim_end_matches("-slim").to_string();
+    let build_image = if image == "ruby:slim" { "ruby:latest".to_string() } else { image.trim_end_matches("-slim").to_string() };
     let mut commands: Vec<String> = Vec::new();
     if let Some(bv) = bundler_version(dir) {
         commands.push(format!("(gem list -i bundler -v {bv} >/dev/null || gem install -N bundler -v {bv})"));
@@ -138,7 +141,6 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     }
     let mut run_env = BTreeMap::new();
     for (k, v) in [
-        ("BUNDLE_PATH", "/app/vendor/bundle"),
         ("BUNDLE_WITHOUT", "development:test"),
         ("BUNDLE_GEMFILE", "/app/Gemfile"),
         ("RAILS_ENV", "production"),
@@ -157,7 +159,13 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
         Action::ImageRun { image: build_image.clone(), commands, env: run_env.clone(), network: true, mount_app: true, after: None, tools: vec![] },
         &["source"],
     );
-    b.step("layer-app", "layer app + gems", Action::Layer { dest: "app".into(), from: LayerFrom::WorkDir { path: ".".into(), exclude: vec![] } }, &["install"]);
+    b.step("layer-app", "layer app", Action::Layer { dest: "app".into(), from: LayerFrom::WorkDir { path: ".".into(), exclude: vec![] } }, &["install"]);
+    b.step(
+        "layer-gems",
+        "layer gems (/usr/local/bundle)",
+        Action::Layer { dest: "".into(), from: LayerFrom::Upper { step: "install".into(), include: vec!["usr/local/bundle".into()], exclude: vec!["usr/local/bundle/cache".into()] } },
+        &["install"],
+    );
     let mut runtime_pkgs = vec!["libjemalloc2"];
     if pg {
         runtime_pkgs.push("libpq5");
@@ -191,9 +199,9 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
         },
         &["runtime-libs"],
     );
-    b.step("push", "push image", Action::Push, &["base", "copy-base", "layer-libs", "layer-app"]);
+    b.step("push", "push image", Action::Push, &["base", "copy-base", "layer-libs", "layer-gems", "layer-app"]);
     b.plan.warnings.push("gems are installed with network access inside the base image".into());
-    b.plan.image.layers = vec!["layer-libs".into(), "layer-app".into()];
+    b.plan.image.layers = vec!["layer-libs".into(), "layer-gems".into(), "layer-app".into()];
     b.plan.image.workdir = Some("/app".into());
     let mut img_env: Vec<(String, String)> = run_env
         .iter()
