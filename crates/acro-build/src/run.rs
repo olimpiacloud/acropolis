@@ -100,7 +100,14 @@ impl Ctx {
     }
 
     fn subst(&self, s: &str) -> String {
-        s.replace("{work}", &self.work.to_string_lossy())
+        let mut out = s.replace("{work}", &self.work.to_string_lossy()).replace("{src}", &self.src.to_string_lossy());
+        while let Some(start) = out.find("{tool:") {
+            let Some(end) = out[start..].find('}') else { break };
+            let name = out[start + 6..start + end].to_string();
+            let root = self.tools().into_iter().find(|t| t.name == name).map(|t| t.root.to_string_lossy().into_owned()).unwrap_or_default();
+            out.replace_range(start..start + end + 1, &root);
+        }
+        out
     }
 }
 
@@ -673,8 +680,10 @@ async fn image_rootfs(ctx: &Arc<Ctx>, image: &str) -> Result<(Vec<PathBuf>, BTre
         let d = d.clone();
         async move {
             let hex = d.digest.trim_start_matches("sha256:").to_string();
-            let dir = ctx.opts.home.join("rootfs").join(&hex);
-            let marker = ctx.opts.home.join("rootfs").join(format!("{hex}.complete"));
+            let rootfs_root = std::env::var("ACRO_ROOTFS").map(PathBuf::from).unwrap_or_else(|_| ctx.opts.home.join("rootfs"));
+            std::fs::create_dir_all(&rootfs_root)?;
+            let dir = rootfs_root.join(&hex);
+            let marker = rootfs_root.join(format!("{hex}.complete"));
             if marker.exists() {
                 return Ok::<PathBuf, anyhow::Error>(dir);
             }

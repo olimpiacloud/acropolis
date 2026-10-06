@@ -279,7 +279,9 @@ fn run_case(cfg: &E2eConfig, example: &str, idx: usize, case: &TestCase) -> Case
     let log_dir = cfg.out.with_extension("logs");
     let _ = fs::create_dir_all(&log_dir);
     let log_path = log_dir.join(format!("{example}-{idx}.log"));
+    let rootfs = std::env::temp_dir().join(format!("acro-e2e-rootfs-{example}-{idx}-{}", std::process::id()));
     let mut cmd = Command::new(&cfg.acro_bin);
+    cmd.env("ACRO_ROOTFS", &rootfs);
     cmd.arg("--home").arg(&home).arg("build").arg(&dir).arg("-t").arg(&tag);
     for (k, v) in &case.envs {
         cmd.arg("-e").arg(format!("{k}={v}"));
@@ -297,6 +299,7 @@ fn run_case(cfg: &E2eConfig, example: &str, idx: usize, case: &TestCase) -> Case
     };
     r.build_s = start.elapsed().as_secs_f64();
     let _ = fs::write(&log_path, [out.stdout.as_slice(), out.stderr.as_slice()].concat());
+    let _ = fs::remove_dir_all(&rootfs);
     if cfg.isolated {
         let _ = fs::remove_dir_all(&home);
     }

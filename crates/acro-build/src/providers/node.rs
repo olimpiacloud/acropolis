@@ -268,7 +268,9 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
         PackageManager::Npm => "npm",
         PackageManager::Pnpm => "pnpm",
         PackageManager::Bun if app.lockfile.as_deref() == Some("bun.lock") => "bun",
+        PackageManager::Bun if app.lockfile.as_deref() == Some("bun.lockb") => return plan_bun_binary_lock(app, env, b),
         PackageManager::Yarn1 => "yarn",
+        PackageManager::YarnBerry => return plan_yarn_berry(app, env, b),
         other => bail!("{} projects are not supported yet", other.name()),
     };
     let lockfile = app.lockfile.clone().unwrap_or_default();
@@ -566,6 +568,169 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
         image_env.push(("HOST".into(), "0.0.0.0".into()));
     }
     b.plan.image.env = image_env;
+    Ok(b.finish())
+}
+
+fn yarn_berry_version(app: &NodeApp) -> (String, Option<String>) {
+    let rc = std::fs::read_to_string(app.dir.join(".yarnrc.yml")).unwrap_or_default();
+    for line in rc.lines() {
+        if let Some(p) = line.trim().strip_prefix("yarnPath:") {
+            let p = p.trim().trim_matches('"').trim_matches('\'').to_string();
+            let v = p.rsplit('/').next().unwrap_or("").trim_start_matches("yarn-").trim_end_matches(".cjs").trim_end_matches(".js").to_string();
+            return (v, Some(p));
+        }
+    }
+    if let Some(v) = &app.pm_version {
+        return (v.clone(), None);
+    }
+    let lock = std::fs::read_to_string(app.dir.join("yarn.lock")).unwrap_or_default();
+    let meta: u32 = lock
+        .lines()
+        .skip_while(|l| !l.starts_with("__metadata:"))
+        .find_map(|l| l.trim().strip_prefix("version:").and_then(|v| v.trim().parse().ok()))
+        .unwrap_or(8);
+    let v = match meta {
+        0..=4 => "2.4.3",
+        5..=6 => "3.8.7",
+        _ => "4",
+    };
+    (v.to_string(), None)
+}
+
+fn plan_yarn_berry(app: &NodeApp, env: &Env, mut b: PlanBuilder) -> Result<Plan> {
+    let (yarn_version, yarn_path) = yarn_berry_version(app);
+    b.fact("yarn", yarn_version.clone());
+    let rt = runtime(app, env)?;
+    b.step("node", format!("node {}", app.node.spec), Action::Toolchain { tool: "node".into(), spec: app.node.spec.clone(), parts: vec!["headers".into()] }, &[]);
+    b.step("source", "copy source", Action::CopySource { exclude: vec!["**/node_modules".into()] }, &[]);
+    let yarn_js = match &yarn_path {
+        Some(p) => format!("{{src}}/{p}"),
+        None => {
+            b.step(
+                "yarn",
+                format!("yarn {yarn_version}"),
+                Action::Toolchain { tool: "npm:@yarnpkg/cli-dist".into(), spec: yarn_version.clone(), parts: vec![] },
+                &[],
+            );
+            "{tool:npm:@yarnpkg/cli-dist}/lib/node_modules/@yarnpkg/cli-dist/bin/yarn.js".to_string()
+        }
+    };
+    let mut yenv = BTreeMap::new();
+    yenv.insert("YARN_ENABLE_TELEMETRY".to_string(), "0".to_string());
+    yenv.insert("YARN_ENABLE_GLOBAL_CACHE".to_string(), "0".to_string());
+    yenv.insert("YARN_ENABLE_INLINE_BUILDS".to_string(), "1".to_string());
+    let install_deps: Vec<&str> = if yarn_path.is_some() { vec!["node", "source"] } else { vec!["node", "source", "yarn"] };
+    b.step(
+        "install",
+        "yarn install --immutable",
+        Action::Run {
+            argv: vec!["node".into(), yarn_js.clone(), "install".into(), "--immutable".into()],
+            env: yenv.clone(),
+            network: true,
+            cwd: ".".into(),
+        },
+        &install_deps,
+    );
+    let mut last = "install".to_string();
+    if app.script("build").is_some() || env.config("BUILD_CMD").is_some() {
+        let mut benv = yenv.clone();
+        benv.insert("NODE_ENV".into(), "production".into());
+        let argv = match env.config("BUILD_CMD") {
+            Some((c, _)) => vec!["/bin/sh".into(), "-c".into(), c],
+            None => vec!["node".into(), yarn_js.clone(), "run".into(), "build".into()],
+        };
+        b.step("build", "yarn run build", Action::Run { argv, env: benv, network: false, cwd: ".".into() }, &["install"]);
+        last = "build".into();
+    }
+    let pnp = !std::fs::read_to_string(app.dir.join(".yarnrc.yml")).unwrap_or_default().contains("nodeLinker: node-modules");
+    let mut image_env = vec![("NODE_ENV".to_string(), "production".to_string())];
+    match rt {
+        Runtime::Spa { out } => {
+            b.step("base", format!("resolve {CADDY_IMAGE}"), Action::ResolveBase { image: CADDY_IMAGE.into() }, &[]);
+            b.step("copy-base", "copy base layers", Action::CopyBase, &["base"]);
+            let mut files = BTreeMap::new();
+            files.insert("Caddyfile".to_string(), spa_caddyfile("/app/dist", true));
+            b.step("layer-caddy", "layer Caddyfile", Action::Layer { dest: "".into(), from: LayerFrom::Inline { files } }, &[]);
+            b.step("layer-site", format!("layer {out}"), Action::Layer { dest: "app/dist".into(), from: LayerFrom::WorkDir { path: out, exclude: vec![] } }, &[&last]);
+            b.step("push", "push image", Action::Push, &["base", "copy-base", "layer-caddy", "layer-site"]);
+            b.plan.image.layers = vec!["layer-caddy".into(), "layer-site".into()];
+            b.plan.image.cmd = Some(vec!["/bin/sh".into(), "-c".into(), "exec caddy run --config /Caddyfile --adapter caddyfile 2>&1".into()]);
+            b.plan.image.workdir = Some("/app".into());
+            b.plan.image.entrypoint = Some(vec![]);
+            return Ok(b.finish());
+        }
+        Runtime::ServerNoBuild { start } | Runtime::ServerBuilt { start } => {
+            let tag = node_base_tag(&app.node.spec).unwrap_or_else(|| "node:lts-bookworm-slim".into());
+            b.step("base", format!("resolve {tag}"), Action::ResolveBase { image: tag }, &[]);
+            b.step("copy-base", "copy base layers", Action::CopyBase, &["base"]);
+            b.step("layer-app", "layer app + dependencies", Action::Layer { dest: "app".into(), from: LayerFrom::WorkDir { path: ".".into(), exclude: vec![] } }, &[&last]);
+            b.step("push", "push image", Action::Push, &["base", "copy-base", "layer-app"]);
+            b.plan.image.layers = vec!["layer-app".into()];
+            b.plan.image.cmd = Some(command_argv(&start));
+            if pnp {
+                let mut opts = "--require /app/.pnp.cjs".to_string();
+                if app.dir.join(".pnp.loader.mjs").exists() || yarn_version.split('.').next().and_then(|m| m.parse::<u32>().ok()).unwrap_or(4) >= 3 {
+                    opts.push_str(" --experimental-loader /app/.pnp.loader.mjs");
+                }
+                image_env.push(("NODE_OPTIONS".into(), opts));
+            }
+            image_env.push(("PATH".into(), NODE_PATH_ENV.into()));
+        }
+        Runtime::NextStandalone | Runtime::Nitro => bail!("yarn berry with this framework is not supported yet"),
+    }
+    image_env.push(("npm_config_user_agent".into(), format!("yarn/{yarn_version} npm/? node/v{} linux x64", app.node.spec)));
+    image_env.push(("npm_lifecycle_event".into(), "start".into()));
+    b.plan.image.env = image_env;
+    b.plan.image.workdir = Some("/app".into());
+    b.plan.image.entrypoint = Some(vec![]);
+    b.plan.warnings.push("yarn berry installs run the yarn CLI with network access".into());
+    Ok(b.finish())
+}
+
+fn plan_bun_binary_lock(app: &NodeApp, env: &Env, mut b: PlanBuilder) -> Result<Plan> {
+    let spec = bun_spec(app, env);
+    let rt = runtime(app, env)?;
+    b.step("bun", format!("bun {spec}"), Action::Toolchain { tool: "bun".into(), spec: spec.clone(), parts: vec![] }, &[]);
+    b.step("node", format!("node {}", app.node.spec), Action::Toolchain { tool: "node".into(), spec: app.node.spec.clone(), parts: vec![] }, &[]);
+    b.step("source", "copy source", Action::CopySource { exclude: vec!["**/node_modules".into()] }, &[]);
+    b.step(
+        "install",
+        "bun install --frozen-lockfile",
+        Action::Run { argv: vec!["bun".into(), "install".into(), "--frozen-lockfile".into()], env: BTreeMap::new(), network: true, cwd: ".".into() },
+        &["bun", "node", "source"],
+    );
+    let mut last = "install";
+    if let Some(build) = env.config("BUILD_CMD").map(|(c, _)| c).or_else(|| app.script("build").map(|_| "bun run build".to_string())) {
+        let mut benv = BTreeMap::new();
+        benv.insert("NODE_ENV".to_string(), "production".to_string());
+        b.step("build", format!("run {build}"), Action::Run { argv: vec!["/bin/sh".into(), "-c".into(), build], env: benv, network: false, cwd: ".".into() }, &["install"]);
+        last = "build";
+    }
+    let start = match rt {
+        Runtime::ServerNoBuild { start } | Runtime::ServerBuilt { start } => start,
+        _ => bail!("bun.lockb with this framework is not supported yet; migrate to the text bun.lock"),
+    };
+    let tag = node_base_tag(&app.node.spec).unwrap_or_else(|| "node:lts-bookworm-slim".into());
+    b.step("base", format!("resolve {tag}"), Action::ResolveBase { image: tag }, &[]);
+    b.step("copy-base", "copy base layers", Action::CopyBase, &["base"]);
+    b.step(
+        "layer-bun",
+        "layer bun binary",
+        Action::Layer { dest: "usr/local/bin".into(), from: LayerFrom::Tool { tool: "bun".into(), files: vec![("bin/bun".into(), "bun".into())] } },
+        &["bun"],
+    );
+    b.step("layer-app", "layer app + dependencies", Action::Layer { dest: "app".into(), from: LayerFrom::WorkDir { path: ".".into(), exclude: vec![] } }, &[last]);
+    b.step("push", "push image", Action::Push, &["base", "copy-base", "layer-bun", "layer-app"]);
+    b.plan.image.layers = vec!["layer-bun".into(), "layer-app".into()];
+    b.plan.image.cmd = Some(command_argv(&start));
+    b.plan.image.env = vec![
+        ("NODE_ENV".into(), "production".into()),
+        ("PATH".into(), NODE_PATH_ENV.into()),
+        ("npm_config_user_agent".into(), format!("bun/{spec} npm/? node/v{} linux x64", app.node.spec)),
+    ];
+    b.plan.image.workdir = Some("/app".into());
+    b.plan.image.entrypoint = Some(vec![]);
+    b.plan.warnings.push("bun.lockb is installed by the bun CLI with network access".into());
     Ok(b.finish())
 }
 
