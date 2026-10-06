@@ -84,6 +84,10 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     let has_composer = dir.join("composer.json").exists();
     if has_composer {
         b.step("composer", "composer", Action::Toolchain { tool: "composer".into(), spec: String::new(), parts: vec![] }, &[]);
+        commands.push(
+            "command -v unzip >/dev/null || (apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git zip unzip ca-certificates >/dev/null)"
+                .into(),
+        );
         commands.push("composer install --optimize-autoloader --no-scripts --no-interaction --no-dev".into());
     }
     if commands.is_empty() {

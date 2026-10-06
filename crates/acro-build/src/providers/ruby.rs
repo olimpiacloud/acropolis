@@ -118,6 +118,9 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
         bail!("no start command found: add a Procfile web entry, a config.ru or set ACRO_START_CMD");
     };
     let rails = is_rails(dir);
+    if has_gem(dir, "execjs") && !dir.join("package.json").exists() {
+        b.fact("extra-node", "lts");
+    }
     if rails {
         b.fact("framework", "rails");
     }

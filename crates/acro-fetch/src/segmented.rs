@@ -75,14 +75,18 @@ async fn fetch_range(client: &Client, url: &str, headers: &HeaderMap, start: u64
     Ok(buf.freeze())
 }
 
-pub async fn download<S: AsyncSink>(
+pub async fn download<S: AsyncSink>(client: &Client, url: &str, headers: &HeaderMap, size: u64, policy: Policy, sink: S) -> Result<u64> {
+    download_sources(client, &[(url.to_string(), headers.clone())], size, policy, sink).await
+}
+
+pub async fn download_sources<S: AsyncSink>(
     client: &Client,
-    url: &str,
-    headers: &HeaderMap,
+    sources: &[(String, HeaderMap)],
     size: u64,
     policy: Policy,
     mut sink: S,
 ) -> Result<u64> {
+    let url = sources.first().map(|s| s.0.as_str()).ok_or_else(|| anyhow!("no download source"))?;
     let n = size.div_ceil(policy.segment) as usize;
     let seg = |i: usize| -> (u64, u64) {
         let a = i as u64 * policy.segment;
@@ -99,8 +103,8 @@ pub async fn download<S: AsyncSink>(
     let launch = |i: usize, running: &mut FuturesUnordered<_>, in_flight: &mut HashMap<usize, (usize, Instant)>, attempts: &mut HashMap<usize, u32>| {
         let (a, b) = seg(i);
         let c = client.clone();
-        let u = url.to_string();
-        let h = headers.clone();
+        let attempt = attempts.get(&i).copied().unwrap_or(0) as usize;
+        let (u, h) = sources[attempt % sources.len()].clone();
         let stall = policy.stall;
         let started = Instant::now();
         let e = in_flight.entry(i).or_insert((0, started));

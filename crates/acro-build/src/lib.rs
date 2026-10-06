@@ -57,7 +57,8 @@ pub fn plan_app(dir: &Path, env: &Env) -> Result<Plan> {
         && providers::ruby::is_ruby(dir)
     {
         let mut plan = providers::ruby::plan(dir, env, &name)?;
-        apply_deploy_apt(&mut plan, env)?;
+        apply_mise_extras(&mut plan, dir, env);
+        apply_runtime_packages(&mut plan, env)?;
         return Ok(plan);
     }
     if (forced.as_deref() == Some("python")
@@ -97,7 +98,7 @@ fn layers_tool(plan: &Plan, tool: &str) -> bool {
 }
 
 fn apply_mise_extras(plan: &mut Plan, dir: &Path, env: &Env) {
-    if !matches!(plan.provider.as_str(), "node" | "python") {
+    if !matches!(plan.provider.as_str(), "node" | "python" | "ruby") {
         return;
     }
     let base = match plan.step("base").map(|s| &s.action) {
@@ -113,6 +114,7 @@ fn apply_mise_extras(plan: &mut Plan, dir: &Path, env: &Env) {
     for tool in ["node", "bun", "go", "python"] {
         let spec = detect::tool_version(dir, tool)
             .map(|v| v.spec)
+            .or_else(|| plan.facts.get(&format!("extra-{tool}")).cloned())
             .or_else(|| env.vars.get(&format!("ACRO_{}_VERSION", tool.to_ascii_uppercase())).filter(|_| plan.provider != tool).cloned());
         let Some(spec) = spec else { continue };
         let provided = match tool {
