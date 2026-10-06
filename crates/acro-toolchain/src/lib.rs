@@ -1,3 +1,4 @@
+pub mod bun;
 pub mod go;
 pub mod node;
 pub use acro_semver as semver_range;

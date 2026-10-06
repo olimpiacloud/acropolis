@@ -67,9 +67,22 @@ fn start_command(app: &NodeApp, env: &Env) -> Option<String> {
     {
         return Some(format!("node {m}"));
     }
+    let bun = app.pm == PackageManager::Bun;
+    if bun {
+        for f in ["index.ts", "index.tsx", "index.js", "server.ts", "src/index.ts", "app.ts"] {
+            if app.dir.join(f).exists() {
+                return Some(format!("bun {f}"));
+            }
+        }
+    }
     for f in ["index.js", "server.js", "app.js", "main.js", "index.mjs", "server.mjs"] {
         if app.dir.join(f).exists() {
             return Some(format!("node {f}"));
+        }
+    }
+    for f in ["index.ts", "server.ts", "src/index.ts"] {
+        if app.dir.join(f).exists() {
+            return Some(format!("bun {f}"));
         }
     }
     None
@@ -182,25 +195,33 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
     } else {
         crate::run::install_plan_for(manager, &app.dir, &lockfile, &prod_opts)?
     };
+    let policy = acro_npm::scripts::policy_for(manager, &app.package_json, env.config("INSTALL_SCRIPTS").map(|(v, _)| v).as_deref());
+    let unknown_scripts = matches!(manager, "yarn" | "bun") || lockfile.is_empty();
     let prod_scripts: Vec<String> = prod_plan
-    .with_install_scripts()
-    .iter()
-    .map(|p| p.name.clone())
-    .collect();
-    if !prod_scripts.is_empty() {
+        .with_install_scripts()
+        .iter()
+        .filter(|p| policy.allows(&p.name))
+        .map(|p| p.name.clone())
+        .collect();
+    let prod_needs_scripts = !prod_scripts.is_empty() && policy != acro_npm::scripts::Policy::None;
+    if prod_needs_scripts {
+        b.fact("install-scripts", prod_scripts.join(", "));
         b.plan.warnings.push(format!(
-            "packages with install scripts are not executed yet: {}",
-            prod_scripts.join(", ")
+            "install scripts of {} run with network access (policy: {}); set ACRO_INSTALL_SCRIPTS=none to disable",
+            prod_scripts.join(", "),
+            policy.describe()
         ));
     }
-    let base_image = node_base_tag(&app.node.spec);
+    let glibc_new = acro_cargo_glibc_newer_than_bookworm();
+    let variant = if prod_needs_scripts && glibc_new { "trixie-slim" } else { "bookworm-slim" };
+    let base_image = node_base_tag(&app.node.spec).map(|t| t.replace("bookworm-slim", variant));
     let node_base = |b: &mut PlanBuilder| -> Result<()> {
         match base_image.clone() {
             Some(img) => b.step("base", format!("resolve {img}"), Action::ResolveBase { image: img }, &[]),
             None => b.step(
                 "base",
                 format!("resolve node {} base", app.node.spec),
-                Action::ResolveNodeBase { spec: app.node.spec.clone(), variant: "bookworm-slim".into() },
+                Action::ResolveNodeBase { spec: app.node.spec.clone(), variant: variant.into() },
                 &[],
             ),
         };
@@ -210,19 +231,23 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
     let mut image_env = vec![("NODE_ENV".to_string(), "production".to_string())];
     match rt {
         Runtime::ServerNoBuild { start } => {
-            node_base(&mut b)?;
+            let has_deps = ["dependencies", "optionalDependencies"]
+                .iter()
+                .any(|k| app.package_json.get(k).and_then(|d| d.as_object()).map(|m| !m.is_empty()).unwrap_or(false));
+            if uses_bun(&start) && !has_deps && !start.contains("node ") {
+                b.step("base", "resolve debian:bookworm-slim", Action::ResolveBase { image: "debian:bookworm-slim".into() }, &[]);
+                b.step("copy-base", "copy base layers", Action::CopyBase, &["base"]);
+                b.fact("runtime", "bun (no node)");
+            } else {
+                node_base(&mut b)?;
+            }
             b.step(
                 "npm-fetch",
                 "fetch production packages",
                 Action::NpmFetch { manager: manager.into(), lockfile: lockfile.clone(), lockfile_sha256: lock_sha, dev: false },
                 &[],
             );
-            b.step(
-                "layer-deps",
-                "layer node_modules (production)",
-                Action::Layer { dest: "app".into(), from: LayerFrom::NodeModules { dev: false } },
-                &["npm-fetch"],
-            );
+            prod_deps_layer(&mut b, app, manager, &policy, prod_needs_scripts, "npm-fetch", false);
             b.step(
                 "layer-app",
                 "layer app source",
@@ -232,13 +257,22 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
                 },
                 &[],
             );
-            b.step("push", "push image", Action::Push, &["base", "copy-base", "layer-deps", "layer-app"]);
+            let mut push_deps = vec!["base", "copy-base", "layer-deps", "layer-app"];
+            let mut layers = vec!["layer-deps".to_string(), "layer-app".to_string()];
+            if uses_bun(&start) {
+                add_bun_layer(&mut b, app, env);
+                push_deps.push("layer-bun");
+                layers.insert(0, "layer-bun".into());
+            }
+            b.step("push", "push image", Action::Push, &push_deps);
             image_env.push(("PATH".into(), NODE_PATH_ENV.into()));
-            b.plan.image.layers = vec!["layer-deps".into(), "layer-app".into()];
+            b.plan.image.layers = layers;
             b.plan.image.cmd = Some(command_argv(&start));
             b.plan.image.entrypoint = Some(vec![]);
             b.plan.image.workdir = Some("/app".into());
-            b.fact("runtime", "node server (no build step)");
+            if !b.plan.facts.contains_key("runtime") {
+                b.fact("runtime", "node server (no build step)");
+            }
         }
         rt => {
             let build_cmd = env
@@ -247,8 +281,19 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
                 .or_else(|| script_chain(app, "build"))
                 .unwrap_or_default();
             let mut parts = vec![];
-            if uses_npm_cli(&build_cmd) {
+            let dev_opts = acro_npm::InstallOptions { include_dev: true, include_optional: true, platform: Default::default() };
+            let dev_scripts = unknown_scripts
+                || (!lockfile.is_empty()
+                    && crate::run::install_plan_for(manager, &app.dir, &lockfile, &dev_opts)?
+                        .with_install_scripts()
+                        .iter()
+                        .any(|p| policy.allows(&p.name)));
+            let dev_scripts = dev_scripts && policy != acro_npm::scripts::Policy::None;
+            if uses_npm_cli(&build_cmd) || dev_scripts || prod_needs_scripts {
                 parts.push("npm".to_string());
+            }
+            if dev_scripts || prod_needs_scripts {
+                parts.push("headers".to_string());
             }
             b.step(
                 "node",
@@ -263,7 +308,18 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
                 &[],
             );
             b.step("source", "copy source", Action::CopySource { exclude: vec!["**/node_modules".into()] }, &[]);
-            b.step("install", "install node_modules", Action::NpmInstall { dev: true }, &["npm-fetch", "source"]);
+            let install_deps: &[&str] = if dev_scripts { &["npm-fetch", "source", "node"] } else { &["npm-fetch", "source"] };
+            b.step(
+                "install",
+                "install node_modules",
+                Action::NpmInstall {
+                    dev: true,
+                    target: "src".into(),
+                    scripts: if dev_scripts { policy.describe() } else { String::new() },
+                    manager: manager.into(),
+                },
+                install_deps,
+            );
             let mut run_env = BTreeMap::new();
             run_env.insert("NODE_ENV".to_string(), "production".to_string());
             run_env.insert("NEXT_TELEMETRY_DISABLED".to_string(), "1".to_string());
@@ -393,12 +449,7 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
                         Action::NpmFetch { manager: manager.into(), lockfile: lockfile.clone(), lockfile_sha256: String::new(), dev: false },
                         &["npm-fetch"],
                     );
-                    b.step(
-                        "layer-deps",
-                        "layer node_modules (production)",
-                        Action::Layer { dest: "app".into(), from: LayerFrom::NodeModules { dev: false } },
-                        &["npm-fetch-prod"],
-                    );
+                    prod_deps_layer(&mut b, app, manager, &policy, prod_needs_scripts, "npm-fetch-prod", true);
                     b.step(
                         "layer-app",
                         "layer app + build output",
@@ -425,6 +476,99 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
     }
     b.plan.image.env = image_env;
     Ok(b.finish())
+}
+
+fn uses_bun(cmd: &str) -> bool {
+    cmd.split(|c: char| c.is_whitespace() || c == ';' || c == '&' || c == '|').any(|w| w == "bun" || w == "bunx")
+}
+
+fn bun_spec(app: &NodeApp, env: &Env) -> String {
+    if let Some((v, _)) = env.config("BUN_VERSION") {
+        return v;
+    }
+    if app.pm == PackageManager::Bun
+        && let Some(v) = &app.pm_version
+    {
+        return v.clone();
+    }
+    if let Some(v) = app.package_json.get("engines").and_then(|e| e.get("bun")).and_then(|v| v.as_str()) {
+        return v.to_string();
+    }
+    if let Some(v) = crate::detect::tool_version(&app.dir, "bun") {
+        return v.spec;
+    }
+    "latest".into()
+}
+
+fn add_bun_layer(b: &mut PlanBuilder, app: &NodeApp, env: &Env) {
+    let spec = bun_spec(app, env);
+    if b.plan.step("bun").is_none() {
+        b.step("bun", format!("bun {spec}"), Action::Toolchain { tool: "bun".into(), spec: spec.clone(), parts: vec![] }, &[]);
+    }
+    b.step(
+        "layer-bun",
+        "layer bun binary",
+        Action::Layer {
+            dest: "usr/local/bin".into(),
+            from: LayerFrom::Tool { tool: "bun".into(), files: vec![("bin/bun".into(), "bun".into())] },
+        },
+        &["bun"],
+    );
+}
+
+fn acro_cargo_glibc_newer_than_bookworm() -> bool {
+    matches!(host_glibc(), Some(v) if v > (2, 36))
+}
+
+pub fn host_glibc() -> Option<(u32, u32)> {
+    let out = std::process::Command::new("ldd").arg("--version").output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let ver = text.lines().next()?.split_whitespace().last()?.to_string();
+    let mut it = ver.split('.');
+    Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
+}
+
+fn prod_deps_layer(
+    b: &mut PlanBuilder,
+    app: &NodeApp,
+    manager: &str,
+    policy: &acro_npm::scripts::Policy,
+    scripts: bool,
+    fetch_step: &str,
+    has_node: bool,
+) {
+    if !scripts {
+        b.step(
+            "layer-deps",
+            "layer node_modules (production)",
+            Action::Layer { dest: "app".into(), from: LayerFrom::NodeModules { dev: false } },
+            &[fetch_step],
+        );
+        return;
+    }
+    if !has_node {
+        b.step(
+            "node",
+            format!("node {}", app.node.spec),
+            Action::Toolchain { tool: "node".into(), spec: app.node.spec.clone(), parts: vec!["npm".into(), "headers".into()] },
+            &[],
+        );
+    }
+    b.step(
+        "install-prod",
+        "install production node_modules + scripts",
+        Action::NpmInstall { dev: false, target: "prod".into(), scripts: policy.describe(), manager: manager.into() },
+        &[fetch_step, "node"],
+    );
+    b.step(
+        "layer-deps",
+        "layer node_modules (production)",
+        Action::Layer {
+            dest: "app/node_modules".into(),
+            from: LayerFrom::WorkDir { path: "@work/prod/node_modules".into(), exclude: vec![] },
+        },
+        &["install-prod"],
+    );
 }
 
 pub fn spa_caddyfile(root: &str, fallback: bool) -> String {

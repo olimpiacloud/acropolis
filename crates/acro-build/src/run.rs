@@ -265,6 +265,17 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                     acro_events::log(&step.id, format!("go {version}"));
                     Ok(Out::Tool(inst))
                 }
+                "bun" => {
+                    let release = acro_toolchain::bun::resolve(fetcher, spec).await?;
+                    let dest = ctx.opts.home.join("toolchains").join(format!("bun-{}", release.version));
+                    let marker = dest.join(".acro-complete");
+                    if !marker.exists() {
+                        acro_toolchain::bun::install(fetcher, &release, &dest).await?;
+                        std::fs::write(&marker, "")?;
+                    }
+                    acro_events::log(&step.id, format!("bun {}", release.version));
+                    Ok(Out::Tool(Installed { name: "bun".into(), version: release.version, bin_dir: dest.join("bin"), root: dest, archive: None }))
+                }
                 "rust" => {
                     let release = acro_cargo::resolve(fetcher, spec, &[]).await?;
                     let dest = ctx.opts.home.join("toolchains").join(format!("rust-{}", release.version));
@@ -309,16 +320,26 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             acro_events::log(&step.id, format!("{:.1} MB", n as f64 / 1e6));
             Ok(Out::None)
         }
-        Action::NpmInstall { .. } => {
+        Action::NpmInstall { target, scripts, .. } => {
             let state = ctx
                 .dep_outputs(step)
                 .into_iter()
                 .find_map(|o| if let Out::Npm(s) = o { Some(s) } else { None })
                 .ok_or_else(|| anyhow!("install without fetched packages"))?;
-            let root = ctx.src.clone();
-            let n = tokio::task::spawn_blocking(move || acro_npm::install::materialize(&state.plan, &state.tarballs, &root))
-                .await??;
+            let root = if target == "src" { ctx.src.clone() } else { ctx.work.join(target) };
+            std::fs::create_dir_all(&root)?;
+            if target != "src" {
+                let _ = std::fs::copy(ctx.opts.app_dir.join("package.json"), root.join("package.json"));
+            }
+            let r2 = root.clone();
+            let s2 = state.clone();
+            let n = tokio::task::spawn_blocking(move || acro_npm::install::materialize(&s2.plan, &s2.tarballs, &r2)).await??;
             acro_events::log(&step.id, format!("{:.1} MB written", n as f64 / 1e6));
+            if !scripts.is_empty() && scripts != "none" {
+                let policy = acro_npm::scripts::Policy::parse(scripts);
+                let jobs = acro_npm::scripts::lifecycle_jobs(&state.plan, &root, &policy);
+                run_lifecycle(ctx, step, &root, &jobs).await?;
+            }
             Ok(Out::None)
         }
         Action::GoModules { .. } => {
@@ -483,6 +504,61 @@ pub fn install_plan_for(manager: &str, app_dir: &Path, lockfile: &str, opts: &In
     }
 }
 
+async fn run_lifecycle(ctx: &Arc<Ctx>, step: &Step, root: &Path, jobs: &[acro_npm::scripts::ScriptJob]) -> Result<()> {
+    if jobs.is_empty() {
+        return Ok(());
+    }
+    let tools = ctx.tools();
+    let node = tools.iter().find(|t| t.name == "node").ok_or_else(|| anyhow!("install scripts need the node toolchain"))?;
+    let npm_dir = node.root.join("lib/node_modules/npm");
+    let home = ctx.work.join("home");
+    std::fs::create_dir_all(&home)?;
+    for job in jobs {
+        let pkg_dir = root.join(&job.path);
+        let version = std::fs::read(pkg_dir.join("package.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .and_then(|v| v.get("version").and_then(|v| v.as_str()).map(|s| s.to_string()))
+            .unwrap_or_default();
+        for (stage, command) in &job.commands {
+            let mut path = vec![
+                pkg_dir.join("node_modules/.bin").to_string_lossy().into_owned(),
+                root.join("node_modules/.bin").to_string_lossy().into_owned(),
+                npm_dir.join("bin/node-gyp-bin").to_string_lossy().into_owned(),
+            ];
+            for t in &tools {
+                path.push(t.bin_dir.to_string_lossy().into_owned());
+            }
+            path.push("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into());
+            let mut env = BTreeMap::new();
+            env.insert("PATH".to_string(), path.join(":"));
+            env.insert("HOME".to_string(), home.to_string_lossy().into_owned());
+            env.insert("npm_lifecycle_event".to_string(), stage.clone());
+            env.insert("npm_lifecycle_script".to_string(), command.clone());
+            env.insert("npm_package_name".to_string(), job.name.clone());
+            env.insert("npm_package_version".to_string(), version.clone());
+            env.insert("npm_config_nodedir".to_string(), node.root.to_string_lossy().into_owned());
+            env.insert("npm_config_node_gyp".to_string(), npm_dir.join("node_modules/node-gyp/bin/node-gyp.js").to_string_lossy().into_owned());
+            env.insert("npm_config_user_agent".to_string(), format!("npm/10 node/v{} linux x64", node.version));
+            env.insert("npm_node_execpath".to_string(), node.bin_dir.join("node").to_string_lossy().into_owned());
+            env.insert("INIT_CWD".to_string(), root.to_string_lossy().into_owned());
+            env.insert("NODE_ENV".to_string(), "production".to_string());
+            acro_events::log(&step.id, format!("{} {stage}: {command}", job.name));
+            ctx.exec
+                .run(Cmd {
+                    step: step.id.clone(),
+                    argv: vec!["/bin/sh".into(), "-c".into(), command.clone()],
+                    cwd: pkg_dir.clone(),
+                    env,
+                    network: true,
+                })
+                .await
+                .with_context(|| format!("{stage} script of {}", job.name))?;
+        }
+    }
+    Ok(())
+}
+
 async fn resolve_base(ctx: &Arc<Ctx>, step: &Step, image: &str) -> Result<Out> {
     let r = Reference::parse(image)?;
     let (reference, manifest, digest) = ctx.registry.resolve_manifest(&r, &ctx.opts.platform).await?;
@@ -513,8 +589,26 @@ async fn build_layer(ctx: &Arc<Ctx>, step: &Step, dest: &str, from: &LayerFrom) 
             })
             .await?
         }
+        LayerFrom::AppSubdir { path, exclude } => {
+            let root = ctx.opts.app_dir.join(path);
+            if !root.exists() {
+                bail!("{} does not exist", root.display());
+            }
+            let ex = exclude.clone();
+            tokio::task::spawn_blocking(move || {
+                let ig = Ignore::new(&ex);
+                source::dir_layer(&store, &root, &ig, &dest, &comment, opts)
+            })
+            .await?
+        }
         LayerFrom::WorkDir { path, exclude } => {
-            let root = if path == "." { ctx.src.clone() } else { ctx.src.join(path) };
+            let root = if path == "." {
+                ctx.src.clone()
+            } else if let Some(rest) = path.strip_prefix("@work/") {
+                ctx.work.join(rest)
+            } else {
+                ctx.src.join(path)
+            };
             if !root.exists() {
                 bail!("build output {} does not exist", root.display());
             }
@@ -568,6 +662,33 @@ async fn build_layer(ctx: &Arc<Ctx>, step: &Step, dest: &str, from: &LayerFrom) 
                 head.file_reader(&dest, mode, size, &mut f)?;
                 let frags = vec![std::mem::take(head.get_mut())];
                 layer::from_fragments(&store, &comment, frags, opts)
+            })
+            .await?
+        }
+        LayerFrom::Tool { tool, files } => {
+            let t = ctx.tools().into_iter().find(|t| &t.name == tool).ok_or_else(|| anyhow!("toolchain {tool} not installed"))?;
+            let files = files.clone();
+            tokio::task::spawn_blocking(move || {
+                let mut tw = TarWriter::new(Vec::new());
+                let mut dirs = std::collections::BTreeSet::new();
+                for (_, to) in &files {
+                    let full = if dest.is_empty() { to.clone() } else { format!("{dest}/{to}") };
+                    let parent = Path::new(&full).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+                    for d in source::ancestors(&parent) {
+                        dirs.insert(d);
+                    }
+                }
+                for d in &dirs {
+                    tw.dir(d, 0o755)?;
+                }
+                for (from, to) in &files {
+                    let full = if dest.is_empty() { to.clone() } else { format!("{dest}/{to}") };
+                    let src = t.root.join(from);
+                    let mut f = std::fs::File::open(&src).with_context(|| format!("opening {}", src.display()))?;
+                    let size = f.metadata()?.len();
+                    tw.file_reader(&full, 0o755, size, &mut f)?;
+                }
+                layer::from_fragments(&store, &comment, vec![std::mem::take(tw.get_mut())], opts)
             })
             .await?
         }

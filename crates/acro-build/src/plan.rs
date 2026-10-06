@@ -16,7 +16,15 @@ pub enum Action {
         lockfile_sha256: String,
         dev: bool,
     },
-    NpmInstall { dev: bool },
+    NpmInstall {
+        dev: bool,
+        #[serde(default = "default_target")]
+        target: String,
+        #[serde(default)]
+        scripts: String,
+        #[serde(default)]
+        manager: String,
+    },
     GoModules { gosum_sha256: String },
     CargoVendor { lockfile_sha256: String },
     CopySource { exclude: Vec<String> },
@@ -29,11 +37,17 @@ pub enum Action {
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum LayerFrom {
     AppSource { exclude: Vec<String> },
+    AppSubdir { path: String, exclude: Vec<String> },
     NodeModules { dev: bool },
     WorkDir { path: String, exclude: Vec<String> },
     WorkFile { path: String, mode: u32 },
     Paths { items: Vec<(String, String)> },
+    Tool { tool: String, files: Vec<(String, String)> },
     Inline { files: BTreeMap<String, String> },
+}
+
+fn default_target() -> String {
+    "src".to_string()
 }
 
 fn default_manager() -> String {
@@ -47,6 +61,7 @@ impl Action {
                 "fetch"
             }
             Action::Run { network: true, .. } => "build+net",
+            Action::NpmInstall { scripts, .. } if !scripts.is_empty() && scripts != "none" => "local+net",
             Action::Run { .. } => "build",
             Action::CopyBase | Action::Push => "push",
             _ => "local",
