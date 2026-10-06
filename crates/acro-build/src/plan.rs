@@ -29,6 +29,18 @@ pub enum Action {
     CargoVendor { lockfile_sha256: String },
     CopySource { exclude: Vec<String> },
     Run { argv: Vec<String>, env: BTreeMap<String, String>, network: bool, cwd: String },
+    ImageRun {
+        image: String,
+        commands: Vec<String>,
+        env: BTreeMap<String, String>,
+        network: bool,
+        #[serde(default)]
+        mount_app: bool,
+        #[serde(default)]
+        after: Option<String>,
+        #[serde(default)]
+        tools: Vec<String>,
+    },
     Layer { dest: String, from: LayerFrom },
     Push,
 }
@@ -43,6 +55,7 @@ pub enum LayerFrom {
     WorkFile { path: String, mode: u32 },
     Paths { items: Vec<(String, String)> },
     Tool { tool: String, files: Vec<(String, String)> },
+    Upper { step: String, include: Vec<String>, exclude: Vec<String> },
     Inline { files: BTreeMap<String, String> },
 }
 
@@ -61,6 +74,8 @@ impl Action {
                 "fetch"
             }
             Action::Run { network: true, .. } => "build+net",
+            Action::ImageRun { network: true, .. } => "image+net",
+            Action::ImageRun { .. } => "image",
             Action::NpmInstall { scripts, .. } if !scripts.is_empty() && scripts != "none" => "local+net",
             Action::Run { .. } => "build",
             Action::CopyBase | Action::Push => "push",

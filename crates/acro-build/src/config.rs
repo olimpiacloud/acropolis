@@ -143,7 +143,7 @@ pub fn apply(cfg: &Config, env: &mut Env) -> Result<()> {
             env.vars.insert("ACRO_START_CMD".into(), s.clone());
         }
         if !d.apt_packages.is_empty() {
-            unsupported.push(format!("deploy.aptPackages ({})", d.apt_packages.join(", ")));
+            env.vars.insert("ACRO_DEPLOY_APT_PACKAGES".into(), d.apt_packages.join(" "));
         }
         if d.inputs.iter().any(|i| i.get("image").is_some()) {
             unsupported.push("deploy.inputs from images".into());

@@ -187,3 +187,74 @@ pub fn copy_tree(src: &Path, dst: &Path, ignore: &Ignore) -> Result<u64> {
     acro_events::add_written(bytes);
     Ok(bytes)
 }
+
+pub fn upper_fragments(upper: &Path, prefix: &str, include: &[String], exclude: &[String]) -> Result<Vec<Vec<u8>>> {
+    use std::os::unix::fs::FileTypeExt;
+    let mut tw = TarWriter::new(Vec::new());
+    for d in ancestors(prefix) {
+        tw.dir(&d, 0o755)?;
+    }
+    let skip_always = ["proc", "dev", "sys", "etc/resolv.conf", "etc/hostname", "etc/hosts", "app", "tmp"];
+    fn opaque(p: &Path) -> bool {
+        use std::os::unix::ffi::OsStrExt;
+        let c = std::ffi::CString::new(p.as_os_str().as_bytes()).unwrap_or_default();
+        let mut buf = [0u8; 4];
+        let n = unsafe {
+            libc::lgetxattr(c.as_ptr(), c"trusted.overlay.opaque".as_ptr(), buf.as_mut_ptr() as *mut libc::c_void, buf.len())
+        };
+        n > 0 && buf[0] == b'y'
+    }
+    fn walk_upper(
+        root: &Path,
+        dir: &Path,
+        rel: &str,
+        tw: &mut TarWriter<Vec<u8>>,
+        prefix: &str,
+        include: &[String],
+        exclude: &[String],
+        skip: &[&str],
+    ) -> Result<()> {
+        let mut names: Vec<_> = std::fs::read_dir(dir)?.filter_map(|e| e.ok()).map(|e| e.file_name()).collect();
+        names.sort();
+        for n in names {
+            let name = n.to_string_lossy().into_owned();
+            let r = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+            if skip.contains(&r.as_str()) || exclude.iter().any(|e| r == *e || r.starts_with(&format!("{e}/"))) {
+                continue;
+            }
+            let inside = include.is_empty()
+                || include.iter().any(|i| r == *i || r.starts_with(&format!("{i}/")) || i.starts_with(&format!("{r}/")));
+            if !inside {
+                continue;
+            }
+            let full = dir.join(&n);
+            let meta = std::fs::symlink_metadata(&full)?;
+            let ft = meta.file_type();
+            let dest = if prefix.is_empty() { r.clone() } else { format!("{prefix}/{r}") };
+            tw.set_owner(meta.uid(), meta.gid());
+            if ft.is_char_device() && meta.rdev() == 0 {
+                let parent = Path::new(&dest).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+                let wh = if parent.is_empty() { format!(".wh.{name}") } else { format!("{parent}/.wh.{name}") };
+                tw.set_owner(0, 0);
+                tw.file_bytes(&wh, 0o644, b"")?;
+            } else if ft.is_dir() {
+                tw.dir(&dest, meta.permissions().mode() & 0o7777)?;
+                if opaque(&full) {
+                    tw.set_owner(0, 0);
+                    tw.file_bytes(&format!("{dest}/.wh..wh..opq"), 0o644, b"")?;
+                }
+                walk_upper(root, &full, &r, tw, prefix, include, exclude, skip)?;
+            } else if ft.is_symlink() {
+                let t = std::fs::read_link(&full)?.to_string_lossy().into_owned();
+                tw.symlink(&dest, &t)?;
+            } else if ft.is_file() {
+                let mut f = std::fs::File::open(&full)?;
+                tw.file_reader(&dest, meta.permissions().mode() & 0o7777, meta.size(), &mut f)?;
+            }
+        }
+        Ok(())
+    }
+    walk_upper(upper, upper, "", &mut tw, prefix, include, exclude, &skip_always)?;
+    tw.set_owner(0, 0);
+    Ok(vec![take(tw)])
+}

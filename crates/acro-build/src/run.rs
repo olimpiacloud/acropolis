@@ -56,6 +56,7 @@ enum Out {
     Npm(Arc<NpmState>),
     Layer(Layer),
     Pushed(String),
+    Upper(PathBuf),
 }
 
 struct Ctx {
@@ -276,6 +277,17 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                     acro_events::log(&step.id, format!("bun {}", release.version));
                     Ok(Out::Tool(Installed { name: "bun".into(), version: release.version, bin_dir: dest.join("bin"), root: dest, archive: None }))
                 }
+                "uv" => {
+                    let release = acro_toolchain::uv::resolve(fetcher, spec).await?;
+                    let dest = ctx.opts.home.join("toolchains").join(format!("uv-{}", release.version));
+                    let marker = dest.join(".acro-complete");
+                    if !marker.exists() {
+                        acro_toolchain::uv::install(fetcher, &release, &dest).await?;
+                        std::fs::write(&marker, "")?;
+                    }
+                    acro_events::log(&step.id, format!("uv {}", release.version));
+                    Ok(Out::Tool(Installed { name: "uv".into(), version: release.version, bin_dir: dest.join("bin"), root: dest, archive: None }))
+                }
                 "rust" => {
                     let release = acro_cargo::resolve(fetcher, spec, &[]).await?;
                     let dest = ctx.opts.home.join("toolchains").join(format!("rust-{}", release.version));
@@ -430,6 +442,55 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                 .await?;
             Ok(Out::None)
         }
+        Action::ImageRun { image, commands, env, network, mount_app, after, tools } => {
+            let (mut lower, image_env) = image_rootfs(ctx, image).await?;
+            if let Some(prev) = after {
+                match ctx.get(prev) {
+                    Out::Upper(p) => lower.push(p),
+                    _ => bail!("step {prev} has no filesystem output"),
+                }
+            }
+            let base = ctx.work.join(format!("run-{}", step.id));
+            let upper = base.join("upper");
+            let mut full_env: BTreeMap<String, String> = image_env;
+            full_env.entry("PATH".into()).or_insert_with(|| "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into());
+            full_env.insert("HOME".into(), "/root".into());
+            full_env.insert("SOURCE_DATE_EPOCH".into(), "0".into());
+            for (k, v) in env {
+                full_env.insert(k.clone(), ctx.subst(v));
+            }
+            let mut binds = Vec::new();
+            let installed = ctx.tools();
+            let mut extra_path = Vec::new();
+            for t in tools {
+                let inst = installed.iter().find(|i| &i.name == t).ok_or_else(|| anyhow!("toolchain {t} not installed"))?;
+                let guest = format!("/opt/acro/{t}/bin");
+                binds.push(acro_exec::rootfs::Bind { host: inst.bin_dir.clone(), guest: guest.clone(), readonly: true });
+                extra_path.push(guest);
+            }
+            if !extra_path.is_empty() {
+                let p = full_env.get("PATH").cloned().unwrap_or_default();
+                full_env.insert("PATH".into(), format!("{}:{p}", extra_path.join(":")));
+            }
+            if *mount_app {
+                std::fs::create_dir_all(&ctx.src)?;
+                binds.push(acro_exec::rootfs::Bind { host: ctx.src.clone(), guest: "/app".into(), readonly: false });
+            }
+            let spec = acro_exec::rootfs::RootfsRun {
+                step: step.id.clone(),
+                lower,
+                upper: upper.clone(),
+                work: base.join("work"),
+                merged: base.join("merged"),
+                binds,
+                argv: vec!["/bin/sh".into(), "-c".into(), commands.join(" && ")],
+                env: full_env,
+                cwd: if *mount_app { "/app".into() } else { "/".into() },
+                network: *network,
+            };
+            acro_exec::rootfs::run(spec).await?;
+            Ok(Out::Upper(upper))
+        }
         Action::Layer { dest, from } => {
             let layer = build_layer(ctx, step, dest, from).await?;
             acro_events::log(
@@ -557,6 +618,53 @@ async fn run_lifecycle(ctx: &Arc<Ctx>, step: &Step, root: &Path, jobs: &[acro_np
         }
     }
     Ok(())
+}
+
+async fn image_rootfs(ctx: &Arc<Ctx>, image: &str) -> Result<(Vec<PathBuf>, BTreeMap<String, String>)> {
+    let r = Reference::parse(image)?;
+    let resolved = ctx.registry.resolve(&r, &ctx.opts.platform).await?;
+    let mut env = BTreeMap::new();
+    if let Some(list) = resolved.config.get("config").and_then(|c| c.get("Env")).and_then(|e| e.as_array()) {
+        for item in list {
+            if let Some((k, v)) = item.as_str().and_then(|s| s.split_once('=')) {
+                env.insert(k.to_string(), v.to_string());
+            }
+        }
+    }
+    let futs = resolved.manifest.layers.iter().map(|d| {
+        let ctx = ctx.clone();
+        let reference = resolved.reference.clone();
+        let d = d.clone();
+        async move {
+            let hex = d.digest.trim_start_matches("sha256:").to_string();
+            let dir = ctx.opts.home.join("rootfs").join(&hex);
+            let marker = ctx.opts.home.join("rootfs").join(format!("{hex}.complete"));
+            if marker.exists() {
+                return Ok::<PathBuf, anyhow::Error>(dir);
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+            let (url, headers) = ctx.registry.blob_location(&reference, &d.digest).await?;
+            let expected = acro_store::Integrity::parse_oci(&d.digest)?;
+            let mt = d.media_type.clone();
+            let dir2 = dir.clone();
+            ctx.fetcher
+                .blob_streaming(&d.digest, &url, &headers, Some(expected), move |r| {
+                    let reader: Box<dyn std::io::Read + '_> = if mt.contains("zstd") {
+                        Box::new(zstd::stream::read::Decoder::new(r)?)
+                    } else if mt.contains("gzip") {
+                        Box::new(flate2::read::MultiGzDecoder::new(r))
+                    } else {
+                        Box::new(std::io::Read::take(r, u64::MAX))
+                    };
+                    acro_oci::unpack::unpack_for_overlay(reader, &dir2)
+                })
+                .await?;
+            std::fs::write(&marker, "")?;
+            Ok(dir)
+        }
+    });
+    let dirs = futures::future::try_join_all(futs).await?;
+    Ok((dirs, env))
 }
 
 async fn resolve_base(ctx: &Arc<Ctx>, step: &Step, image: &str) -> Result<Out> {
@@ -689,6 +797,19 @@ async fn build_layer(ctx: &Arc<Ctx>, step: &Step, dest: &str, from: &LayerFrom) 
                     tw.file_reader(&full, 0o755, size, &mut f)?;
                 }
                 layer::from_fragments(&store, &comment, vec![std::mem::take(tw.get_mut())], opts)
+            })
+            .await?
+        }
+        LayerFrom::Upper { step: from_step, include, exclude } => {
+            let upper = match ctx.get(from_step) {
+                Out::Upper(p) => p,
+                _ => bail!("step {from_step} has no filesystem output"),
+            };
+            let include = include.clone();
+            let exclude = exclude.clone();
+            tokio::task::spawn_blocking(move || {
+                let frags = source::upper_fragments(&upper, &dest, &include, &exclude)?;
+                layer::from_fragments(&store, &comment, frags, opts)
             })
             .await?
         }

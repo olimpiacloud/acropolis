@@ -1,6 +1,7 @@
 pub mod bun;
 pub mod go;
 pub mod node;
+pub mod uv;
 pub use acro_semver as semver_range;
 
 use acro_oci::tar::{Kind, TarReader};

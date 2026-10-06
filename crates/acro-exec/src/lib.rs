@@ -1,3 +1,4 @@
+pub mod rootfs;
 use anyhow::{Result, bail};
 use futures::future::BoxFuture;
 use std::collections::{BTreeMap, VecDeque};

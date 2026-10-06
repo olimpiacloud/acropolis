@@ -70,7 +70,7 @@ pub fn shell_script(dir: &Path, env: &Env) -> Option<String> {
     ["start.sh"].iter().find(|f| dir.join(f).exists()).map(|s| s.to_string())
 }
 
-pub fn plan_shell(dir: &Path, name: &str, script: &str) -> Result<Plan> {
+pub fn plan_shell(dir: &Path, env: &Env, name: &str, script: &str) -> Result<Plan> {
     let mut b = PlanBuilder::new(name, "shell");
     b.fact("script", script.to_string());
     let first = std::fs::read_to_string(dir.join(script)).unwrap_or_default();
@@ -85,11 +85,41 @@ pub fn plan_shell(dir: &Path, name: &str, script: &str) -> Result<Plan> {
     let base = "debian:bookworm-slim";
     b.step("base", format!("resolve {base}"), Action::ResolveBase { image: base.into() }, &[]);
     b.step("copy-base", "copy base layers", Action::CopyBase, &["base"]);
-    b.step("layer-app", "layer app source", Action::Layer { dest: "app".into(), from: LayerFrom::AppSource { exclude: vec![] } }, &[]);
-    b.step("push", "push image", Action::Push, &["base", "copy-base", "layer-app"]);
-    b.plan.image.layers = vec!["layer-app".into()];
+    let commands: Vec<String> = ["INSTALL_CMD", "BUILD_CMD"].iter().filter_map(|k| env.config(k).map(|(v, _)| v)).collect();
+    let mut layers = Vec::new();
+    let mut push_deps = vec!["base", "copy-base"];
+    if commands.is_empty() {
+        b.step("layer-app", "layer app source", Action::Layer { dest: "app".into(), from: LayerFrom::AppSource { exclude: vec![] } }, &[]);
+    } else {
+        b.step("source", "copy source", Action::CopySource { exclude: vec![] }, &[]);
+        b.step(
+            "build",
+            format!("run {}", commands.join(" && ")),
+            Action::ImageRun { image: base.into(), commands, env: BTreeMap::new(), network: false, mount_app: true, after: None, tools: vec![] },
+            &["source"],
+        );
+        b.step(
+            "layer-system",
+            "layer system changes",
+            Action::Layer {
+                dest: "".into(),
+                from: LayerFrom::Upper { step: "build".into(), include: vec![], exclude: vec!["var/cache".into(), "var/log".into(), "root".into()] },
+            },
+            &["build"],
+        );
+        b.step("layer-app", "layer app", Action::Layer { dest: "app".into(), from: LayerFrom::WorkDir { path: ".".into(), exclude: vec![] } }, &["build"]);
+        layers.push("layer-system".to_string());
+        push_deps.push("layer-system");
+    }
+    layers.push("layer-app".into());
+    push_deps.push("layer-app");
+    b.step("push", "push image", Action::Push, &push_deps);
+    b.plan.image.layers = layers;
     b.plan.image.workdir = Some("/app".into());
-    b.plan.image.cmd = Some(vec![interp.into(), script.into()]);
+    b.plan.image.cmd = Some(match env.config("START_CMD") {
+        Some((c, _)) => vec!["/bin/sh".into(), "-c".into(), c],
+        None => vec![interp.into(), script.into()],
+    });
     b.plan.image.entrypoint = Some(vec![]);
     Ok(b.finish())
 }

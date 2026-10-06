@@ -13,6 +13,8 @@ pub enum Kind {
 pub struct TarWriter<W: Write> {
     out: W,
     entries: u64,
+    uid: u32,
+    gid: u32,
 }
 
 fn octal(field: &mut [u8], value: u64) -> bool {
@@ -59,11 +61,16 @@ fn pax_record(key: &str, value: &str) -> Vec<u8> {
 
 impl<W: Write> TarWriter<W> {
     pub fn new(out: W) -> Self {
-        TarWriter { out, entries: 0 }
+        TarWriter { out, entries: 0, uid: 0, gid: 0 }
     }
 
     pub fn entries(&self) -> u64 {
         self.entries
+    }
+
+    pub fn set_owner(&mut self, uid: u32, gid: u32) {
+        self.uid = uid;
+        self.gid = gid;
     }
 
     pub fn get_mut(&mut self) -> &mut W {
@@ -91,7 +98,7 @@ impl<W: Write> TarWriter<W> {
         }
         if !pax.is_empty() {
             let mut h = [0u8; BLOCK];
-            fill(&mut h, 'x', "././@PaxHeader", 0o644, pax.len() as u64, "", "", "");
+            fill(&mut h, 'x', "././@PaxHeader", 0o644, pax.len() as u64, "", "", (0, 0));
             self.out.write_all(&h)?;
             self.out.write_all(&pax)?;
             pad(&mut self.out, pax.len() as u64)?;
@@ -103,7 +110,7 @@ impl<W: Write> TarWriter<W> {
             Kind::Symlink => '2',
             Kind::Hardlink => '1',
         };
-        fill(&mut h, flag, name, mode, if size_fits { size } else { 0 }, linkname, prefix, "");
+        fill(&mut h, flag, name, mode, if size_fits { size } else { 0 }, linkname, prefix, (self.uid, self.gid));
         self.out.write_all(&h)?;
         self.entries += 1;
         Ok(())
@@ -166,11 +173,11 @@ fn pad<W: Write>(out: &mut W, size: u64) -> io::Result<()> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn fill(h: &mut [u8; BLOCK], flag: char, name: &str, mode: u32, size: u64, link: &str, prefix: &str, _u: &str) {
+fn fill(h: &mut [u8; BLOCK], flag: char, name: &str, mode: u32, size: u64, link: &str, prefix: &str, owner: (u32, u32)) {
     h[..name.len()].copy_from_slice(name.as_bytes());
     octal(&mut h[100..108], (mode & 0o7777) as u64);
-    octal(&mut h[108..116], 0);
-    octal(&mut h[116..124], 0);
+    octal(&mut h[108..116], owner.0 as u64);
+    octal(&mut h[116..124], owner.1 as u64);
     octal(&mut h[124..136], size);
     octal(&mut h[136..148], 0);
     h[156] = flag as u8;
@@ -190,6 +197,8 @@ pub struct Entry {
     pub mode: u32,
     pub size: u64,
     pub link: String,
+    pub uid: u32,
+    pub gid: u32,
 }
 
 pub struct TarReader<R: Read> {
@@ -269,6 +278,8 @@ impl<R: Read> TarReader<R> {
             });
             let link = pax_link.take().or(gnu_long_link.take()).unwrap_or_else(|| cstr(&h[157..257]));
             let mode = parse_num(&h[100..108]) as u32;
+            let uid = parse_num(&h[108..116]) as u32;
+            let gid = parse_num(&h[116..124]) as u32;
             let kind = match flag {
                 b'0' | 0 | b'7' => Kind::File,
                 b'5' => Kind::Dir,
@@ -285,7 +296,7 @@ impl<R: Read> TarReader<R> {
             let data_size = if kind == Kind::File { size } else { 0 };
             self.remaining = data_size;
             self.padding = (BLOCK as u64 - data_size % BLOCK as u64) % BLOCK as u64;
-            return Ok(Some(Entry { path, kind, mode, size: data_size, link }));
+            return Ok(Some(Entry { path, kind, mode, size: data_size, link, uid, gid }));
         }
     }
 
