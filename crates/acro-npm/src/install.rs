@@ -1,4 +1,6 @@
-use crate::lockfile::{LockEntry, PackageLock, bins_of, package_name_from_path};
+use crate::lockfile::{PackageLock, bins_of, package_name_from_path};
+#[cfg(test)]
+use crate::lockfile::LockEntry;
 use acro_fetch::Fetcher;
 use acro_oci::tar::{Kind, TarReader, TarWriter, normalize_mode};
 use acro_store::{Integrity, StoredBlob};
@@ -93,8 +95,28 @@ pub fn platform_matches(os: &Option<Vec<String>>, cpu: &Option<Vec<String>>, lib
     matches_list(os, &p.os) && matches_list(cpu, &p.cpu) && matches_list(libc, &p.libc)
 }
 
+pub fn inferred_libc(name: &str, libc: &Option<Vec<String>>) -> Option<Vec<String>> {
+    if libc.is_some() {
+        return libc.clone();
+    }
+    let short = name.rsplit('/').next().unwrap_or(name);
+    if short.contains("linuxmusl") || short.ends_with("-musl") || short.contains("-musl-") {
+        return Some(vec!["musl".into()]);
+    }
+    if short.ends_with("-gnu") || short.contains("-gnu-") {
+        return Some(vec!["glibc".into()]);
+    }
+    None
+}
+
+pub fn platform_matches_named(name: &str, os: &Option<Vec<String>>, cpu: &Option<Vec<String>>, libc: &Option<Vec<String>>, p: &Platform) -> bool {
+    platform_matches(os, cpu, &inferred_libc(name, libc), p)
+}
+
+#[cfg(test)]
 fn platform_ok(e: &LockEntry, p: &Platform) -> bool {
-    platform_matches(&e.os, &e.cpu, &e.libc, p)
+    let name = e.name.clone().unwrap_or_default();
+    platform_matches_named(&name, &e.os, &e.cpu, &e.libc, p)
 }
 
 pub fn parent_node_modules(path: &str) -> Option<(&str, &str)> {
@@ -129,7 +151,8 @@ impl InstallPlan {
                 skipped.push(path.clone());
                 continue;
             }
-            if !platform_ok(e, &opts.platform) {
+            let pname = e.name.clone().unwrap_or_else(|| package_name_from_path(path).to_string());
+            if !platform_matches_named(&pname, &e.os, &e.cpu, &e.libc, &opts.platform) {
                 skipped.push(path.clone());
                 out.skipped_platform.push(path.clone());
                 continue;
@@ -437,6 +460,21 @@ pub fn node_modules_fragments(
     prefix: &str,
     filter: impl Fn(&InstallPackage) -> bool + Sync,
 ) -> Result<LayerFragments> {
+    let mut fragments = Vec::new();
+    stream_node_modules(plan, tarballs, prefix, filter, &mut |b| {
+        fragments.push(b);
+        Ok(())
+    })?;
+    Ok(LayerFragments { fragments })
+}
+
+pub fn stream_node_modules(
+    plan: &InstallPlan,
+    tarballs: &Tarballs,
+    prefix: &str,
+    filter: impl Fn(&InstallPackage) -> bool + Sync,
+    sink: &mut dyn FnMut(Vec<u8>) -> Result<()>,
+) -> Result<()> {
     let mut pkgs: Vec<&InstallPackage> = plan.packages.iter().filter(|p| filter(p)).collect();
     pkgs.sort_by(|a, b| a.path.cmp(&b.path));
     let mut head_dirs = BTreeSet::new();
@@ -475,22 +513,25 @@ pub fn node_modules_fragments(
     for l in &links {
         head.symlink(&format!("{base}{}", l.path), &l.target)?;
     }
-    let mut fragments = vec![take(head)];
-    let bodies: Vec<Result<(String, Vec<u8>, Vec<(String, String)>)>> = pkgs
-        .par_iter()
-        .filter(|p| fetched(p))
-        .map(|p| {
-            let blob = blob_for(tarballs, p).ok_or_else(|| anyhow!("missing tarball for {}", p.path))?;
-            let (frag, bins) = package_fragment(prefix, p, &blob.path)?;
-            Ok((p.path.clone(), frag, bins))
-        })
-        .collect();
+    sink(take(head))?;
+    let wanted: Vec<&InstallPackage> = pkgs.iter().copied().filter(|p| fetched(p)).collect();
+    let window = (rayon::current_num_threads() * 4).max(4);
     let mut bins: HashMap<String, Vec<(String, String)>> = HashMap::new();
-    for b in bodies {
-        let (path, frag, b) = b?;
-        fragments.push(frag);
-        if !b.is_empty() {
-            bins.insert(path, b);
+    for win in wanted.chunks(window) {
+        let bodies: Vec<Result<(String, Vec<u8>, Vec<(String, String)>)>> = win
+            .par_iter()
+            .map(|p| {
+                let blob = blob_for(tarballs, p).ok_or_else(|| anyhow!("missing tarball for {}", p.path))?;
+                let (frag, bins) = package_fragment(prefix, p, &blob.path)?;
+                Ok((p.path.clone(), frag, bins))
+            })
+            .collect();
+        for b in bodies {
+            let (path, frag, b) = b?;
+            sink(frag)?;
+            if !b.is_empty() {
+                bins.insert(path, b);
+            }
         }
     }
     let mut tail = TarWriter::new(Vec::new());
@@ -500,8 +541,8 @@ pub fn node_modules_fragments(
             tail.symlink(&format!("{base}{dir}/.bin/{name}"), &target)?;
         }
     }
-    fragments.push(take(tail));
-    Ok(LayerFragments { fragments })
+    sink(take(tail))?;
+    Ok(())
 }
 
 pub fn relative_link(from: &Path, to: &Path) -> String {

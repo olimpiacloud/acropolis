@@ -169,62 +169,105 @@ fn compress_chunk(data: &[u8], opts: &LayerOptions) -> io::Result<Vec<u8>> {
     }
 }
 
-pub fn from_fragments(
-    store: &Store,
-    comment: impl Into<String>,
-    fragments: Vec<Vec<u8>>,
+pub struct LayerBuilder<'a> {
+    blob: BlobWriter<'a>,
+    diff: sha2::Sha256,
     opts: LayerOptions,
-) -> Result<Layer> {
-    use rayon::prelude::*;
-    use sha2::Digest;
-    const CHUNK: usize = 1 << 20;
-    let comment = comment.into();
-    let mut chunks: Vec<Vec<Vec<u8>>> = Vec::new();
-    let mut cur: Vec<Vec<u8>> = Vec::new();
-    let mut cur_len = 0;
-    for f in fragments.into_iter().chain(std::iter::once(vec![0u8; 1024])) {
-        if f.is_empty() {
-            continue;
-        }
-        cur_len += f.len();
-        cur.push(f);
-        if cur_len >= CHUNK {
-            chunks.push(std::mem::take(&mut cur));
-            cur_len = 0;
-        }
-    }
-    if !cur.is_empty() {
-        chunks.push(cur);
-    }
-    let compressed: Vec<io::Result<(Vec<u8>, sha2::Sha256, u64)>> = chunks
-        .par_iter()
-        .map(|parts| {
-            let joined: Vec<u8> = parts.concat();
-            let c = compress_chunk(&joined, &opts)?;
-            Ok((c, sha2::Sha256::new(), joined.len() as u64))
+    cur: Vec<u8>,
+    pending: Vec<Vec<u8>>,
+    batch: usize,
+    uncompressed_size: u64,
+    comment: String,
+}
+
+const LAYER_CHUNK: usize = 1 << 20;
+
+impl<'a> LayerBuilder<'a> {
+    pub fn new(store: &'a Store, comment: impl Into<String>, opts: LayerOptions) -> Result<Self> {
+        use sha2::Digest;
+        let comment = comment.into();
+        Ok(LayerBuilder {
+            blob: store.writer(format!("layer {comment}"), None)?,
+            diff: sha2::Sha256::new(),
+            opts,
+            cur: Vec::with_capacity(LAYER_CHUNK + (64 << 10)),
+            pending: Vec::new(),
+            batch: (rayon::current_num_threads() * 2).max(2),
+            uncompressed_size: 0,
+            comment,
         })
-        .collect();
-    let mut diff = sha2::Sha256::new();
-    for parts in &chunks {
-        for p in parts {
-            diff.update(p);
+    }
+
+    fn flush_batch(&mut self) -> io::Result<()> {
+        use rayon::prelude::*;
+        use sha2::Digest;
+        if self.pending.is_empty() {
+            return Ok(());
         }
+        let opts = self.opts;
+        let compressed: Vec<io::Result<Vec<u8>>> = self.pending.par_iter().map(|c| compress_chunk(c, &opts)).collect();
+        for (raw, c) in self.pending.drain(..).zip(compressed) {
+            self.diff.update(&raw);
+            self.uncompressed_size += raw.len() as u64;
+            self.blob.write_all(&c?)?;
+        }
+        Ok(())
     }
-    let mut blob = store.writer(format!("layer {comment}"), None)?;
-    let mut uncompressed_size = 0;
-    for c in compressed {
-        let (bytes, _, n) = c?;
-        blob.write_all(&bytes)?;
-        uncompressed_size += n;
+
+    fn seal_chunk(&mut self) -> io::Result<()> {
+        if self.cur.is_empty() {
+            return Ok(());
+        }
+        let chunk = std::mem::replace(&mut self.cur, Vec::with_capacity(LAYER_CHUNK + (64 << 10)));
+        self.pending.push(chunk);
+        if self.pending.len() >= self.batch {
+            self.flush_batch()?;
+        }
+        Ok(())
     }
-    let stored = blob.commit()?;
-    Ok(Layer {
-        digest: stored.sha256.clone(),
-        diff_id: acro_store::Integrity::new(acro_store::Algo::Sha256, diff.finalize().to_vec()),
-        size: stored.size,
-        uncompressed_size,
-        media_type: opts.compression.media_type().to_string(),
-        path: stored.path,
-        comment,
-    })
+
+    pub fn finish(mut self) -> Result<Layer> {
+        use sha2::Digest;
+        self.cur.extend_from_slice(&[0u8; 1024]);
+        self.seal_chunk()?;
+        self.flush_batch()?;
+        let stored = self.blob.commit()?;
+        Ok(Layer {
+            digest: stored.sha256.clone(),
+            diff_id: acro_store::Integrity::new(acro_store::Algo::Sha256, self.diff.finalize().to_vec()),
+            size: stored.size,
+            uncompressed_size: self.uncompressed_size,
+            media_type: self.opts.compression.media_type().to_string(),
+            path: stored.path,
+            comment: self.comment,
+        })
+    }
+}
+
+impl Write for LayerBuilder<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let mut rest = buf;
+        while !rest.is_empty() {
+            let room = LAYER_CHUNK.saturating_sub(self.cur.len()).max(1);
+            let n = room.min(rest.len());
+            self.cur.extend_from_slice(&rest[..n]);
+            rest = &rest[n..];
+            if self.cur.len() >= LAYER_CHUNK {
+                self.seal_chunk()?;
+            }
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+pub fn from_fragments(store: &Store, comment: impl Into<String>, fragments: Vec<Vec<u8>>, opts: LayerOptions) -> Result<Layer> {
+    let mut b = LayerBuilder::new(store, comment, opts)?;
+    for f in fragments {
+        b.write_all(&f)?;
+    }
+    b.finish()
 }

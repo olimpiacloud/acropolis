@@ -1,0 +1,104 @@
+{
+ "app": "java-gradle",
+ "facts": {
+  "build": "gradle",
+  "jdk": "21"
+ },
+ "image": {
+  "cmd": [
+   "/bin/sh",
+   "-c",
+   "java $JAVA_OPTS -jar $(ls -1 */build/libs/*jar build/libs/*jar 2>/dev/null | grep -v plain | head -1)"
+  ],
+  "entrypoint": [],
+  "env": [],
+  "layers": [
+   "layer-app"
+  ],
+  "ports": [],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "java",
+ "steps": [
+  {
+   "action": {
+    "image": "eclipse-temurin:21-jre",
+    "kind": "resolve-base"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve runtime image"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "exclude": [],
+    "kind": "copy-source"
+   },
+   "deps": [],
+   "id": "source",
+   "name": "copy source"
+  },
+  {
+   "action": {
+    "after": null,
+    "commands": [
+     "chmod +x gradlew",
+     "./gradlew clean build -x check -x test -Pproduction"
+    ],
+    "env": {},
+    "image": "eclipse-temurin:21-jdk",
+    "kind": "image-run",
+    "mount_app": true,
+    "network": true,
+    "tools": []
+   },
+   "deps": [
+    "source"
+   ],
+   "id": "build",
+   "name": "build in eclipse-temurin:21-jdk"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "exclude": [],
+     "path": ".",
+     "type": "work-dir"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "build"
+   ],
+   "id": "layer-app",
+   "name": "layer build output"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-app"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": [
+  "java dependencies are fetched with network access inside the build image"
+ ]
+}

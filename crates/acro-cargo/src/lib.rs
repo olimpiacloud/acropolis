@@ -190,6 +190,11 @@ pub async fn vendor(fetcher: &Fetcher, lock: &CargoLock, vendor_dir: &Path) -> R
         let dir = vendor_dir.join(format!("{}-{}", p.name, p.version));
         async move {
             let checksum = p.checksum.clone().ok_or_else(|| anyhow!("{} {} has no checksum in Cargo.lock", p.name, p.version))?;
+            let marker = format!("{{\"files\":{{}},\"package\":\"{checksum}\"}}");
+            if std::fs::read_to_string(dir.join(".cargo-checksum.json")).map(|m| m == marker).unwrap_or(false) {
+                return Ok::<u64, anyhow::Error>(0);
+            }
+            let _ = std::fs::remove_dir_all(&dir);
             let expected = Integrity::parse_hex(Algo::Sha256, &checksum)?;
             let url = format!("https://static.crates.io/crates/{0}/{0}-{1}.crate", p.name, p.version);
             let headers = HeaderMap::new();
@@ -200,7 +205,7 @@ pub async fn vendor(fetcher: &Fetcher, lock: &CargoLock, vendor_dir: &Path) -> R
                     extract_tar_filtered(&mut gz, &d2, 1, &|_| true)
                 })
                 .await?;
-            std::fs::write(dir.join(".cargo-checksum.json"), format!("{{\"files\":{{}},\"package\":\"{checksum}\"}}"))?;
+            std::fs::write(dir.join(".cargo-checksum.json"), &marker)?;
             Ok::<u64, anyhow::Error>(stats.bytes)
         }
     });

@@ -158,7 +158,7 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     }
     for (k, v) in &env.vars {
         if !k.starts_with("ACRO_") && !k.starts_with("RAILPACK_") {
-            run_env.insert(k.clone(), v.clone());
+            run_env.insert(k.clone(), crate::env_ref(k, v));
         }
     }
     b.step(

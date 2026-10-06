@@ -1,0 +1,109 @@
+{
+ "app": "deno-2",
+ "facts": {
+  "deno": "2.2.2"
+ },
+ "image": {
+  "cmd": [
+   "/bin/sh",
+   "-c",
+   "deno run --allow-all main.ts"
+  ],
+  "entrypoint": [],
+  "env": [
+   [
+    "DENO_DIR",
+    "/app/.deno"
+   ]
+  ],
+  "layers": [
+   "layer-app"
+  ],
+  "ports": [],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "deno",
+ "steps": [
+  {
+   "action": {
+    "image": "denoland/deno:2.2.2",
+    "kind": "resolve-base"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve runtime image"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "exclude": [],
+    "kind": "copy-source"
+   },
+   "deps": [],
+   "id": "source",
+   "name": "copy source"
+  },
+  {
+   "action": {
+    "after": null,
+    "commands": [
+     "deno cache main.ts"
+    ],
+    "env": {
+     "DENO_DIR": "/app/.deno"
+    },
+    "image": "denoland/deno:2.2.2",
+    "kind": "image-run",
+    "mount_app": true,
+    "network": true,
+    "tools": []
+   },
+   "deps": [
+    "source"
+   ],
+   "id": "build",
+   "name": "build in denoland/deno:2.2.2"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "exclude": [],
+     "path": ".",
+     "type": "work-dir"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "build"
+   ],
+   "id": "layer-app",
+   "name": "layer build output"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-app"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": [
+  "deno dependencies are fetched with network access inside the build image"
+ ]
+}

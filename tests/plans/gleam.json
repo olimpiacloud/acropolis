@@ -1,0 +1,108 @@
+{
+ "app": "gleam",
+ "facts": {
+  "gleam": "latest"
+ },
+ "image": {
+  "cmd": [
+   "/bin/sh",
+   "-c",
+   "./build/erlang-shipment/entrypoint.sh run"
+  ],
+  "entrypoint": [],
+  "env": [],
+  "layers": [
+   "layer-app"
+  ],
+  "ports": [],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "gleam",
+ "steps": [
+  {
+   "action": {
+    "github": "gleam-lang/gleam",
+    "kind": "resolve-base-latest",
+    "template": "ghcr.io/gleam-lang/gleam:{tag}-erlang"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve runtime image"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "exclude": [],
+    "kind": "copy-source"
+   },
+   "deps": [],
+   "id": "source",
+   "name": "copy source"
+  },
+  {
+   "action": {
+    "after": null,
+    "commands": [
+     "gleam export erlang-shipment"
+    ],
+    "env": {},
+    "image": "@base",
+    "kind": "image-run",
+    "mount_app": true,
+    "network": true,
+    "tools": []
+   },
+   "deps": [
+    "source",
+    "base"
+   ],
+   "id": "build",
+   "name": "build in @base"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "items": [
+      [
+       "build/erlang-shipment",
+       "build/erlang-shipment"
+      ]
+     ],
+     "type": "paths"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "build"
+   ],
+   "id": "layer-app",
+   "name": "layer build output"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-app"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": [
+  "gleam dependencies are fetched with network access inside the build image"
+ ]
+}

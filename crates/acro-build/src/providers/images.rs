@@ -24,7 +24,7 @@ fn user_env(env: &Env) -> BTreeMap<String, String> {
     env.vars
         .iter()
         .filter(|(k, _)| !k.starts_with("ACRO_") && !k.starts_with("RAILPACK_"))
-        .map(|(k, v)| (k.clone(), v.clone()))
+        .map(|(k, v)| (k.clone(), crate::env_ref(k, v)))
         .collect()
 }
 

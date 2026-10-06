@@ -1,0 +1,170 @@
+{
+ "app": "tanstack-nitro-nostart",
+ "facts": {
+  "framework": "tanstackstart",
+  "node": "lts (default)",
+  "package-manager": "npm",
+  "runtime": "nitro server"
+ },
+ "image": {
+  "cmd": [
+   "node",
+   ".output/server/index.mjs"
+  ],
+  "entrypoint": [],
+  "env": [
+   [
+    "NODE_ENV",
+    "production"
+   ],
+   [
+    "PORT",
+    "3000"
+   ],
+   [
+    "npm_config_user_agent",
+    "npm/10 node/vlts linux x64"
+   ],
+   [
+    "npm_lifecycle_event",
+    "start"
+   ],
+   [
+    "npm_package_name",
+    "ts-pressure"
+   ]
+  ],
+  "layers": [
+   "layer-server"
+  ],
+  "ports": [
+   3000
+  ],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "node",
+ "steps": [
+  {
+   "action": {
+    "kind": "toolchain",
+    "parts": [],
+    "spec": "lts",
+    "tool": "node"
+   },
+   "deps": [],
+   "id": "node",
+   "name": "node lts"
+  },
+  {
+   "action": {
+    "dev": true,
+    "kind": "npm-fetch",
+    "lockfile": "package-lock.json",
+    "lockfile_sha256": "ec57de7af56d50b07b974796c9b38321a7d54242938e717de4eef857196ccf90",
+    "manager": "npm"
+   },
+   "deps": [],
+   "id": "npm-fetch",
+   "name": "fetch packages"
+  },
+  {
+   "action": {
+    "exclude": [
+     "**/node_modules"
+    ],
+    "kind": "copy-source"
+   },
+   "deps": [],
+   "id": "source",
+   "name": "copy source"
+  },
+  {
+   "action": {
+    "dev": true,
+    "kind": "npm-install",
+    "manager": "npm",
+    "scripts": "",
+    "target": "src"
+   },
+   "deps": [
+    "npm-fetch",
+    "source"
+   ],
+   "id": "install",
+   "name": "install node_modules"
+  },
+  {
+   "action": {
+    "argv": [
+     "/bin/sh",
+     "-c",
+     "vite build"
+    ],
+    "cwd": ".",
+    "env": {
+     "NEXT_TELEMETRY_DISABLED": "1",
+     "NODE_ENV": "production",
+     "npm_lifecycle_event": "build",
+     "npm_package_name": "ts-pressure"
+    },
+    "kind": "run",
+    "network": false
+   },
+   "deps": [
+    "node",
+    "install"
+   ],
+   "id": "build",
+   "name": "run vite build"
+  },
+  {
+   "action": {
+    "image": "node:lts-bookworm-slim",
+    "kind": "resolve-base"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve node:lts-bookworm-slim"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "dest": "app/.output",
+    "from": {
+     "exclude": [],
+     "path": ".output",
+     "type": "work-dir"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "build"
+   ],
+   "id": "layer-server",
+   "name": "layer .output"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-server"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": []
+}

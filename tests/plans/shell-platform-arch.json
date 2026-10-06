@@ -1,0 +1,110 @@
+{
+ "app": "shell-platform-arch",
+ "facts": {
+  "apt-packages": "zsh",
+  "runtime-packages": "zsh",
+  "script": "start.sh"
+ },
+ "image": {
+  "cmd": [
+   "zsh",
+   "start.sh"
+  ],
+  "entrypoint": [],
+  "env": [],
+  "layers": [
+   "layer-apt",
+   "layer-app"
+  ],
+  "ports": [],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "shell",
+ "steps": [
+  {
+   "action": {
+    "image": "debian:bookworm-slim",
+    "kind": "resolve-base"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve debian:bookworm-slim"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "exclude": [],
+     "type": "app-source"
+    },
+    "kind": "layer"
+   },
+   "deps": [],
+   "id": "layer-app",
+   "name": "layer app source"
+  },
+  {
+   "action": {
+    "after": null,
+    "commands": [
+     "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends zsh && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb /var/log/apt /var/log/dpkg.log"
+    ],
+    "env": {},
+    "image": "debian:bookworm-slim",
+    "kind": "image-run",
+    "mount_app": false,
+    "network": true,
+    "tools": []
+   },
+   "deps": [],
+   "id": "apt",
+   "name": "apt-get install zsh"
+  },
+  {
+   "action": {
+    "dest": "",
+    "from": {
+     "exclude": [
+      "var/cache",
+      "var/log",
+      "root"
+     ],
+     "include": [],
+     "step": "apt",
+     "type": "upper"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "apt"
+   ],
+   "id": "layer-apt",
+   "name": "layer apt packages"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-app",
+    "layer-apt"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": []
+}

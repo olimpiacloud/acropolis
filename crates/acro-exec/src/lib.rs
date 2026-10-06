@@ -36,15 +36,101 @@ pub enum Isolation {
 
 pub struct HostExecutor {
     pub isolation: Isolation,
+    pub readonly: Vec<std::path::PathBuf>,
 }
 
 impl HostExecutor {
     pub fn detect() -> Self {
         if probe_netns() {
-            HostExecutor { isolation: Isolation::NetNamespace }
+            HostExecutor { isolation: Isolation::NetNamespace, readonly: Vec::new() }
         } else {
-            HostExecutor { isolation: Isolation::None }
+            HostExecutor { isolation: Isolation::None, readonly: Vec::new() }
         }
+    }
+
+    pub fn with_readonly(mut self, paths: Vec<std::path::PathBuf>) -> Self {
+        self.readonly = paths;
+        self
+    }
+}
+
+pub(crate) const DROP_CAPS: &[u32] = &[9, 12, 16, 17, 18, 19, 20, 21, 22, 25, 27, 29, 30, 31, 32, 33, 34, 37, 38, 39];
+
+pub(crate) unsafe fn drop_dangerous_caps() -> std::io::Result<()> {
+    #[repr(C)]
+    struct Header {
+        version: u32,
+        pid: i32,
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Data {
+        effective: u32,
+        permitted: u32,
+        inheritable: u32,
+    }
+    unsafe {
+        for &c in DROP_CAPS {
+            libc::prctl(libc::PR_CAPBSET_DROP, c as libc::c_ulong, 0, 0, 0);
+        }
+        libc::prctl(libc::PR_CAP_AMBIENT, libc::PR_CAP_AMBIENT_CLEAR_ALL as libc::c_ulong, 0, 0, 0);
+        let mut hdr = Header { version: 0x2008_0522, pid: 0 };
+        let mut data = [Data { effective: 0, permitted: 0, inheritable: 0 }; 2];
+        if libc::syscall(libc::SYS_capget, &mut hdr as *mut Header, data.as_mut_ptr()) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        for &c in DROP_CAPS {
+            let (i, bit) = ((c / 32) as usize, 1u32 << (c % 32));
+            data[i].effective &= !bit;
+            data[i].permitted &= !bit;
+            data[i].inheritable &= !bit;
+        }
+        if libc::syscall(libc::SYS_capset, &mut hdr as *mut Header, data.as_ptr()) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+    }
+    Ok(())
+}
+
+pub(crate) unsafe fn bind_readonly(path: &std::ffi::CStr) -> std::io::Result<()> {
+    unsafe {
+        if libc::mount(path.as_ptr(), path.as_ptr(), std::ptr::null(), libc::MS_BIND | libc::MS_REC, std::ptr::null()) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if libc::mount(
+            std::ptr::null(),
+            path.as_ptr(),
+            std::ptr::null(),
+            libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY,
+            std::ptr::null(),
+        ) != 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+fn enter_hardened(readonly: &[std::ffi::CString], network: bool) -> std::io::Result<()> {
+    unsafe {
+        let mut flags = libc::CLONE_NEWNS;
+        if !network {
+            flags |= libc::CLONE_NEWNET;
+        }
+        if libc::unshare(flags) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if libc::mount(std::ptr::null(), c"/".as_ptr(), std::ptr::null(), libc::MS_REC | libc::MS_PRIVATE, std::ptr::null()) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        for p in readonly {
+            bind_readonly(p)?;
+        }
+        if !network {
+            bring_up_lo();
+        }
+        drop_dangerous_caps()
     }
 }
 
@@ -141,6 +227,26 @@ fn fmt_map(buf: &mut [u8; 64], id: u32) -> usize {
     pos + 2
 }
 
+pub struct ProcessGroup(Option<i32>);
+
+impl ProcessGroup {
+    pub fn of(child: &tokio::process::Child) -> Self {
+        ProcessGroup(child.id().map(|p| p as i32))
+    }
+}
+
+impl Drop for ProcessGroup {
+    fn drop(&mut self) {
+        if let Some(pgid) = self.0
+            && pgid > 1
+        {
+            unsafe {
+                libc::kill(-pgid, libc::SIGKILL);
+            }
+        }
+    }
+}
+
 impl Executor for HostExecutor {
     fn name(&self) -> &'static str {
         match self.isolation {
@@ -162,7 +268,20 @@ impl Executor for HostExecutor {
             c.args(&cmd.argv[1..]).current_dir(&cmd.cwd).env_clear().envs(&cmd.env);
             c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
             c.kill_on_drop(true);
-            if !cmd.network {
+            c.process_group(0);
+            let is_root = unsafe { libc::geteuid() } == 0;
+            if is_root && self.isolation == Isolation::NetNamespace {
+                let ro: Vec<std::ffi::CString> = self
+                    .readonly
+                    .iter()
+                    .filter(|p| p.exists())
+                    .filter_map(|p| std::ffi::CString::new(p.as_os_str().as_encoded_bytes()).ok())
+                    .collect();
+                let network = cmd.network;
+                unsafe {
+                    c.pre_exec(move || enter_hardened(&ro, network));
+                }
+            } else if !cmd.network {
                 if self.isolation != Isolation::NetNamespace {
                     bail!(
                         "step {} must run without network but this host cannot create a network namespace; pass --hermetic=off to allow it",
@@ -174,6 +293,7 @@ impl Executor for HostExecutor {
                 }
             }
             let mut child = c.spawn().map_err(|e| anyhow::anyhow!("spawning {}: {e}", cmd.argv[0]))?;
+            let _group = ProcessGroup::of(&child);
             let tail: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
             let mut tasks = Vec::new();
             let streams: Vec<Box<dyn tokio::io::AsyncRead + Unpin + Send>> = vec![
@@ -217,5 +337,54 @@ mod tests {
         let mut b = [0u8; 64];
         let n = fmt_map(&mut b, 1000);
         assert_eq!(&b[..n], b"1000 1000 1\n");
+    }
+
+    fn sh(script: &str, dir: &std::path::Path) -> Cmd {
+        Cmd {
+            step: "test".into(),
+            argv: vec!["/bin/sh".into(), "-c".into(), script.into()],
+            cwd: dir.to_path_buf(),
+            env: [("PATH".to_string(), "/usr/bin:/bin".to_string())].into_iter().collect(),
+            network: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn readonly_paths_cannot_be_written_or_remounted() {
+        if unsafe { libc::geteuid() } != 0 || !probe_netns() {
+            return;
+        }
+        let tmp = std::env::temp_dir().join(format!("acro-exec-ro-{}", std::process::id()));
+        let store = tmp.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(store.join("blob"), b"original").unwrap();
+        let e = HostExecutor::detect().with_readonly(vec![store.clone()]);
+        let attempts = [
+            format!("echo poisoned > {}/blob", store.display()),
+            format!("mount -o remount,rw {} && echo poisoned > {}/blob", store.display(), store.display()),
+            format!("umount {} && echo poisoned > {}/blob", store.display(), store.display()),
+        ];
+        for a in &attempts {
+            assert!(e.run(sh(a, &tmp)).await.is_err(), "{a} should fail");
+        }
+        assert_eq!(std::fs::read(store.join("blob")).unwrap(), b"original");
+        assert!(e.run(sh("echo ok > out", &tmp)).await.is_ok());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn dropping_a_run_kills_the_whole_process_group() {
+        let tmp = std::env::temp_dir().join(format!("acro-exec-pg-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let marker = format!("acro-pg-test-{}", std::process::id());
+        let e = HostExecutor { isolation: Isolation::None, readonly: Vec::new() };
+        let mut cmd = sh(&format!("sh -c 'sleep 300; echo {marker}' & sleep 300"), &tmp);
+        cmd.network = true;
+        let fut = e.run(cmd);
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(500), fut).await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let ps = std::process::Command::new("pgrep").args(["-f", &marker]).output().unwrap();
+        assert!(String::from_utf8_lossy(&ps.stdout).trim().is_empty(), "orphaned processes survived");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

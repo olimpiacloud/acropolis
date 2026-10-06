@@ -1,0 +1,204 @@
+{
+ "app": "node-latest-pnpm-mise-native-deps",
+ "facts": {
+  "framework": "none",
+  "install-scripts": "bcrypt, better-sqlite3, canvas, sharp",
+  "node": "latest (mise.toml)",
+  "package-manager": "pnpm",
+  "runtime": "node server (no build step)"
+ },
+ "image": {
+  "cmd": [
+   "node",
+   "index.js"
+  ],
+  "entrypoint": [],
+  "env": [
+   [
+    "NODE_ENV",
+    "production"
+   ],
+   [
+    "PATH",
+    "/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+   ],
+   [
+    "npm_config_verify_deps_before_run",
+    "false"
+   ],
+   [
+    "pnpm_config_verify_deps_before_run",
+    "false"
+   ],
+   [
+    "npm_config_update_notifier",
+    "false"
+   ],
+   [
+    "pnpm_config_update_notifier",
+    "false"
+   ],
+   [
+    "COREPACK_ENABLE_STRICT",
+    "0"
+   ],
+   [
+    "npm_config_user_agent",
+    "pnpm/{version:npm:pnpm|9} npm/? node/v{version:node|latest} linux x64"
+   ],
+   [
+    "npm_lifecycle_event",
+    "start"
+   ],
+   [
+    "npm_package_name",
+    "node-latest-pnpm-mise-native-deps"
+   ]
+  ],
+  "layers": [
+   "layer-pm",
+   "layer-deps",
+   "layer-app"
+  ],
+  "ports": [],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "node",
+ "steps": [
+  {
+   "action": {
+    "image": "node:current-trixie-slim",
+    "kind": "resolve-base"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve node:current-trixie-slim"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "dev": false,
+    "kind": "npm-fetch",
+    "lockfile": "pnpm-lock.yaml",
+    "lockfile_sha256": "6efaee24e87a607655699754a8f239541534081cc344d946dc56195a921c7650",
+    "manager": "pnpm"
+   },
+   "deps": [],
+   "id": "npm-fetch",
+   "name": "fetch production packages"
+  },
+  {
+   "action": {
+    "kind": "toolchain",
+    "parts": [
+     "npm",
+     "headers"
+    ],
+    "spec": "latest",
+    "tool": "node"
+   },
+   "deps": [],
+   "id": "node",
+   "name": "node latest"
+  },
+  {
+   "action": {
+    "dev": false,
+    "kind": "npm-install",
+    "manager": "pnpm",
+    "scripts": "bcrypt,better-sqlite3,canvas,sharp",
+    "target": "prod"
+   },
+   "deps": [
+    "npm-fetch",
+    "node"
+   ],
+   "id": "install-prod",
+   "name": "install production node_modules + scripts"
+  },
+  {
+   "action": {
+    "dest": "app/node_modules",
+    "from": {
+     "exclude": [],
+     "path": "@work/prod/node_modules",
+     "type": "work-dir"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "install-prod"
+   ],
+   "id": "layer-deps",
+   "name": "layer node_modules (production)"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "exclude": [
+      "**/node_modules"
+     ],
+     "type": "app-source"
+    },
+    "kind": "layer"
+   },
+   "deps": [],
+   "id": "layer-app",
+   "name": "layer app source"
+  },
+  {
+   "action": {
+    "kind": "toolchain",
+    "parts": [],
+    "spec": "9",
+    "tool": "npm:pnpm"
+   },
+   "deps": [],
+   "id": "pnpm",
+   "name": "pnpm 9"
+  },
+  {
+   "action": {
+    "dest": "usr/local",
+    "from": {
+     "tool": "npm:pnpm",
+     "type": "tool-tree"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "pnpm"
+   ],
+   "id": "layer-pm",
+   "name": "layer pnpm CLI"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-deps",
+    "layer-app",
+    "layer-pm"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": [
+  "install scripts of bcrypt, better-sqlite3, canvas, sharp run with network access (policy: bcrypt,better-sqlite3,canvas,sharp); set ACRO_INSTALL_SCRIPTS=none to disable"
+ ]
+}

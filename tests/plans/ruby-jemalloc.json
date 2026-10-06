@@ -1,0 +1,208 @@
+{
+ "app": "ruby-jemalloc",
+ "facts": {
+  "ruby": "3.4 (default)"
+ },
+ "image": {
+  "cmd": [
+   "/bin/sh",
+   "-c",
+   "ruby app.rb"
+  ],
+  "entrypoint": [],
+  "env": [
+   [
+    "BUNDLE_GEMFILE",
+    "/app/Gemfile"
+   ],
+   [
+    "BUNDLE_WITHOUT",
+    "development:test"
+   ],
+   [
+    "RACK_ENV",
+    "production"
+   ],
+   [
+    "RAILS_ENV",
+    "production"
+   ],
+   [
+    "LD_PRELOAD",
+    "libjemalloc.so.2"
+   ],
+   [
+    "RUBY_YJIT_ENABLE",
+    "1"
+   ],
+   [
+    "RAILS_LOG_TO_STDOUT",
+    "enabled"
+   ],
+   [
+    "RAILS_SERVE_STATIC_FILES",
+    "true"
+   ]
+  ],
+  "layers": [
+   "layer-libs",
+   "layer-gems",
+   "layer-app"
+  ],
+  "ports": [],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "ruby",
+ "steps": [
+  {
+   "action": {
+    "image": "ruby:3.4-slim",
+    "kind": "resolve-base"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve ruby:3.4-slim"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "exclude": [
+     "vendor/bundle",
+     "tmp",
+     "log/*.log"
+    ],
+    "kind": "copy-source"
+   },
+   "deps": [],
+   "id": "source",
+   "name": "copy source"
+  },
+  {
+   "action": {
+    "after": null,
+    "commands": [
+     "(gem list -i bundler -v 2.6.9 >/dev/null || gem install -N bundler -v 2.6.9)",
+     "bundle install --jobs 4"
+    ],
+    "env": {
+     "BUNDLE_GEMFILE": "/app/Gemfile",
+     "BUNDLE_WITHOUT": "development:test",
+     "RACK_ENV": "production",
+     "RAILS_ENV": "production"
+    },
+    "image": "ruby:3.4",
+    "kind": "image-run",
+    "mount_app": true,
+    "network": true,
+    "tools": []
+   },
+   "deps": [
+    "source"
+   ],
+   "id": "install",
+   "name": "bundle install (in ruby:3.4)"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "exclude": [],
+     "path": ".",
+     "type": "work-dir"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "install"
+   ],
+   "id": "layer-app",
+   "name": "layer app"
+  },
+  {
+   "action": {
+    "dest": "",
+    "from": {
+     "exclude": [
+      "usr/local/bundle/cache"
+     ],
+     "include": [
+      "usr/local/bundle"
+     ],
+     "step": "install",
+     "type": "upper"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "install"
+   ],
+   "id": "layer-gems",
+   "name": "layer gems (/usr/local/bundle)"
+  },
+  {
+   "action": {
+    "after": null,
+    "commands": [
+     ". /etc/os-release; case \"$VERSION_CODENAME\" in jessie|stretch|buster) sed -i -e 's|deb.debian.org|archive.debian.org|g' -e 's|security.debian.org|archive.debian.org|g' -e '/-updates/d' /etc/apt/sources.list ;; esac; apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libjemalloc2 >/dev/null && rm -rf /var/lib/apt/lists/*"
+    ],
+    "env": {},
+    "image": "ruby:3.4-slim",
+    "kind": "image-run",
+    "mount_app": false,
+    "network": true,
+    "tools": []
+   },
+   "deps": [],
+   "id": "runtime-libs",
+   "name": "apt-get install libjemalloc2"
+  },
+  {
+   "action": {
+    "dest": "",
+    "from": {
+     "exclude": [
+      "var/cache",
+      "var/log",
+      "root"
+     ],
+     "include": [],
+     "step": "runtime-libs",
+     "type": "upper"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "runtime-libs"
+   ],
+   "id": "layer-libs",
+   "name": "layer runtime libraries"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-libs",
+    "layer-gems",
+    "layer-app"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": [
+  "gems are installed with network access inside the base image"
+ ]
+}

@@ -1,0 +1,254 @@
+{
+ "app": "node-vite-react-router-ssr",
+ "facts": {
+  "framework": "reactrouter",
+  "node": "lts (default)",
+  "package-manager": "pnpm",
+  "runtime": "node server (built)"
+ },
+ "image": {
+  "cmd": [
+   "react-router-serve",
+   "./build/server/index.js"
+  ],
+  "entrypoint": [],
+  "env": [
+   [
+    "NODE_ENV",
+    "production"
+   ],
+   [
+    "PATH",
+    "/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+   ],
+   [
+    "npm_config_verify_deps_before_run",
+    "false"
+   ],
+   [
+    "pnpm_config_verify_deps_before_run",
+    "false"
+   ],
+   [
+    "npm_config_update_notifier",
+    "false"
+   ],
+   [
+    "pnpm_config_update_notifier",
+    "false"
+   ],
+   [
+    "COREPACK_ENABLE_STRICT",
+    "0"
+   ],
+   [
+    "npm_config_user_agent",
+    "pnpm/{version:npm:pnpm|8} npm/? node/v{version:node|lts} linux x64"
+   ],
+   [
+    "npm_lifecycle_event",
+    "start"
+   ],
+   [
+    "npm_package_name",
+    "node-vite-react-router-ssr"
+   ]
+  ],
+  "layers": [
+   "layer-pm",
+   "layer-deps",
+   "layer-app"
+  ],
+  "ports": [],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "node",
+ "steps": [
+  {
+   "action": {
+    "kind": "toolchain",
+    "parts": [
+     "npm",
+     "headers"
+    ],
+    "spec": "lts",
+    "tool": "node"
+   },
+   "deps": [],
+   "id": "node",
+   "name": "node lts"
+  },
+  {
+   "action": {
+    "dev": true,
+    "kind": "npm-fetch",
+    "lockfile": "pnpm-lock.yaml",
+    "lockfile_sha256": "dae10dd874ebc2399750cd45912d52d2827bc8fca098929c0641745eab195263",
+    "manager": "pnpm"
+   },
+   "deps": [],
+   "id": "npm-fetch",
+   "name": "fetch packages"
+  },
+  {
+   "action": {
+    "exclude": [
+     "**/node_modules"
+    ],
+    "kind": "copy-source"
+   },
+   "deps": [],
+   "id": "source",
+   "name": "copy source"
+  },
+  {
+   "action": {
+    "dev": true,
+    "kind": "npm-install",
+    "manager": "pnpm",
+    "scripts": "all",
+    "target": "src"
+   },
+   "deps": [
+    "npm-fetch",
+    "source",
+    "node"
+   ],
+   "id": "install",
+   "name": "install node_modules"
+  },
+  {
+   "action": {
+    "argv": [
+     "/bin/sh",
+     "-c",
+     "react-router build"
+    ],
+    "cwd": ".",
+    "env": {
+     "NEXT_TELEMETRY_DISABLED": "1",
+     "NODE_ENV": "production",
+     "npm_lifecycle_event": "build",
+     "npm_package_name": "node-vite-react-router-ssr"
+    },
+    "kind": "run",
+    "network": false
+   },
+   "deps": [
+    "node",
+    "install"
+   ],
+   "id": "build",
+   "name": "run react-router build"
+  },
+  {
+   "action": {
+    "image": "node:lts-bookworm-slim",
+    "kind": "resolve-base"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve node:lts-bookworm-slim"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "dev": false,
+    "kind": "npm-fetch",
+    "lockfile": "pnpm-lock.yaml",
+    "lockfile_sha256": "",
+    "manager": "pnpm"
+   },
+   "deps": [
+    "npm-fetch"
+   ],
+   "id": "npm-fetch-prod",
+   "name": "select production packages"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "dev": false,
+     "type": "node-modules"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "npm-fetch-prod"
+   ],
+   "id": "layer-deps",
+   "name": "layer node_modules (production)"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "exclude": [
+      "**/node_modules",
+      ".next/cache"
+     ],
+     "path": ".",
+     "type": "work-dir"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "build"
+   ],
+   "id": "layer-app",
+   "name": "layer app + build output"
+  },
+  {
+   "action": {
+    "kind": "toolchain",
+    "parts": [],
+    "spec": "8",
+    "tool": "npm:pnpm"
+   },
+   "deps": [],
+   "id": "pnpm",
+   "name": "pnpm 8"
+  },
+  {
+   "action": {
+    "dest": "usr/local",
+    "from": {
+     "tool": "npm:pnpm",
+     "type": "tool-tree"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "pnpm"
+   ],
+   "id": "layer-pm",
+   "name": "layer pnpm CLI"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-deps",
+    "layer-app",
+    "layer-pm"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": []
+}

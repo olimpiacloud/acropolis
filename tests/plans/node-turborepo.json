@@ -1,0 +1,226 @@
+{
+ "app": "node-turborepo",
+ "facts": {
+  "framework": "none",
+  "install-scripts": "sharp",
+  "node": ">=18 (package.json engines.node)",
+  "package-manager": "npm",
+  "runtime": "node server (built)"
+ },
+ "image": {
+  "cmd": [
+   "/bin/sh",
+   "-c",
+   "cd apps/web && npm start"
+  ],
+  "entrypoint": [],
+  "env": [
+   [
+    "NODE_ENV",
+    "production"
+   ],
+   [
+    "PATH",
+    "/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+   ],
+   [
+    "npm_config_user_agent",
+    "npm/10 node/v>=18 linux x64"
+   ],
+   [
+    "npm_lifecycle_event",
+    "start"
+   ],
+   [
+    "npm_package_name",
+    "node-turborepo"
+   ]
+  ],
+  "layers": [
+   "layer-deps",
+   "layer-app"
+  ],
+  "ports": [],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "node",
+ "steps": [
+  {
+   "action": {
+    "kind": "toolchain",
+    "parts": [
+     "npm",
+     "headers"
+    ],
+    "spec": ">=18",
+    "tool": "node"
+   },
+   "deps": [],
+   "id": "node",
+   "name": "node >=18"
+  },
+  {
+   "action": {
+    "dev": true,
+    "kind": "npm-fetch",
+    "lockfile": "package-lock.json",
+    "lockfile_sha256": "dba5d1b693e611eb47210d09b8ef5182e37ac15ae271a6d6ff5abff931b2ec0f",
+    "manager": "npm"
+   },
+   "deps": [],
+   "id": "npm-fetch",
+   "name": "fetch packages"
+  },
+  {
+   "action": {
+    "exclude": [
+     "**/node_modules"
+    ],
+    "kind": "copy-source"
+   },
+   "deps": [],
+   "id": "source",
+   "name": "copy source"
+  },
+  {
+   "action": {
+    "dev": true,
+    "kind": "npm-install",
+    "manager": "npm",
+    "scripts": "all",
+    "target": "src"
+   },
+   "deps": [
+    "npm-fetch",
+    "source",
+    "node"
+   ],
+   "id": "install",
+   "name": "install node_modules"
+  },
+  {
+   "action": {
+    "argv": [
+     "/bin/sh",
+     "-c",
+     "turbo build"
+    ],
+    "cwd": ".",
+    "env": {
+     "NEXT_TELEMETRY_DISABLED": "1",
+     "NODE_ENV": "production",
+     "npm_lifecycle_event": "build",
+     "npm_package_name": "node-turborepo"
+    },
+    "kind": "run",
+    "network": false
+   },
+   "deps": [
+    "node",
+    "install"
+   ],
+   "id": "build",
+   "name": "run turbo build"
+  },
+  {
+   "action": {
+    "image": "node:18-trixie-slim",
+    "kind": "resolve-base"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve node:18-trixie-slim"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "dev": false,
+    "kind": "npm-fetch",
+    "lockfile": "package-lock.json",
+    "lockfile_sha256": "",
+    "manager": "npm"
+   },
+   "deps": [
+    "npm-fetch"
+   ],
+   "id": "npm-fetch-prod",
+   "name": "select production packages"
+  },
+  {
+   "action": {
+    "dev": false,
+    "kind": "npm-install",
+    "manager": "npm",
+    "scripts": "all",
+    "target": "prod"
+   },
+   "deps": [
+    "npm-fetch-prod",
+    "node"
+   ],
+   "id": "install-prod",
+   "name": "install production node_modules + scripts"
+  },
+  {
+   "action": {
+    "dest": "app/node_modules",
+    "from": {
+     "exclude": [],
+     "path": "@work/prod/node_modules",
+     "type": "work-dir"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "install-prod"
+   ],
+   "id": "layer-deps",
+   "name": "layer node_modules (production)"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "exclude": [
+      "**/node_modules",
+      ".next/cache"
+     ],
+     "path": ".",
+     "type": "work-dir"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "build"
+   ],
+   "id": "layer-app",
+   "name": "layer app + build output"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-deps",
+    "layer-app"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": [
+  "install scripts of sharp run with network access (policy: all); set ACRO_INSTALL_SCRIPTS=none to disable"
+ ]
+}

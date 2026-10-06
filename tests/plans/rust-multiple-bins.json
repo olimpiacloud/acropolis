@@ -1,0 +1,120 @@
+{
+ "app": "rust-multiple-bins",
+ "facts": {
+  "binary": "bin1",
+  "host-glibc": "2.39",
+  "rust": "1.84.0 (Cargo.toml edition)"
+ },
+ "image": {
+  "cmd": [
+   "/app/bin/bin1"
+  ],
+  "entrypoint": [],
+  "env": [
+   [
+    "ROCKET_ADDRESS",
+    "0.0.0.0"
+   ]
+  ],
+  "layers": [
+   "layer-bin"
+  ],
+  "ports": [],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "rust",
+ "steps": [
+  {
+   "action": {
+    "image": "gcr.io/distroless/cc-debian13",
+    "kind": "resolve-base"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve gcr.io/distroless/cc-debian13"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "kind": "toolchain",
+    "parts": [],
+    "spec": "1.84.0",
+    "tool": "rust"
+   },
+   "deps": [],
+   "id": "rust",
+   "name": "rust 1.84.0"
+  },
+  {
+   "action": {
+    "kind": "cargo-vendor",
+    "lockfile_sha256": "2606ceecfd610662ca4b22ec6ea0db41cc7d3f2d7fa0e651b7d05cbb8e04d4eb"
+   },
+   "deps": [],
+   "id": "crates",
+   "name": "fetch crates"
+  },
+  {
+   "action": {
+    "argv": [
+     "cargo",
+     "build",
+     "--release",
+     "--locked",
+     "--offline",
+     "--bin",
+     "bin1"
+    ],
+    "cwd": "@app",
+    "env": {},
+    "kind": "run",
+    "network": false
+   },
+   "deps": [
+    "rust",
+    "crates"
+   ],
+   "id": "build",
+   "name": "cargo build --release (bin1)"
+  },
+  {
+   "action": {
+    "dest": "app/bin/bin1",
+    "from": {
+     "mode": 493,
+     "path": "{cargo_target}/release/bin1",
+     "type": "work-file"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "build"
+   ],
+   "id": "layer-bin",
+   "name": "layer binary"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-bin"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": []
+}

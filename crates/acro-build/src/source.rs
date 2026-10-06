@@ -80,6 +80,22 @@ pub fn ancestors(prefix: &str) -> Vec<String> {
 }
 
 pub fn fragments_for(root: &Path, entries: &[SourceEntry], prefix: &str, with_ancestors: bool) -> Result<Vec<Vec<u8>>> {
+    let mut frags = Vec::new();
+    stream_tree(root, entries, prefix, with_ancestors, &mut |b| {
+        frags.push(b);
+        Ok(())
+    })?;
+    Ok(frags)
+}
+
+pub fn stream_tree_into<W: std::io::Write>(root: &Path, entries: &[SourceEntry], prefix: &str, with_ancestors: bool, out: &mut W) -> Result<()> {
+    stream_tree(root, entries, prefix, with_ancestors, &mut |b| {
+        out.write_all(&b)?;
+        Ok(())
+    })
+}
+
+pub fn stream_tree(root: &Path, entries: &[SourceEntry], prefix: &str, with_ancestors: bool, sink: &mut dyn FnMut(Vec<u8>) -> Result<()>) -> Result<()> {
     const TARGET: u64 = 2 << 20;
     let mut groups: Vec<&[SourceEntry]> = Vec::new();
     let mut start = 0;
@@ -104,8 +120,10 @@ pub fn fragments_for(root: &Path, entries: &[SourceEntry], prefix: &str, with_an
             head.dir(&d, 0o755)?;
         }
     }
-    let mut frags = vec![take(head)];
-    let bodies: Vec<Result<Vec<u8>>> = groups
+    sink(take(head))?;
+    let window = (rayon::current_num_threads() * 2).max(2);
+    for win in groups.chunks(window) {
+    let bodies: Vec<Result<Vec<u8>>> = win
         .par_iter()
         .map(|g| {
             let cap: u64 = g
@@ -132,9 +150,10 @@ pub fn fragments_for(root: &Path, entries: &[SourceEntry], prefix: &str, with_an
         })
         .collect();
     for b in bodies {
-        frags.push(b?);
+        sink(b?)?;
     }
-    Ok(frags)
+    }
+    Ok(())
 }
 
 fn take(mut tw: TarWriter<Vec<u8>>) -> Vec<u8> {
@@ -150,8 +169,9 @@ pub fn dir_layer(
     opts: LayerOptions,
 ) -> Result<Layer> {
     let entries = walk(root, ignore)?;
-    let frags = fragments_for(root, &entries, prefix, true)?;
-    layer::from_fragments(store, comment, frags, opts)
+    let mut b = layer::LayerBuilder::new(store, comment, opts)?;
+    stream_tree_into(root, &entries, prefix, true, &mut b)?;
+    b.finish()
 }
 
 pub fn copy_tree(src: &Path, dst: &Path, ignore: &Ignore) -> Result<u64> {
@@ -189,8 +209,14 @@ pub fn copy_tree(src: &Path, dst: &Path, ignore: &Ignore) -> Result<u64> {
 }
 
 pub fn upper_fragments(upper: &Path, prefix: &str, include: &[String], exclude: &[String]) -> Result<Vec<Vec<u8>>> {
+    let mut buf = Vec::new();
+    stream_upper(upper, prefix, include, exclude, &mut buf)?;
+    Ok(vec![buf])
+}
+
+pub fn stream_upper<W: std::io::Write>(upper: &Path, prefix: &str, include: &[String], exclude: &[String], out: &mut W) -> Result<()> {
     use std::os::unix::fs::FileTypeExt;
-    let mut tw = TarWriter::new(Vec::new());
+    let mut tw = TarWriter::new(out);
     for d in ancestors(prefix) {
         tw.dir(&d, 0o755)?;
     }
@@ -204,11 +230,11 @@ pub fn upper_fragments(upper: &Path, prefix: &str, include: &[String], exclude: 
         };
         n > 0 && buf[0] == b'y'
     }
-    fn walk_upper(
+    fn walk_upper<W: std::io::Write>(
         root: &Path,
         dir: &Path,
         rel: &str,
-        tw: &mut TarWriter<Vec<u8>>,
+        tw: &mut TarWriter<W>,
         prefix: &str,
         include: &[String],
         exclude: &[String],
@@ -256,5 +282,5 @@ pub fn upper_fragments(upper: &Path, prefix: &str, include: &[String], exclude: 
     }
     walk_upper(upper, upper, "", &mut tw, prefix, include, exclude, &skip_always)?;
     tw.set_owner(0, 0);
-    Ok(vec![take(tw)])
+    Ok(())
 }

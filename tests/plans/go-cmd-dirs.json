@@ -1,0 +1,133 @@
+{
+ "app": "go-cmd-dirs",
+ "facts": {
+  "cgo": "disabled",
+  "go": "1.25.3 (mise.toml)",
+  "module": "gin",
+  "package": "./cmd/server"
+ },
+ "image": {
+  "cmd": [
+   "/app/out"
+  ],
+  "entrypoint": [],
+  "env": [],
+  "layers": [
+   "layer-app",
+   "layer-bin"
+  ],
+  "ports": [],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "go",
+ "steps": [
+  {
+   "action": {
+    "image": "gcr.io/distroless/static-debian12",
+    "kind": "resolve-base"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve gcr.io/distroless/static-debian12"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "kind": "toolchain",
+    "parts": [],
+    "spec": "1.25.3",
+    "tool": "go"
+   },
+   "deps": [],
+   "id": "go",
+   "name": "go 1.25.3"
+  },
+  {
+   "action": {
+    "gosum_sha256": "25d0faa11d4a6c6af50ec2edd13f74e0ff5d495c57b24e79d0cdf4b1b0c07b53",
+    "kind": "go-modules"
+   },
+   "deps": [],
+   "id": "modules",
+   "name": "fetch Go modules"
+  },
+  {
+   "action": {
+    "argv": [
+     "go",
+     "build",
+     "-trimpath",
+     "-ldflags=-s -w",
+     "-o",
+     "{work}/out/app",
+     "./cmd/server"
+    ],
+    "cwd": "@app",
+    "env": {
+     "CGO_ENABLED": "0"
+    },
+    "kind": "run",
+    "network": false
+   },
+   "deps": [
+    "go",
+    "modules"
+   ],
+   "id": "build",
+   "name": "go build ./cmd/server"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "exclude": [],
+     "type": "app-source"
+    },
+    "kind": "layer"
+   },
+   "deps": [],
+   "id": "layer-app",
+   "name": "layer app source"
+  },
+  {
+   "action": {
+    "dest": "app/out",
+    "from": {
+     "mode": 493,
+     "path": "{work}/out/app",
+     "type": "work-file"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "build"
+   ],
+   "id": "layer-bin",
+   "name": "layer binary"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-app",
+    "layer-bin"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": []
+}

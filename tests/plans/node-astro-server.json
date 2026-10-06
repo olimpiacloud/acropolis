@@ -1,0 +1,277 @@
+{
+ "app": "node-astro-server",
+ "facts": {
+  "framework": "astro",
+  "install-scripts": "@esbuild/linux-x64, @img/sharp-libvips-linux-x64, @img/sharp-linux-x64, @rollup/rollup-linux-x64-gnu, esbuild, sharp",
+  "node": "lts (default)",
+  "package-manager": "pnpm",
+  "runtime": "node server (built)"
+ },
+ "image": {
+  "cmd": [
+   "node",
+   "dist/server/entry.mjs"
+  ],
+  "entrypoint": [],
+  "env": [
+   [
+    "NODE_ENV",
+    "production"
+   ],
+   [
+    "PATH",
+    "/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+   ],
+   [
+    "npm_config_verify_deps_before_run",
+    "false"
+   ],
+   [
+    "pnpm_config_verify_deps_before_run",
+    "false"
+   ],
+   [
+    "npm_config_update_notifier",
+    "false"
+   ],
+   [
+    "pnpm_config_update_notifier",
+    "false"
+   ],
+   [
+    "COREPACK_ENABLE_STRICT",
+    "0"
+   ],
+   [
+    "npm_config_user_agent",
+    "pnpm/{version:npm:pnpm|8} npm/? node/v{version:node|lts} linux x64"
+   ],
+   [
+    "npm_lifecycle_event",
+    "start"
+   ],
+   [
+    "npm_package_name",
+    "node-astro-server"
+   ],
+   [
+    "HOST",
+    "0.0.0.0"
+   ]
+  ],
+  "layers": [
+   "layer-pm",
+   "layer-deps",
+   "layer-app"
+  ],
+  "ports": [],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "node",
+ "steps": [
+  {
+   "action": {
+    "kind": "toolchain",
+    "parts": [
+     "npm",
+     "headers"
+    ],
+    "spec": "lts",
+    "tool": "node"
+   },
+   "deps": [],
+   "id": "node",
+   "name": "node lts"
+  },
+  {
+   "action": {
+    "dev": true,
+    "kind": "npm-fetch",
+    "lockfile": "pnpm-lock.yaml",
+    "lockfile_sha256": "cf3ad87ca65609e71d986947cbfa2ad6688911cd8da7f34837ac559325709dad",
+    "manager": "pnpm"
+   },
+   "deps": [],
+   "id": "npm-fetch",
+   "name": "fetch packages"
+  },
+  {
+   "action": {
+    "exclude": [
+     "**/node_modules"
+    ],
+    "kind": "copy-source"
+   },
+   "deps": [],
+   "id": "source",
+   "name": "copy source"
+  },
+  {
+   "action": {
+    "dev": true,
+    "kind": "npm-install",
+    "manager": "pnpm",
+    "scripts": "all",
+    "target": "src"
+   },
+   "deps": [
+    "npm-fetch",
+    "source",
+    "node"
+   ],
+   "id": "install",
+   "name": "install node_modules"
+  },
+  {
+   "action": {
+    "argv": [
+     "/bin/sh",
+     "-c",
+     "astro build"
+    ],
+    "cwd": ".",
+    "env": {
+     "NEXT_TELEMETRY_DISABLED": "1",
+     "NODE_ENV": "production",
+     "npm_lifecycle_event": "build",
+     "npm_package_name": "node-astro-server"
+    },
+    "kind": "run",
+    "network": false
+   },
+   "deps": [
+    "node",
+    "install"
+   ],
+   "id": "build",
+   "name": "run astro build"
+  },
+  {
+   "action": {
+    "image": "node:lts-trixie-slim",
+    "kind": "resolve-base"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve node:lts-trixie-slim"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "dev": false,
+    "kind": "npm-fetch",
+    "lockfile": "pnpm-lock.yaml",
+    "lockfile_sha256": "",
+    "manager": "pnpm"
+   },
+   "deps": [
+    "npm-fetch"
+   ],
+   "id": "npm-fetch-prod",
+   "name": "select production packages"
+  },
+  {
+   "action": {
+    "dev": false,
+    "kind": "npm-install",
+    "manager": "pnpm",
+    "scripts": "all",
+    "target": "prod"
+   },
+   "deps": [
+    "npm-fetch-prod",
+    "node"
+   ],
+   "id": "install-prod",
+   "name": "install production node_modules + scripts"
+  },
+  {
+   "action": {
+    "dest": "app/node_modules",
+    "from": {
+     "exclude": [],
+     "path": "@work/prod/node_modules",
+     "type": "work-dir"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "install-prod"
+   ],
+   "id": "layer-deps",
+   "name": "layer node_modules (production)"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "exclude": [
+      "**/node_modules",
+      ".next/cache"
+     ],
+     "path": ".",
+     "type": "work-dir"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "build"
+   ],
+   "id": "layer-app",
+   "name": "layer app + build output"
+  },
+  {
+   "action": {
+    "kind": "toolchain",
+    "parts": [],
+    "spec": "8",
+    "tool": "npm:pnpm"
+   },
+   "deps": [],
+   "id": "pnpm",
+   "name": "pnpm 8"
+  },
+  {
+   "action": {
+    "dest": "usr/local",
+    "from": {
+     "tool": "npm:pnpm",
+     "type": "tool-tree"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "pnpm"
+   ],
+   "id": "layer-pm",
+   "name": "layer pnpm CLI"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-deps",
+    "layer-app",
+    "layer-pm"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": [
+  "install scripts of @esbuild/linux-x64, @img/sharp-libvips-linux-x64, @img/sharp-linux-x64, @rollup/rollup-linux-x64-gnu, esbuild, sharp run with network access (policy: all); set ACRO_INSTALL_SCRIPTS=none to disable"
+ ]
+}

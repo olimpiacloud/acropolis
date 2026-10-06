@@ -132,7 +132,7 @@ fn plan_in_image(app: &RustApp, env: &Env, dir: &Path, name: &str) -> Result<Pla
     run_env.insert("CARGO_HOME".to_string(), "/app/.acro-cargo".to_string());
     for (k, v) in &env.vars {
         if !k.starts_with("ACRO_") && !k.starts_with("RAILPACK_") {
-            run_env.insert(k.clone(), v.clone());
+            run_env.insert(k.clone(), crate::env_ref(k, v));
         }
     }
     b.step(
@@ -181,7 +181,7 @@ pub fn plan(app: &RustApp, env: &Env, dir: &Path, name: &str) -> Result<Plan> {
     let mut run_env = BTreeMap::new();
     for (k, v) in &env.vars {
         if !k.starts_with("ACRO_") && !k.starts_with("RAILPACK_") {
-            run_env.insert(k.clone(), v.clone());
+            run_env.insert(k.clone(), crate::env_ref(k, v));
         }
     }
     if app.has_lock {
@@ -229,7 +229,7 @@ pub fn plan(app: &RustApp, env: &Env, dir: &Path, name: &str) -> Result<Plan> {
         "layer binary",
         Action::Layer {
             dest: format!("app/bin/{}", app.bin),
-            from: LayerFrom::WorkFile { path: format!("{{work}}/target/release/{}", app.bin), mode: 0o755 },
+            from: LayerFrom::WorkFile { path: format!("{{cargo_target}}/release/{}", app.bin), mode: 0o755 },
         },
         &["build"],
     );

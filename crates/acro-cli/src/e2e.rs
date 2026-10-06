@@ -309,9 +309,13 @@ fn run_case(cfg: &E2eConfig, example: &str, idx: usize, case: &TestCase) -> Case
     let rootfs = std::env::temp_dir().join(format!("acro-e2e-rootfs-{example}-{idx}-{}", std::process::id()));
     let mut cmd = Command::new(&cfg.acro_bin);
     cmd.env("ACRO_ROOTFS", &rootfs);
+
     cmd.arg("--home").arg(&home).arg("build").arg(&dir).arg("-t").arg(&tag);
     for (k, v) in &case.envs {
         cmd.arg("-e").arg(format!("{k}={v}"));
+    }
+    if std::env::var_os("ACRO_E2E_CACHE").is_none() {
+        cmd.arg("-e").arg("ACRO_NO_CACHE=1");
     }
     if let Some(c) = &case.config_file {
         cmd.arg("--config").arg(c);
@@ -427,7 +431,7 @@ fn reclaim_disk(cfg: &E2eConfig) {
     if let Err(e) = ensure_registry(&cfg.registry, &cfg.home) {
         eprintln!("[e2e] registry restart failed: {e:#}");
     }
-    for sub in ["work", "store", "toolchains"] {
+    for sub in ["work", "cache", "store", "toolchains"] {
         if !low_disk(cfg) {
             break;
         }

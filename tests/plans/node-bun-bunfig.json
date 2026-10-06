@@ -1,0 +1,157 @@
+{
+ "app": "node-bun-bunfig",
+ "facts": {
+  "framework": "none",
+  "node": "lts (default)",
+  "package-manager": "bun",
+  "runtime": "node server (no build step)"
+ },
+ "image": {
+  "cmd": [
+   "bun",
+   "index.ts"
+  ],
+  "entrypoint": [],
+  "env": [
+   [
+    "NODE_ENV",
+    "production"
+   ],
+   [
+    "PATH",
+    "/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+   ],
+   [
+    "npm_config_user_agent",
+    "bun/ npm/? node/vlts linux x64"
+   ],
+   [
+    "npm_lifecycle_event",
+    "start"
+   ],
+   [
+    "npm_package_name",
+    "node-bun-bunfig"
+   ]
+  ],
+  "layers": [
+   "layer-bun",
+   "layer-deps",
+   "layer-app"
+  ],
+  "ports": [],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "node",
+ "steps": [
+  {
+   "action": {
+    "image": "node:lts-bookworm-slim",
+    "kind": "resolve-base"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve node:lts-bookworm-slim"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "dev": false,
+    "kind": "npm-fetch",
+    "lockfile": "bun.lock",
+    "lockfile_sha256": "4b20c0e5c39c4c8dcb749af4a25883b661b06fa49fabcb5cb7d6c93ea2d062a4",
+    "manager": "bun"
+   },
+   "deps": [],
+   "id": "npm-fetch",
+   "name": "fetch production packages"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "dev": false,
+     "type": "node-modules"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "npm-fetch"
+   ],
+   "id": "layer-deps",
+   "name": "layer node_modules (production)"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "exclude": [
+      "**/node_modules"
+     ],
+     "type": "app-source"
+    },
+    "kind": "layer"
+   },
+   "deps": [],
+   "id": "layer-app",
+   "name": "layer app source"
+  },
+  {
+   "action": {
+    "kind": "toolchain",
+    "parts": [],
+    "spec": "latest",
+    "tool": "bun"
+   },
+   "deps": [],
+   "id": "bun",
+   "name": "bun latest"
+  },
+  {
+   "action": {
+    "dest": "usr/local/bin",
+    "from": {
+     "files": [
+      [
+       "bin/bun",
+       "bun"
+      ]
+     ],
+     "tool": "bun",
+     "type": "tool"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "bun"
+   ],
+   "id": "layer-bun",
+   "name": "layer bun binary"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-deps",
+    "layer-app",
+    "layer-bun"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": []
+}

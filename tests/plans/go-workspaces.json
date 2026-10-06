@@ -1,0 +1,123 @@
+{
+ "app": "go-workspaces",
+ "facts": {
+  "cgo": "disabled",
+  "go": "1.23 (go.work)",
+  "module": "",
+  "package": "./api"
+ },
+ "image": {
+  "cmd": [
+   "/app/out"
+  ],
+  "entrypoint": [],
+  "env": [],
+  "layers": [
+   "layer-app",
+   "layer-bin"
+  ],
+  "ports": [],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "go",
+ "steps": [
+  {
+   "action": {
+    "image": "gcr.io/distroless/static-debian12",
+    "kind": "resolve-base"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve gcr.io/distroless/static-debian12"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "kind": "toolchain",
+    "parts": [],
+    "spec": "1.23",
+    "tool": "go"
+   },
+   "deps": [],
+   "id": "go",
+   "name": "go 1.23"
+  },
+  {
+   "action": {
+    "argv": [
+     "go",
+     "build",
+     "-trimpath",
+     "-ldflags=-s -w",
+     "-o",
+     "{work}/out/app",
+     "./api"
+    ],
+    "cwd": "@app",
+    "env": {
+     "CGO_ENABLED": "0"
+    },
+    "kind": "run",
+    "network": false
+   },
+   "deps": [
+    "go"
+   ],
+   "id": "build",
+   "name": "go build ./api"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "exclude": [],
+     "type": "app-source"
+    },
+    "kind": "layer"
+   },
+   "deps": [],
+   "id": "layer-app",
+   "name": "layer app source"
+  },
+  {
+   "action": {
+    "dest": "app/out",
+    "from": {
+     "mode": 493,
+     "path": "{work}/out/app",
+     "type": "work-file"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "build"
+   ],
+   "id": "layer-bin",
+   "name": "layer binary"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-app",
+    "layer-bin"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": []
+}

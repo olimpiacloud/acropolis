@@ -1,0 +1,120 @@
+{
+ "app": "rust-rocket",
+ "facts": {
+  "binary": "rocket",
+  "host-glibc": "2.39",
+  "rust": "latest (mise.toml)"
+ },
+ "image": {
+  "cmd": [
+   "/app/bin/rocket"
+  ],
+  "entrypoint": [],
+  "env": [
+   [
+    "ROCKET_ADDRESS",
+    "0.0.0.0"
+   ]
+  ],
+  "layers": [
+   "layer-bin"
+  ],
+  "ports": [],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "rust",
+ "steps": [
+  {
+   "action": {
+    "image": "gcr.io/distroless/cc-debian13",
+    "kind": "resolve-base"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve gcr.io/distroless/cc-debian13"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "kind": "toolchain",
+    "parts": [],
+    "spec": "latest",
+    "tool": "rust"
+   },
+   "deps": [],
+   "id": "rust",
+   "name": "rust latest"
+  },
+  {
+   "action": {
+    "kind": "cargo-vendor",
+    "lockfile_sha256": "71e28bf1e89dd0d7410d39b1c45d4917d94fcd942f632f3fbcac1403260619e8"
+   },
+   "deps": [],
+   "id": "crates",
+   "name": "fetch crates"
+  },
+  {
+   "action": {
+    "argv": [
+     "cargo",
+     "build",
+     "--release",
+     "--locked",
+     "--offline",
+     "--bin",
+     "rocket"
+    ],
+    "cwd": "@app",
+    "env": {},
+    "kind": "run",
+    "network": false
+   },
+   "deps": [
+    "rust",
+    "crates"
+   ],
+   "id": "build",
+   "name": "cargo build --release (rocket)"
+  },
+  {
+   "action": {
+    "dest": "app/bin/rocket",
+    "from": {
+     "mode": 493,
+     "path": "{cargo_target}/release/rocket",
+     "type": "work-file"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "build"
+   ],
+   "id": "layer-bin",
+   "name": "layer binary"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-bin"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": []
+}

@@ -272,7 +272,7 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     env_map.insert("UV_PYTHON".into(), "/usr/local/bin/python3".into());
     for (k, v) in &env.vars {
         if !k.starts_with("ACRO_") && !k.starts_with("RAILPACK_") {
-            env_map.insert(k.clone(), v.clone());
+            env_map.insert(k.clone(), crate::env_ref(k, v));
         }
     }
     let text = deps_text(dir);

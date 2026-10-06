@@ -1,0 +1,121 @@
+{
+ "app": "dotnet-api",
+ "facts": {
+  "framework": "net8.0",
+  "sdk": "8.0.404"
+ },
+ "image": {
+  "cmd": [
+   "/bin/sh",
+   "-c",
+   "dotnet out/csharp-api.dll"
+  ],
+  "entrypoint": [],
+  "env": [
+   [
+    "ASPNETCORE_URLS",
+    "http://0.0.0.0:8080"
+   ],
+   [
+    "DOTNET_CLI_TELEMETRY_OPTOUT",
+    "1"
+   ]
+  ],
+  "layers": [
+   "layer-app"
+  ],
+  "ports": [],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "dotnet",
+ "steps": [
+  {
+   "action": {
+    "image": "mcr.microsoft.com/dotnet/aspnet:8.0",
+    "kind": "resolve-base"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve runtime image"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "exclude": [],
+    "kind": "copy-source"
+   },
+   "deps": [],
+   "id": "source",
+   "name": "copy source"
+  },
+  {
+   "action": {
+    "after": null,
+    "commands": [
+     "dotnet restore",
+     "dotnet publish --no-restore -c Release -o out"
+    ],
+    "env": {
+     "DOTNET_CLI_TELEMETRY_OPTOUT": "1",
+     "DOTNET_NOLOGO": "1",
+     "DOTNET_ROLL_FORWARD": "Major"
+    },
+    "image": "mcr.microsoft.com/dotnet/sdk:8.0.404",
+    "kind": "image-run",
+    "mount_app": true,
+    "network": true,
+    "tools": []
+   },
+   "deps": [
+    "source"
+   ],
+   "id": "build",
+   "name": "build in mcr.microsoft.com/dotnet/sdk:8.0.404"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "items": [
+      [
+       "out",
+       "out"
+      ]
+     ],
+     "type": "paths"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "build"
+   ],
+   "id": "layer-app",
+   "name": "layer build output"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-app"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": [
+  "dotnet dependencies are fetched with network access inside the build image"
+ ]
+}

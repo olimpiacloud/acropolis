@@ -1,0 +1,108 @@
+{
+ "app": "cpp-meson",
+ "facts": {
+  "executable": "cpp-meson"
+ },
+ "image": {
+  "cmd": [
+   "/bin/sh",
+   "-c",
+   "./build/cpp-meson"
+  ],
+  "entrypoint": [],
+  "env": [],
+  "layers": [
+   "layer-app"
+  ],
+  "ports": [],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "cpp",
+ "steps": [
+  {
+   "action": {
+    "image": "debian:bookworm-slim",
+    "kind": "resolve-base"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve runtime image"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "exclude": [],
+    "kind": "copy-source"
+   },
+   "deps": [],
+   "id": "source",
+   "name": "copy source"
+  },
+  {
+   "action": {
+    "after": null,
+    "commands": [
+     "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends build-essential meson ninja-build >/dev/null",
+     "meson setup build --buildtype=release",
+     "meson compile -C build"
+    ],
+    "env": {},
+    "image": "debian:bookworm",
+    "kind": "image-run",
+    "mount_app": true,
+    "network": true,
+    "tools": []
+   },
+   "deps": [
+    "source"
+   ],
+   "id": "build",
+   "name": "build in debian:bookworm"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "items": [
+      [
+       "build/cpp-meson",
+       "build/cpp-meson"
+      ]
+     ],
+     "type": "paths"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "build"
+   ],
+   "id": "layer-app",
+   "name": "layer build output"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-app"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": [
+  "cpp dependencies are fetched with network access inside the build image"
+ ]
+}

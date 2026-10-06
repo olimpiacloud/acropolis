@@ -1,5 +1,5 @@
 use crate::install::{
-    BinDir, InstallOptions, InstallPackage, InstallPlan, Link, Source, default_registry_url, platform_matches,
+    BinDir, InstallOptions, InstallPackage, InstallPlan, Link, Source, default_registry_url, platform_matches_named,
     relative_link,
 };
 use crate::lockfile::bins_of;
@@ -163,7 +163,7 @@ impl BunLock {
             let os = str_or_list(e.meta.get("os"));
             let cpu = str_or_list(e.meta.get("cpu"));
             let libc = str_or_list(e.meta.get("libc"));
-            if !platform_matches(&os, &cpu, &libc, &opts.platform) {
+            if !platform_matches_named(&e.name, &os, &cpu, &libc, &opts.platform) {
                 plan.skipped_platform.push(k.clone());
                 continue;
             }

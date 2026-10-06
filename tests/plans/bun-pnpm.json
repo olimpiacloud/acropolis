@@ -1,0 +1,205 @@
+{
+ "app": "bun-pnpm",
+ "facts": {
+  "framework": "none",
+  "node": "lts (default)",
+  "package-manager": "pnpm",
+  "runtime": "node server (no build step)"
+ },
+ "image": {
+  "cmd": [
+   "bun",
+   "index.ts"
+  ],
+  "entrypoint": [],
+  "env": [
+   [
+    "NODE_ENV",
+    "production"
+   ],
+   [
+    "PATH",
+    "/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+   ],
+   [
+    "npm_config_verify_deps_before_run",
+    "false"
+   ],
+   [
+    "pnpm_config_verify_deps_before_run",
+    "false"
+   ],
+   [
+    "npm_config_update_notifier",
+    "false"
+   ],
+   [
+    "pnpm_config_update_notifier",
+    "false"
+   ],
+   [
+    "COREPACK_ENABLE_STRICT",
+    "0"
+   ],
+   [
+    "npm_config_user_agent",
+    "pnpm/{version:npm:pnpm|9} npm/? node/v{version:node|lts} linux x64"
+   ],
+   [
+    "npm_lifecycle_event",
+    "start"
+   ],
+   [
+    "npm_package_name",
+    "bun-pnpm"
+   ]
+  ],
+  "layers": [
+   "layer-pm",
+   "layer-bun",
+   "layer-deps",
+   "layer-app"
+  ],
+  "ports": [],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "node",
+ "steps": [
+  {
+   "action": {
+    "image": "node:lts-bookworm-slim",
+    "kind": "resolve-base"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve node:lts-bookworm-slim"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "dev": false,
+    "kind": "npm-fetch",
+    "lockfile": "pnpm-lock.yaml",
+    "lockfile_sha256": "66d10449a2647802a7d3399c049d90fac64cf2cedaedbeb3b6557c63b43e6a5d",
+    "manager": "pnpm"
+   },
+   "deps": [],
+   "id": "npm-fetch",
+   "name": "fetch production packages"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "dev": false,
+     "type": "node-modules"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "npm-fetch"
+   ],
+   "id": "layer-deps",
+   "name": "layer node_modules (production)"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "exclude": [
+      "**/node_modules"
+     ],
+     "type": "app-source"
+    },
+    "kind": "layer"
+   },
+   "deps": [],
+   "id": "layer-app",
+   "name": "layer app source"
+  },
+  {
+   "action": {
+    "kind": "toolchain",
+    "parts": [],
+    "spec": "latest",
+    "tool": "bun"
+   },
+   "deps": [],
+   "id": "bun",
+   "name": "bun latest"
+  },
+  {
+   "action": {
+    "dest": "usr/local/bin",
+    "from": {
+     "files": [
+      [
+       "bin/bun",
+       "bun"
+      ]
+     ],
+     "tool": "bun",
+     "type": "tool"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "bun"
+   ],
+   "id": "layer-bun",
+   "name": "layer bun binary"
+  },
+  {
+   "action": {
+    "kind": "toolchain",
+    "parts": [],
+    "spec": "9",
+    "tool": "npm:pnpm"
+   },
+   "deps": [],
+   "id": "pnpm",
+   "name": "pnpm 9"
+  },
+  {
+   "action": {
+    "dest": "usr/local",
+    "from": {
+     "tool": "npm:pnpm",
+     "type": "tool-tree"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "pnpm"
+   ],
+   "id": "layer-pm",
+   "name": "layer pnpm CLI"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-deps",
+    "layer-app",
+    "layer-bun",
+    "layer-pm"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": []
+}

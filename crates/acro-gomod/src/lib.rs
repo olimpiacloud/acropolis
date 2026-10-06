@@ -139,15 +139,24 @@ fn extract_verified(cache: &ModCache, e: &SumEntry, zip_bytes: &[u8]) -> Result<
 pub async fn download_all(fetcher: &Fetcher, sum: &GoSum, cache: &ModCache, proxy: &str) -> Result<Stats> {
     let proxy = proxy.trim_end_matches('/');
     let zips = sum.zips.iter().map(|e| async move {
+        let marker = cache.module_dir(&e.module, &e.version).join(".acro-h1");
+        if std::fs::read_to_string(&marker).map(|h| h == e.h1).unwrap_or(false) {
+            return Ok::<u64, anyhow::Error>(0);
+        }
         let url = format!("{proxy}/{}/@v/{}.zip", escape(&e.module), escape(&e.version));
         let bytes = fetcher.bytes(&url).await?;
         let e2 = e.clone();
         let cache_root = cache.root.clone();
         let n = tokio::task::spawn_blocking(move || extract_verified(&ModCache { root: cache_root }, &e2, &bytes))
             .await??;
+        std::fs::write(&marker, &e.h1)?;
         Ok::<u64, anyhow::Error>(n)
     });
     let mods = sum.mods.iter().map(|e| async move {
+        let dest = cache.download_dir(&e.module).join(format!("{}.mod", escape(&e.version)));
+        if dest.exists() {
+            return Ok::<u64, anyhow::Error>(0);
+        }
         let url = format!("{proxy}/{}/@v/{}.mod", escape(&e.module), escape(&e.version));
         let bytes = fetcher.bytes(&url).await?;
         let got = hash1_gomod(&bytes);

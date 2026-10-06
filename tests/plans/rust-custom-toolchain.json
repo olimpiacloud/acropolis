@@ -1,0 +1,120 @@
+{
+ "app": "rust-custom-toolchain",
+ "facts": {
+  "binary": "rust-custom-toolchain",
+  "host-glibc": "2.39",
+  "rust": "1.59.0 (rust-toolchain)"
+ },
+ "image": {
+  "cmd": [
+   "/app/bin/rust-custom-toolchain"
+  ],
+  "entrypoint": [],
+  "env": [
+   [
+    "ROCKET_ADDRESS",
+    "0.0.0.0"
+   ]
+  ],
+  "layers": [
+   "layer-bin"
+  ],
+  "ports": [],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "rust",
+ "steps": [
+  {
+   "action": {
+    "image": "gcr.io/distroless/cc-debian13",
+    "kind": "resolve-base"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve gcr.io/distroless/cc-debian13"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "kind": "toolchain",
+    "parts": [],
+    "spec": "1.59.0",
+    "tool": "rust"
+   },
+   "deps": [],
+   "id": "rust",
+   "name": "rust 1.59.0"
+  },
+  {
+   "action": {
+    "kind": "cargo-vendor",
+    "lockfile_sha256": "736c6a7f9c4add93e85c8abe88db13426cc5b3ac5de93167d7cd145f6df5d31a"
+   },
+   "deps": [],
+   "id": "crates",
+   "name": "fetch crates"
+  },
+  {
+   "action": {
+    "argv": [
+     "cargo",
+     "build",
+     "--release",
+     "--locked",
+     "--offline",
+     "--bin",
+     "rust-custom-toolchain"
+    ],
+    "cwd": "@app",
+    "env": {},
+    "kind": "run",
+    "network": false
+   },
+   "deps": [
+    "rust",
+    "crates"
+   ],
+   "id": "build",
+   "name": "cargo build --release (rust-custom-toolchain)"
+  },
+  {
+   "action": {
+    "dest": "app/bin/rust-custom-toolchain",
+    "from": {
+     "mode": 493,
+     "path": "{cargo_target}/release/rust-custom-toolchain",
+     "type": "work-file"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "build"
+   ],
+   "id": "layer-bin",
+   "name": "layer binary"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-bin"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": []
+}

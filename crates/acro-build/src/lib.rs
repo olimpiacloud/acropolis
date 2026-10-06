@@ -1,5 +1,7 @@
 pub mod config;
 pub mod detect;
+pub mod errors;
+pub mod gc;
 pub mod ignore;
 pub mod plan;
 pub mod providers;
@@ -89,6 +91,10 @@ pub fn plan_app(dir: &Path, env: &Env) -> Result<Plan> {
     apply_mise_extras(&mut plan, dir, env);
     apply_runtime_packages(&mut plan, env)?;
     Ok(plan)
+}
+
+pub fn env_ref(name: &str, _value: &str) -> String {
+    format!("{{env:{name}}}")
 }
 
 fn layers_tool(plan: &Plan, tool: &str) -> bool {

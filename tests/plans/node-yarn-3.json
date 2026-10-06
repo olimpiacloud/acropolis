@@ -1,0 +1,166 @@
+{
+ "app": "node-yarn-3",
+ "facts": {
+  "framework": "none",
+  "node": "lts (default)",
+  "package-manager": "yarn",
+  "yarn": "3.8.7"
+ },
+ "image": {
+  "cmd": [
+   "/bin/sh",
+   "-c",
+   "P=/app/.pnp.cjs; [ -f $P ] || P=/app/.pnp.js; export NODE_OPTIONS=\"--require $P${NODE_OPTIONS:+ $NODE_OPTIONS}\"; [ -f /app/.pnp.loader.mjs ] && export NODE_OPTIONS=\"$NODE_OPTIONS --experimental-loader /app/.pnp.loader.mjs\"; exec node dist/index.js"
+  ],
+  "entrypoint": [],
+  "env": [
+   [
+    "NODE_ENV",
+    "production"
+   ],
+   [
+    "PATH",
+    "/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+   ],
+   [
+    "npm_config_user_agent",
+    "yarn/3.8.7 npm/? node/vlts linux x64"
+   ],
+   [
+    "npm_lifecycle_event",
+    "start"
+   ]
+  ],
+  "layers": [
+   "layer-app"
+  ],
+  "ports": [],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "node",
+ "steps": [
+  {
+   "action": {
+    "kind": "toolchain",
+    "parts": [
+     "headers"
+    ],
+    "spec": "lts",
+    "tool": "node"
+   },
+   "deps": [],
+   "id": "node",
+   "name": "node lts"
+  },
+  {
+   "action": {
+    "exclude": [
+     "**/node_modules"
+    ],
+    "kind": "copy-source"
+   },
+   "deps": [],
+   "id": "source",
+   "name": "copy source"
+  },
+  {
+   "action": {
+    "argv": [
+     "node",
+     "{src}/.yarn/releases/yarn-3.8.7.cjs",
+     "install",
+     "--immutable"
+    ],
+    "cwd": ".",
+    "env": {
+     "YARN_ENABLE_GLOBAL_CACHE": "0",
+     "YARN_ENABLE_INLINE_BUILDS": "1",
+     "YARN_ENABLE_TELEMETRY": "0"
+    },
+    "kind": "run",
+    "network": true
+   },
+   "deps": [
+    "node",
+    "source"
+   ],
+   "id": "install",
+   "name": "yarn install --immutable"
+  },
+  {
+   "action": {
+    "argv": [
+     "node",
+     "{src}/.yarn/releases/yarn-3.8.7.cjs",
+     "run",
+     "build"
+    ],
+    "cwd": ".",
+    "env": {
+     "NODE_ENV": "production",
+     "YARN_ENABLE_GLOBAL_CACHE": "0",
+     "YARN_ENABLE_INLINE_BUILDS": "1",
+     "YARN_ENABLE_TELEMETRY": "0"
+    },
+    "kind": "run",
+    "network": false
+   },
+   "deps": [
+    "install"
+   ],
+   "id": "build",
+   "name": "yarn run build"
+  },
+  {
+   "action": {
+    "image": "node:lts-bookworm-slim",
+    "kind": "resolve-base"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve node:lts-bookworm-slim"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "exclude": [],
+     "path": ".",
+     "type": "work-dir"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "build"
+   ],
+   "id": "layer-app",
+   "name": "layer app + dependencies"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-app"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": [
+  "yarn berry installs run the yarn CLI with network access"
+ ]
+}

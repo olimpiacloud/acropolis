@@ -1,0 +1,156 @@
+{
+ "app": "node-lts-npm-native-deps",
+ "facts": {
+  "framework": "none",
+  "install-scripts": "bcrypt, better-sqlite3, canvas, sharp",
+  "node": "lts (mise.toml)",
+  "package-manager": "npm",
+  "runtime": "node server (no build step)"
+ },
+ "image": {
+  "cmd": [
+   "node",
+   "index.js"
+  ],
+  "entrypoint": [],
+  "env": [
+   [
+    "NODE_ENV",
+    "production"
+   ],
+   [
+    "PATH",
+    "/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+   ],
+   [
+    "npm_config_user_agent",
+    "npm/10 node/vlts linux x64"
+   ],
+   [
+    "npm_lifecycle_event",
+    "start"
+   ],
+   [
+    "npm_package_name",
+    "node-latest-npm-native-deps"
+   ]
+  ],
+  "layers": [
+   "layer-deps",
+   "layer-app"
+  ],
+  "ports": [],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "node",
+ "steps": [
+  {
+   "action": {
+    "image": "node:lts-trixie-slim",
+    "kind": "resolve-base"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve node:lts-trixie-slim"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "dev": false,
+    "kind": "npm-fetch",
+    "lockfile": "package-lock.json",
+    "lockfile_sha256": "e90cf30aeb814890fabb317f8692047375854b2dad049b276edd9f15c69b87f6",
+    "manager": "npm"
+   },
+   "deps": [],
+   "id": "npm-fetch",
+   "name": "fetch production packages"
+  },
+  {
+   "action": {
+    "kind": "toolchain",
+    "parts": [
+     "npm",
+     "headers"
+    ],
+    "spec": "lts",
+    "tool": "node"
+   },
+   "deps": [],
+   "id": "node",
+   "name": "node lts"
+  },
+  {
+   "action": {
+    "dev": false,
+    "kind": "npm-install",
+    "manager": "npm",
+    "scripts": "all",
+    "target": "prod"
+   },
+   "deps": [
+    "npm-fetch",
+    "node"
+   ],
+   "id": "install-prod",
+   "name": "install production node_modules + scripts"
+  },
+  {
+   "action": {
+    "dest": "app/node_modules",
+    "from": {
+     "exclude": [],
+     "path": "@work/prod/node_modules",
+     "type": "work-dir"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "install-prod"
+   ],
+   "id": "layer-deps",
+   "name": "layer node_modules (production)"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "exclude": [
+      "**/node_modules"
+     ],
+     "type": "app-source"
+    },
+    "kind": "layer"
+   },
+   "deps": [],
+   "id": "layer-app",
+   "name": "layer app source"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-deps",
+    "layer-app"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": [
+  "install scripts of bcrypt, better-sqlite3, canvas, sharp run with network access (policy: all); set ACRO_INSTALL_SCRIPTS=none to disable"
+ ]
+}

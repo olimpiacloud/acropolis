@@ -55,6 +55,10 @@ enum Command {
     Inspect {
         reference: String,
     },
+    Gc {
+        #[arg(long)]
+        max_size: String,
+    },
     Bench {
         #[arg(long, value_delimiter = ',', default_value = "express-api,go-api")]
         apps: Vec<String>,
@@ -221,8 +225,18 @@ fn main() {
     let code = match rt.block_on(run(cli)) {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("error: {e:#}");
-            1
+            let class = acro_build::errors::classify(&e);
+            acro_events::emit(acro_events::Event::BuildFailed {
+                ms: acro_events::elapsed_ms(),
+                class: class.name().to_string(),
+                exit_code: class.exit_code(),
+                error: format!("{e:#}"),
+            });
+            if acro_events::mode() != acro_events::Mode::Json {
+                eprintln!("error: {e:#}");
+                eprintln!("error class: {} (exit {})", class.name(), class.exit_code());
+            }
+            class.exit_code()
         }
     };
     std::process::exit(code);
@@ -249,14 +263,20 @@ async fn run(cli: Cli) -> Result<()> {
             }
             let compression = Compression::parse(&compression).with_context(|| format!("unknown compression {compression}"))?;
             let target = tag.as_deref().map(Reference::parse).transpose()?;
+            let abs_home = std::path::absolute(&home)?;
+            let readonly = vec![
+                abs_home.join("store"),
+                abs_home.join("toolchains"),
+                std::env::var_os("ACRO_ROOTFS").map(PathBuf::from).unwrap_or_else(|| abs_home.join("rootfs")),
+            ];
             let exec: Arc<dyn Executor> = if hermetic == "off" {
-                Arc::new(HostExecutor { isolation: Isolation::None })
+                Arc::new(HostExecutor { isolation: Isolation::None, readonly: Vec::new() })
             } else {
                 let e = HostExecutor::detect();
                 if e.isolation == Isolation::None {
                     bail!("cannot create network namespaces for hermetic build steps; rerun with --hermetic=off to build without isolation");
                 }
-                Arc::new(e)
+                Arc::new(e.with_readonly(readonly))
             };
             let opts = BuildOptions {
                 app_dir: std::fs::canonicalize(&dir).with_context(|| format!("{} not found", dir.display()))?,
@@ -285,6 +305,19 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Command::Bench { .. } | Command::Report { .. } | Command::E2e { .. } => unreachable!(),
+        Command::Gc { max_size } => {
+            let max = acro_build::gc::parse_size(&max_size).with_context(|| format!("invalid size {max_size}"))?;
+            let rootfs = std::env::var_os("ACRO_ROOTFS").map(PathBuf::from).unwrap_or_else(|| home.join("rootfs"));
+            let r = acro_build::gc::collect(&home, &rootfs, max)?;
+            println!(
+                "gc: {:.2} GB -> {:.2} GB, {} entries removed{}",
+                r.before as f64 / 1e9,
+                r.after as f64 / 1e9,
+                r.removed,
+                if r.exclusive { "" } else { " (builds running: only entries idle for over 1h)" }
+            );
+            Ok(())
+        }
         Command::Inspect { reference } => {
             let r = Reference::parse(&reference)?;
             let client = reqwest::Client::builder().build()?;

@@ -1,0 +1,115 @@
+{
+ "app": "rust-system-deps",
+ "facts": {
+  "binary": "rust-open-ssl",
+  "build": "inside rust image (system libraries needed by -sys crates)",
+  "rust": "1.85.1 (Cargo.toml edition)"
+ },
+ "image": {
+  "cmd": [
+   "/app/bin/rust-open-ssl"
+  ],
+  "entrypoint": [],
+  "env": [
+   [
+    "ROCKET_ADDRESS",
+    "0.0.0.0"
+   ]
+  ],
+  "layers": [
+   "layer-bin"
+  ],
+  "ports": [],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "rust",
+ "steps": [
+  {
+   "action": {
+    "image": "gcr.io/distroless/cc-debian12",
+    "kind": "resolve-base"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve gcr.io/distroless/cc-debian12"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "exclude": [
+     "target"
+    ],
+    "kind": "copy-source"
+   },
+   "deps": [],
+   "id": "source",
+   "name": "copy source"
+  },
+  {
+   "action": {
+    "after": null,
+    "commands": [
+     "cargo build --release --locked --bin rust-open-ssl"
+    ],
+    "env": {
+     "CARGO_HOME": "/app/.acro-cargo"
+    },
+    "image": "rust:1.85.1-bookworm",
+    "kind": "image-run",
+    "mount_app": true,
+    "network": true,
+    "tools": []
+   },
+   "deps": [
+    "source"
+   ],
+   "id": "build",
+   "name": "cargo build --release --locked --bin rust-open-ssl (in rust:1.85.1-bookworm)"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "items": [
+      [
+       "target/release/rust-open-ssl",
+       "bin/rust-open-ssl"
+      ]
+     ],
+     "type": "paths"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "build"
+   ],
+   "id": "layer-bin",
+   "name": "layer binary"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-bin"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": [
+  "crates with system libraries are built inside the rust image with network access"
+ ]
+}

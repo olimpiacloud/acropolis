@@ -1,5 +1,5 @@
 use crate::install::{
-    BinDir, InstallOptions, InstallPackage, InstallPlan, Link, Source, default_registry_url, platform_matches,
+    BinDir, InstallOptions, InstallPackage, InstallPlan, Link, Source, default_registry_url, platform_matches_named,
     relative_link,
 };
 use acro_store::Integrity;
@@ -200,7 +200,7 @@ impl PnpmLock {
                 continue;
             }
             let Some(p) = self.packages.get(&dp) else { continue };
-            if !platform_matches(&p.os, &p.cpu, &p.libc, &opts.platform) {
+            if !platform_matches_named(&p.name, &p.os, &p.cpu, &p.libc, &opts.platform) {
                 skipped_platform.push(dp.clone());
                 continue;
             }

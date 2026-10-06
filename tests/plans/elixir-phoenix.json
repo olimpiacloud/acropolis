@@ -1,0 +1,134 @@
+{
+ "app": "elixir-phoenix",
+ "facts": {
+  "app": "hello",
+  "elixir": "1.16"
+ },
+ "image": {
+  "cmd": [
+   "/bin/sh",
+   "-c",
+   "/app/_build/prod/rel/hello/bin/hello start"
+  ],
+  "entrypoint": [],
+  "env": [
+   [
+    "MIX_ENV",
+    "prod"
+   ],
+   [
+    "LANG",
+    "C.UTF-8"
+   ],
+   [
+    "PORT",
+    "4000"
+   ]
+  ],
+  "layers": [
+   "layer-app"
+  ],
+  "ports": [],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "elixir",
+ "steps": [
+  {
+   "action": {
+    "image": "elixir:1.16",
+    "kind": "resolve-base"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve runtime image"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "exclude": [],
+    "kind": "copy-source"
+   },
+   "deps": [],
+   "id": "source",
+   "name": "copy source"
+  },
+  {
+   "action": {
+    "after": null,
+    "commands": [
+     "mkdir -p config deps _build",
+     "mix local.hex --force",
+     "mix local.rebar --force",
+     "mix deps.get --only prod",
+     "mix deps.compile",
+     "mix compile",
+     "mix assets.deploy",
+     "mix release --overwrite"
+    ],
+    "env": {
+     "ELIXIR_ERL_OPTIONS": "+fnu",
+     "HEX_HOME": "/app/.hex",
+     "LANG": "C.UTF-8",
+     "MIX_ENV": "prod",
+     "MIX_HOME": "/app/.mix"
+    },
+    "image": "@base",
+    "kind": "image-run",
+    "mount_app": true,
+    "network": true,
+    "tools": []
+   },
+   "deps": [
+    "source",
+    "base"
+   ],
+   "id": "build",
+   "name": "build in @base"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "items": [
+      [
+       "_build/prod/rel/hello",
+       "_build/prod/rel/hello"
+      ]
+     ],
+     "type": "paths"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "build"
+   ],
+   "id": "layer-app",
+   "name": "layer build output"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-app"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": [
+  "elixir dependencies are fetched with network access inside the build image"
+ ]
+}

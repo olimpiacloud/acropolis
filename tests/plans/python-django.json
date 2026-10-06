@@ -1,0 +1,215 @@
+{
+ "app": "python-django",
+ "facts": {
+  "apt-packages": "libpq5",
+  "manager": "uv",
+  "python": "3.11 (.python-version)",
+  "runtime-packages": "libpq5"
+ },
+ "image": {
+  "cmd": [
+   "/bin/sh",
+   "-c",
+   "python manage.py migrate && gunicorn --bind 0.0.0.0:${PORT:-8000} mysite.wsgi:application"
+  ],
+  "entrypoint": [],
+  "env": [
+   [
+    "PATH",
+    "/app/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+   ],
+   [
+    "VIRTUAL_ENV",
+    "/app/.venv"
+   ],
+   [
+    "PYTHONUNBUFFERED",
+    "1"
+   ]
+  ],
+  "layers": [
+   "layer-apt",
+   "layer-uv",
+   "layer-app"
+  ],
+  "ports": [],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "python",
+ "steps": [
+  {
+   "action": {
+    "image": "python:3.11-slim-bookworm",
+    "kind": "resolve-base"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve python:3.11-slim-bookworm"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "exclude": [
+     ".venv",
+     "__pycache__",
+     "**/__pycache__"
+    ],
+    "kind": "copy-source"
+   },
+   "deps": [],
+   "id": "source",
+   "name": "copy source"
+  },
+  {
+   "action": {
+    "kind": "toolchain",
+    "parts": [],
+    "spec": "",
+    "tool": "uv"
+   },
+   "deps": [],
+   "id": "uv",
+   "name": "uv"
+  },
+  {
+   "action": {
+    "after": null,
+    "commands": [
+     "dpkg -s libpq-dev >/dev/null 2>&1 || (apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libpq-dev >/dev/null)",
+     "uv sync --locked --no-dev --no-editable"
+    ],
+    "env": {
+     "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+     "PYTHONDONTWRITEBYTECODE": "1",
+     "UV_CACHE_DIR": "/tmp/uv-cache",
+     "UV_COMPILE_BYTECODE": "1",
+     "UV_LINK_MODE": "copy",
+     "UV_PROJECT_ENVIRONMENT": "/app/.venv",
+     "UV_PYTHON": "/usr/local/bin/python3",
+     "UV_PYTHON_DOWNLOADS": "never",
+     "UV_TOOL_DIR": "/tmp/uv-tools",
+     "VIRTUAL_ENV": "/app/.venv"
+    },
+    "image": "python:3.11-bookworm",
+    "kind": "image-run",
+    "mount_app": true,
+    "network": true,
+    "tools": [
+     "uv"
+    ]
+   },
+   "deps": [
+    "source",
+    "uv"
+   ],
+   "id": "install",
+   "name": "install python dependencies"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "exclude": [],
+     "path": ".",
+     "type": "work-dir"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "install"
+   ],
+   "id": "layer-app",
+   "name": "layer app + .venv"
+  },
+  {
+   "action": {
+    "dest": "usr/local/bin",
+    "from": {
+     "files": [
+      [
+       "bin/uv",
+       "uv"
+      ],
+      [
+       "bin/uvx",
+       "uvx"
+      ]
+     ],
+     "tool": "uv",
+     "type": "tool"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "uv"
+   ],
+   "id": "layer-uv",
+   "name": "layer uv CLI"
+  },
+  {
+   "action": {
+    "after": null,
+    "commands": [
+     "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libpq5 && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb /var/log/apt /var/log/dpkg.log"
+    ],
+    "env": {},
+    "image": "python:3.11-slim-bookworm",
+    "kind": "image-run",
+    "mount_app": false,
+    "network": true,
+    "tools": []
+   },
+   "deps": [],
+   "id": "apt",
+   "name": "apt-get install libpq5"
+  },
+  {
+   "action": {
+    "dest": "",
+    "from": {
+     "exclude": [
+      "var/cache",
+      "var/log",
+      "root"
+     ],
+     "include": [],
+     "step": "apt",
+     "type": "upper"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "apt"
+   ],
+   "id": "layer-apt",
+   "name": "layer apt packages"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-uv",
+    "layer-app",
+    "layer-apt"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": [
+  "python dependencies are installed with network access inside the base image"
+ ]
+}

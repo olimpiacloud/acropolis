@@ -1,0 +1,106 @@
+{
+ "app": "node-vite-custom-caddyfile",
+ "facts": {
+  "bundler": "acro (rolldown, lazy install)",
+  "framework": "vite",
+  "node": "lts (default)",
+  "package-manager": "bun",
+  "runtime": "static site from dist served by caddy"
+ },
+ "image": {
+  "cmd": [
+   "/bin/sh",
+   "-c",
+   "exec caddy run --config /Caddyfile --adapter caddyfile 2>&1"
+  ],
+  "entrypoint": [],
+  "env": [],
+  "layers": [
+   "layer-caddy",
+   "layer-site"
+  ],
+  "ports": [
+   80
+  ],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "node",
+ "steps": [
+  {
+   "action": {
+    "kind": "bundle-spa",
+    "lockfile": "bun.lock",
+    "manager": "bun",
+    "out": "dist"
+   },
+   "deps": [],
+   "id": "bundle",
+   "name": "bundle with lazy package fetch"
+  },
+  {
+   "action": {
+    "image": "caddy:2-alpine",
+    "kind": "resolve-base"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve caddy:2-alpine"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "dest": "",
+    "from": {
+     "files": {
+      "Caddyfile": "{\n\tauto_https off\n}\n\n:{$PORT:80} {\n\thandle /custom-caddy-response {\n\t\trespond \"hello-from-custom-caddyfile\"\n\t}\n\n\thandle {\n\t\troot * /app/dist\n\t\tfile_server\n\t\ttry_files {path} {path}.html {path}/index.html{{if .IndexFallback}} /index.html{{end}}\n\t}\n}\n"
+     },
+     "type": "inline"
+    },
+    "kind": "layer"
+   },
+   "deps": [],
+   "id": "layer-caddy",
+   "name": "layer Caddyfile"
+  },
+  {
+   "action": {
+    "dest": "app/dist",
+    "from": {
+     "exclude": [],
+     "path": "@work/bundle/dist",
+     "type": "work-dir"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "bundle"
+   ],
+   "id": "layer-site",
+   "name": "layer dist"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-caddy",
+    "layer-site"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": []
+}

@@ -17,6 +17,7 @@ pub enum Event {
     Uploaded { what: String, bytes: u64, skipped: bool },
     ImagePushed { reference: String, digest: String },
     BuildFinished { ms: u64, image: Option<String>, digest: Option<String> },
+    BuildFailed { ms: u64, class: String, exit_code: i32, error: String },
     Stats(Stats),
 }
 
@@ -100,6 +101,7 @@ pub fn emit(event: Event) {
                 Event::Uploaded { .. } => return,
                 Event::ImagePushed { reference, digest } => format!("pushed {reference}@{digest}"),
                 Event::BuildFinished { ms, .. } => format!("done in {:.2}s", *ms as f64 / 1000.0),
+                Event::BuildFailed { .. } => return,
                 Event::Stats(s) => format!(
                     "downloaded {:.1} MB, uploaded {:.1} MB, written {:.1} MB, {} requests",
                     s.bytes_downloaded as f64 / 1e6,

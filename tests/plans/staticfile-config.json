@@ -1,0 +1,92 @@
+{
+ "app": "staticfile-config",
+ "facts": {
+  "root": "hello"
+ },
+ "image": {
+  "cmd": [
+   "/bin/sh",
+   "-c",
+   "exec caddy run --config /Caddyfile --adapter caddyfile 2>&1"
+  ],
+  "entrypoint": [],
+  "env": [],
+  "layers": [
+   "layer-caddy",
+   "layer-site"
+  ],
+  "ports": [
+   80
+  ],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "staticfile",
+ "steps": [
+  {
+   "action": {
+    "image": "caddy:2-alpine",
+    "kind": "resolve-base"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve caddy:2-alpine"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "dest": "",
+    "from": {
+     "files": {
+      "Caddyfile": "{\n\tadmin off\n\tpersist_config off\n\tauto_https off\n\tlog {\n\t\tformat json\n\t}\n}\n\n:{$PORT:80} {\n\tlog {\n\t\tformat json\n\t}\n\trespond /health 200\n\theader {\n\t\tX-Content-Type-Options \"nosniff\"\n\t\t-Server\n\t}\n\troot * /app/dist\n\tfile_server {\n\t\thide .git\n\t\thide .env*\n\t}\n\tencode {\n\t\tgzip\n\t\tzstd\n\t}\n\ttry_files {path} {path}.html {path}/index.html\n}\n"
+     },
+     "type": "inline"
+    },
+    "kind": "layer"
+   },
+   "deps": [],
+   "id": "layer-caddy",
+   "name": "layer Caddyfile"
+  },
+  {
+   "action": {
+    "dest": "app/dist",
+    "from": {
+     "exclude": [
+      "Staticfile",
+      "Caddyfile"
+     ],
+     "path": "hello",
+     "type": "app-subdir"
+    },
+    "kind": "layer"
+   },
+   "deps": [],
+   "id": "layer-site",
+   "name": "layer hello"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-caddy",
+    "layer-site"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": []
+}

@@ -1,0 +1,173 @@
+{
+ "app": "node-pnpm-dev-engines",
+ "facts": {
+  "framework": "none",
+  "node": "22.11.0 (package.json devEngines.runtime)",
+  "package-manager": "pnpm",
+  "runtime": "node server (no build step)"
+ },
+ "image": {
+  "cmd": [
+   "node",
+   "main.js"
+  ],
+  "entrypoint": [],
+  "env": [
+   [
+    "NODE_ENV",
+    "production"
+   ],
+   [
+    "PATH",
+    "/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+   ],
+   [
+    "npm_config_verify_deps_before_run",
+    "false"
+   ],
+   [
+    "pnpm_config_verify_deps_before_run",
+    "false"
+   ],
+   [
+    "npm_config_update_notifier",
+    "false"
+   ],
+   [
+    "pnpm_config_update_notifier",
+    "false"
+   ],
+   [
+    "COREPACK_ENABLE_STRICT",
+    "0"
+   ],
+   [
+    "npm_config_user_agent",
+    "pnpm/{version:npm:pnpm|10.4.1} npm/? node/v{version:node|22.11.0} linux x64"
+   ],
+   [
+    "npm_lifecycle_event",
+    "start"
+   ],
+   [
+    "npm_package_name",
+    "node-pnpm-dev-engines"
+   ]
+  ],
+  "layers": [
+   "layer-pm",
+   "layer-deps",
+   "layer-app"
+  ],
+  "ports": [],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "node",
+ "steps": [
+  {
+   "action": {
+    "image": "node:22.11.0-bookworm-slim",
+    "kind": "resolve-base"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve node:22.11.0-bookworm-slim"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "dev": false,
+    "kind": "npm-fetch",
+    "lockfile": "",
+    "lockfile_sha256": "",
+    "manager": "npm"
+   },
+   "deps": [],
+   "id": "npm-fetch",
+   "name": "fetch production packages"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "dev": false,
+     "type": "node-modules"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "npm-fetch"
+   ],
+   "id": "layer-deps",
+   "name": "layer node_modules (production)"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "exclude": [
+      "**/node_modules"
+     ],
+     "type": "app-source"
+    },
+    "kind": "layer"
+   },
+   "deps": [],
+   "id": "layer-app",
+   "name": "layer app source"
+  },
+  {
+   "action": {
+    "kind": "toolchain",
+    "parts": [],
+    "spec": "10.4.1",
+    "tool": "npm:pnpm"
+   },
+   "deps": [],
+   "id": "pnpm",
+   "name": "pnpm 10.4.1"
+  },
+  {
+   "action": {
+    "dest": "usr/local",
+    "from": {
+     "tool": "npm:pnpm",
+     "type": "tool-tree"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "pnpm"
+   ],
+   "id": "layer-pm",
+   "name": "layer pnpm CLI"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-deps",
+    "layer-app",
+    "layer-pm"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": [
+  "no lockfile: dependencies are resolved from the npm registry at build time, so the build is not reproducible"
+ ]
+}

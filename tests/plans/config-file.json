@@ -1,0 +1,256 @@
+{
+ "app": "config-file",
+ "facts": {
+  "apt-packages": "lsb-release",
+  "framework": "none",
+  "mise-extras": "python",
+  "node": "lts (default)",
+  "package-manager": "bun"
+ },
+ "image": {
+  "cmd": [
+   "/bin/sh",
+   "-c",
+   "python --version && lsb_release -d"
+  ],
+  "entrypoint": [],
+  "env": [
+   [
+    "NODE_ENV",
+    "production"
+   ],
+   [
+    "PATH",
+    "/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/python/bin"
+   ],
+   [
+    "npm_config_user_agent",
+    "bun/latest npm/? node/vlts linux x64"
+   ]
+  ],
+  "layers": [
+   "layer-apt",
+   "layer-mise-python",
+   "layer-bun",
+   "layer-app"
+  ],
+  "ports": [],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "node",
+ "steps": [
+  {
+   "action": {
+    "kind": "toolchain",
+    "parts": [],
+    "spec": "",
+    "tool": "python-standalone"
+   },
+   "deps": [],
+   "id": "mise-python",
+   "name": "python latest (mise)"
+  },
+  {
+   "action": {
+    "kind": "toolchain",
+    "parts": [],
+    "spec": "latest",
+    "tool": "bun"
+   },
+   "deps": [],
+   "id": "bun",
+   "name": "bun latest"
+  },
+  {
+   "action": {
+    "kind": "toolchain",
+    "parts": [],
+    "spec": "lts",
+    "tool": "node"
+   },
+   "deps": [],
+   "id": "node",
+   "name": "node lts"
+  },
+  {
+   "action": {
+    "exclude": [
+     "**/node_modules"
+    ],
+    "kind": "copy-source"
+   },
+   "deps": [],
+   "id": "source",
+   "name": "copy source"
+  },
+  {
+   "action": {
+    "argv": [
+     "bun",
+     "install",
+     "--frozen-lockfile"
+    ],
+    "cwd": ".",
+    "env": {},
+    "kind": "run",
+    "network": true
+   },
+   "deps": [
+    "bun",
+    "node",
+    "source"
+   ],
+   "id": "install",
+   "name": "bun install --frozen-lockfile"
+  },
+  {
+   "action": {
+    "argv": [
+     "/bin/sh",
+     "-c",
+     "lsb_release -a"
+    ],
+    "cwd": ".",
+    "env": {
+     "NODE_ENV": "production"
+    },
+    "kind": "run",
+    "network": false
+   },
+   "deps": [
+    "install"
+   ],
+   "id": "build",
+   "name": "run lsb_release -a"
+  },
+  {
+   "action": {
+    "image": "node:lts-bookworm-slim",
+    "kind": "resolve-base"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve node:lts-bookworm-slim"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "dest": "usr/local/bin",
+    "from": {
+     "files": [
+      [
+       "bin/bun",
+       "bun"
+      ]
+     ],
+     "tool": "bun",
+     "type": "tool"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "bun"
+   ],
+   "id": "layer-bun",
+   "name": "layer bun binary"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "exclude": [],
+     "path": ".",
+     "type": "work-dir"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "build"
+   ],
+   "id": "layer-app",
+   "name": "layer app + dependencies"
+  },
+  {
+   "action": {
+    "dest": "opt/python",
+    "from": {
+     "tool": "python-standalone",
+     "type": "tool-tree"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "mise-python"
+   ],
+   "id": "layer-mise-python",
+   "name": "layer python (mise)"
+  },
+  {
+   "action": {
+    "after": null,
+    "commands": [
+     "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends lsb-release && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb /var/log/apt /var/log/dpkg.log"
+    ],
+    "env": {},
+    "image": "node:lts-bookworm-slim",
+    "kind": "image-run",
+    "mount_app": false,
+    "network": true,
+    "tools": []
+   },
+   "deps": [],
+   "id": "apt",
+   "name": "apt-get install lsb-release"
+  },
+  {
+   "action": {
+    "dest": "",
+    "from": {
+     "exclude": [
+      "var/cache",
+      "var/log",
+      "root"
+     ],
+     "include": [],
+     "step": "apt",
+     "type": "upper"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "apt"
+   ],
+   "id": "layer-apt",
+   "name": "layer apt packages"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-bun",
+    "layer-app",
+    "layer-mise-python",
+    "layer-apt"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": [
+  "bun.lockb is installed by the bun CLI with network access",
+  "buildAptPackages (lsb-release) not applied: this build path runs on the host"
+ ]
+}

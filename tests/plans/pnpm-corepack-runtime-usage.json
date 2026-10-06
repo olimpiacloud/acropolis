@@ -1,0 +1,206 @@
+{
+ "app": "pnpm-corepack-runtime-usage",
+ "facts": {
+  "framework": "none",
+  "install-scripts": "better-sqlite3",
+  "node": "^26.0.0 (package.json engines.node)",
+  "package-manager": "pnpm",
+  "runtime": "node server (no build step)"
+ },
+ "image": {
+  "cmd": [
+   "pnpm",
+   "run",
+   "start"
+  ],
+  "entrypoint": [],
+  "env": [
+   [
+    "NODE_ENV",
+    "production"
+   ],
+   [
+    "PATH",
+    "/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+   ],
+   [
+    "npm_config_verify_deps_before_run",
+    "false"
+   ],
+   [
+    "pnpm_config_verify_deps_before_run",
+    "false"
+   ],
+   [
+    "npm_config_update_notifier",
+    "false"
+   ],
+   [
+    "pnpm_config_update_notifier",
+    "false"
+   ],
+   [
+    "COREPACK_ENABLE_STRICT",
+    "0"
+   ],
+   [
+    "npm_config_user_agent",
+    "pnpm/{version:npm:pnpm|11.1.2} npm/? node/v{version:node|^26.0.0} linux x64"
+   ],
+   [
+    "npm_lifecycle_event",
+    "start"
+   ],
+   [
+    "npm_package_name",
+    "node-pnpm-corepack-runtime"
+   ]
+  ],
+  "layers": [
+   "layer-pm",
+   "layer-deps",
+   "layer-app"
+  ],
+  "ports": [],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "node",
+ "steps": [
+  {
+   "action": {
+    "image": "node:26-trixie-slim",
+    "kind": "resolve-base"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve node:26-trixie-slim"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "dev": false,
+    "kind": "npm-fetch",
+    "lockfile": "",
+    "lockfile_sha256": "",
+    "manager": "npm"
+   },
+   "deps": [],
+   "id": "npm-fetch",
+   "name": "fetch production packages"
+  },
+  {
+   "action": {
+    "kind": "toolchain",
+    "parts": [
+     "npm",
+     "headers"
+    ],
+    "spec": "^26.0.0",
+    "tool": "node"
+   },
+   "deps": [],
+   "id": "node",
+   "name": "node ^26.0.0"
+  },
+  {
+   "action": {
+    "dev": false,
+    "kind": "npm-install",
+    "manager": "npm",
+    "scripts": "all",
+    "target": "prod"
+   },
+   "deps": [
+    "npm-fetch",
+    "node"
+   ],
+   "id": "install-prod",
+   "name": "install production node_modules + scripts"
+  },
+  {
+   "action": {
+    "dest": "app/node_modules",
+    "from": {
+     "exclude": [],
+     "path": "@work/prod/node_modules",
+     "type": "work-dir"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "install-prod"
+   ],
+   "id": "layer-deps",
+   "name": "layer node_modules (production)"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "exclude": [
+      "**/node_modules"
+     ],
+     "type": "app-source"
+    },
+    "kind": "layer"
+   },
+   "deps": [],
+   "id": "layer-app",
+   "name": "layer app source"
+  },
+  {
+   "action": {
+    "kind": "toolchain",
+    "parts": [],
+    "spec": "11.1.2",
+    "tool": "npm:pnpm"
+   },
+   "deps": [],
+   "id": "pnpm",
+   "name": "pnpm 11.1.2"
+  },
+  {
+   "action": {
+    "dest": "usr/local",
+    "from": {
+     "tool": "npm:pnpm",
+     "type": "tool-tree"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "pnpm"
+   ],
+   "id": "layer-pm",
+   "name": "layer pnpm CLI"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-deps",
+    "layer-app",
+    "layer-pm"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": [
+  "no lockfile: dependencies are resolved from the npm registry at build time, so the build is not reproducible",
+  "install scripts of better-sqlite3 run with network access (policy: all); set ACRO_INSTALL_SCRIPTS=none to disable"
+ ]
+}

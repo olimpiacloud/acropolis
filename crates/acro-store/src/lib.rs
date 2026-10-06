@@ -202,6 +202,9 @@ impl Store {
     pub fn get(&self, i: &Integrity) -> Option<StoredBlob> {
         let path = self.blob_path(i);
         let meta = fs::metadata(&path).ok()?;
+        if let Ok(f) = fs::File::options().write(true).open(&path) {
+            let _ = f.set_modified(std::time::SystemTime::now());
+        }
         let sha256 = if i.algo == Algo::Sha256 {
             i.clone()
         } else {

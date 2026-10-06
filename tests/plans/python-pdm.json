@@ -1,0 +1,173 @@
+{
+ "app": "python-pdm",
+ "facts": {
+  "manager": "pdm",
+  "python": "3.13 (default)"
+ },
+ "image": {
+  "cmd": [
+   "/bin/sh",
+   "-c",
+   "python main.py"
+  ],
+  "entrypoint": [],
+  "env": [
+   [
+    "PATH",
+    "/app/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+   ],
+   [
+    "VIRTUAL_ENV",
+    "/app/.venv"
+   ],
+   [
+    "PYTHONUNBUFFERED",
+    "1"
+   ]
+  ],
+  "layers": [
+   "layer-uv",
+   "layer-app"
+  ],
+  "ports": [],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "python",
+ "steps": [
+  {
+   "action": {
+    "image": "python:3.13-slim-bookworm",
+    "kind": "resolve-base"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve python:3.13-slim-bookworm"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "exclude": [
+     ".venv",
+     "__pycache__",
+     "**/__pycache__"
+    ],
+    "kind": "copy-source"
+   },
+   "deps": [],
+   "id": "source",
+   "name": "copy source"
+  },
+  {
+   "action": {
+    "kind": "toolchain",
+    "parts": [],
+    "spec": "",
+    "tool": "uv"
+   },
+   "deps": [],
+   "id": "uv",
+   "name": "uv"
+  },
+  {
+   "action": {
+    "after": null,
+    "commands": [
+     "uv venv /app/.venv",
+     "uv tool run --from pdm pdm install --check --prod --no-editable --no-self"
+    ],
+    "env": {
+     "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+     "PYTHONDONTWRITEBYTECODE": "1",
+     "UV_CACHE_DIR": "/tmp/uv-cache",
+     "UV_COMPILE_BYTECODE": "1",
+     "UV_LINK_MODE": "copy",
+     "UV_PROJECT_ENVIRONMENT": "/app/.venv",
+     "UV_PYTHON": "/usr/local/bin/python3",
+     "UV_PYTHON_DOWNLOADS": "never",
+     "UV_TOOL_DIR": "/tmp/uv-tools",
+     "VIRTUAL_ENV": "/app/.venv"
+    },
+    "image": "python:3.13-slim-bookworm",
+    "kind": "image-run",
+    "mount_app": true,
+    "network": true,
+    "tools": [
+     "uv"
+    ]
+   },
+   "deps": [
+    "source",
+    "uv"
+   ],
+   "id": "install",
+   "name": "install python dependencies"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "exclude": [],
+     "path": ".",
+     "type": "work-dir"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "install"
+   ],
+   "id": "layer-app",
+   "name": "layer app + .venv"
+  },
+  {
+   "action": {
+    "dest": "usr/local/bin",
+    "from": {
+     "files": [
+      [
+       "bin/uv",
+       "uv"
+      ],
+      [
+       "bin/uvx",
+       "uvx"
+      ]
+     ],
+     "tool": "uv",
+     "type": "tool"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "uv"
+   ],
+   "id": "layer-uv",
+   "name": "layer uv CLI"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-uv",
+    "layer-app"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": [
+  "python dependencies are installed with network access inside the base image"
+ ]
+}

@@ -1,0 +1,259 @@
+{
+ "app": "php-laravel-11-react",
+ "facts": {
+  "framework": "laravel",
+  "php": "8.4"
+ },
+ "image": {
+  "cmd": [
+   "/start-container.sh"
+  ],
+  "entrypoint": [],
+  "env": [
+   [
+    "APP_ENV",
+    "production"
+   ],
+   [
+    "APP_DEBUG",
+    "false"
+   ],
+   [
+    "LOG_CHANNEL",
+    "stderr"
+   ],
+   [
+    "SERVER_NAME",
+    ":80"
+   ],
+   [
+    "OCTANE_SERVER",
+    "frankenphp"
+   ],
+   [
+    "IS_LARAVEL",
+    "true"
+   ]
+  ],
+  "layers": [
+   "layer-system",
+   "layer-config",
+   "layer-app"
+  ],
+  "ports": [
+   80
+  ],
+  "user": null,
+  "workdir": "/app"
+ },
+ "provider": "php",
+ "steps": [
+  {
+   "action": {
+    "image": "dunglas/frankenphp:php8.4-trixie",
+    "kind": "resolve-base"
+   },
+   "deps": [],
+   "id": "base",
+   "name": "resolve dunglas/frankenphp:php8.4-trixie"
+  },
+  {
+   "action": {
+    "kind": "copy-base"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "copy-base",
+   "name": "copy base layers"
+  },
+  {
+   "action": {
+    "exclude": [
+     "vendor",
+     "**/node_modules"
+    ],
+    "kind": "copy-source"
+   },
+   "deps": [],
+   "id": "source",
+   "name": "copy source"
+  },
+  {
+   "action": {
+    "kind": "toolchain",
+    "parts": [],
+    "spec": "",
+    "tool": "composer"
+   },
+   "deps": [],
+   "id": "composer",
+   "name": "composer"
+  },
+  {
+   "action": {
+    "after": null,
+    "commands": [
+     "command -v unzip >/dev/null || (apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git zip unzip ca-certificates >/dev/null)",
+     "composer install --optimize-autoloader --no-scripts --no-interaction --no-dev"
+    ],
+    "env": {
+     "COMPOSER_ALLOW_SUPERUSER": "1",
+     "COMPOSER_HOME": "/tmp/composer"
+    },
+    "image": "@base",
+    "kind": "image-run",
+    "mount_app": true,
+    "network": true,
+    "tools": [
+     "composer"
+    ]
+   },
+   "deps": [
+    "source",
+    "base",
+    "composer"
+   ],
+   "id": "php-setup",
+   "name": "php extensions + composer install"
+  },
+  {
+   "action": {
+    "kind": "toolchain",
+    "parts": [
+     "npm"
+    ],
+    "spec": "22",
+    "tool": "node"
+   },
+   "deps": [],
+   "id": "node",
+   "name": "node 22"
+  },
+  {
+   "action": {
+    "dev": true,
+    "kind": "npm-fetch",
+    "lockfile": "package-lock.json",
+    "lockfile_sha256": "b9de1bcf51578f454406a64e7080c68ee298b216732ff663004dd518ea552aae",
+    "manager": "npm"
+   },
+   "deps": [],
+   "id": "npm-fetch",
+   "name": "fetch packages"
+  },
+  {
+   "action": {
+    "dev": true,
+    "kind": "npm-install",
+    "manager": "npm",
+    "scripts": "",
+    "target": "src"
+   },
+   "deps": [
+    "npm-fetch",
+    "source"
+   ],
+   "id": "install",
+   "name": "install node_modules"
+  },
+  {
+   "action": {
+    "after": "php-setup",
+    "commands": [
+     "npm run build"
+    ],
+    "env": {
+     "NODE_ENV": "production",
+     "PATH": "/app/node_modules/.bin:/opt/acro/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    },
+    "image": "@base",
+    "kind": "image-run",
+    "mount_app": true,
+    "network": false,
+    "tools": [
+     "node"
+    ]
+   },
+   "deps": [
+    "php-setup",
+    "install",
+    "node"
+   ],
+   "id": "assets",
+   "name": "npm run build (inside the PHP image)"
+  },
+  {
+   "action": {
+    "dest": "",
+    "from": {
+     "exclude": [
+      "var/cache",
+      "var/log",
+      "root"
+     ],
+     "include": [],
+     "step": "php-setup",
+     "type": "upper"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "php-setup"
+   ],
+   "id": "layer-system",
+   "name": "layer PHP extensions"
+  },
+  {
+   "action": {
+    "dest": "",
+    "from": {
+     "files": {
+      "Caddyfile": "{\n\tadmin off\n\tpersist_config off\n\tauto_https off\n\t{$CADDY_GLOBAL_OPTIONS}\n\tlog {\n\t\tformat json\n\t\toutput stderr\n\t}\n\tfrankenphp {\n\t\t{$FRANKENPHP_CONFIG}\n\t}\n}\n\n{$CADDY_EXTRA_CONFIG}\n\n:{$PORT:80} {\n\troot * /app/public\n\tencode zstd br gzip\n\tfile_server {\n\t\thide .git\n\t\thide .env*\n\t}\n\t{$CADDY_SERVER_EXTRA_DIRECTIVES}\n\tphp_server\n}\n",
+      "start-container.sh": "#!/bin/sh\nset -e\nif [ \"$IS_LARAVEL\" = \"true\" ]; then\n  if [ \"$ACRO_SKIP_MIGRATIONS\" != \"true\" ] && [ \"$RAILPACK_SKIP_MIGRATIONS\" != \"true\" ]; then\n    php artisan migrate --force\n  fi\n  php artisan storage:link || true\n  php artisan optimize:clear\n  php artisan optimize\nfi\nexec docker-php-entrypoint --config /Caddyfile --adapter caddyfile 2>&1\n"
+     },
+     "type": "inline"
+    },
+    "kind": "layer"
+   },
+   "deps": [],
+   "id": "layer-config",
+   "name": "layer Caddyfile + start script"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "exclude": [
+      "**/node_modules"
+     ],
+     "path": ".",
+     "type": "work-dir"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "assets"
+   ],
+   "id": "layer-app",
+   "name": "layer app"
+  },
+  {
+   "action": {
+    "kind": "push"
+   },
+   "deps": [
+    "base",
+    "copy-base",
+    "layer-system",
+    "layer-config",
+    "layer-app"
+   ],
+   "id": "push",
+   "name": "push image"
+  }
+ ],
+ "warnings": [
+  "PHP extensions and composer packages are installed with network access inside the base image"
+ ]
+}
