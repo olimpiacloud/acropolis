@@ -66,7 +66,7 @@ impl Fetcher {
         let client = Client::builder()
             .user_agent(concat!("acropolis/", env!("CARGO_PKG_VERSION")))
             .pool_max_idle_per_host(64)
-            .connect_timeout(Duration::from_secs(15))
+            .connect_timeout(Duration::from_secs(5))
             .read_timeout(Duration::from_secs(60))
             .tcp_nodelay(true)
             .build()?;

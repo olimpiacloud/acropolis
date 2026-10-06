@@ -24,7 +24,21 @@ pub struct Registry {
     tokens: Mutex<HashMap<(String, String), String>>,
     creds: HashMap<String, Basic>,
     mirrors: HashMap<String, String>,
+    hub_down: std::sync::atomic::AtomicBool,
 }
+
+#[derive(Debug)]
+pub struct Unreachable(pub String);
+
+impl std::fmt::Display for Unreachable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} is unreachable", self.0)
+    }
+}
+
+impl std::error::Error for Unreachable {}
+
+pub const HUB_FALLBACK: &str = "mirror.gcr.io";
 
 pub struct ResolvedImage {
     pub reference: Reference,
@@ -38,7 +52,7 @@ impl Registry {
     pub fn new(client: Client) -> Self {
         let noredirect = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(15))
+            .connect_timeout(Duration::from_secs(5))
             .build()
             .expect("http client");
         let seg = acro_fetch::segment_client().expect("http client");
@@ -49,6 +63,7 @@ impl Registry {
             tokens: Mutex::new(HashMap::new()),
             creds: load_docker_creds(),
             mirrors: HashMap::new(),
+            hub_down: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -65,7 +80,18 @@ impl Registry {
         if let Some(m) = self.mirrors.get(&r.registry) {
             return m.clone();
         }
+        if r.registry == "docker.io" && self.hub_down.load(std::sync::atomic::Ordering::Relaxed) {
+            return HUB_FALLBACK.to_string();
+        }
         r.api_host().to_string()
+    }
+
+    fn mark_down(&self, host: &str) -> bool {
+        if host == "registry-1.docker.io" && !self.hub_down.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            acro_events::log("registry", format!("registry-1.docker.io is unreachable, falling back to {HUB_FALLBACK} (content is verified by digest)"));
+            return true;
+        }
+        host == "registry-1.docker.io"
     }
 
     fn base(&self, r: &Reference) -> String {
@@ -139,6 +165,9 @@ impl Registry {
                     tokio::time::sleep(Duration::from_millis(250 * (1 << attempt))).await;
                 }
                 Ok(resp) => return Ok(resp),
+                Err(e) if (e.is_connect() || e.is_timeout()) && self.mark_down(&key.0) => {
+                    return Err(anyhow!(Unreachable(key.0.clone())));
+                }
                 Err(e) if attempt < 4 && (e.is_connect() || e.is_timeout()) => {
                     tokio::time::sleep(Duration::from_millis(250 * (1 << attempt))).await;
                 }
@@ -184,6 +213,13 @@ impl Registry {
     }
 
     pub async fn get_manifest(&self, r: &Reference, reference: &str) -> Result<(Bytes, String, String)> {
+        match self.get_manifest_once(r, reference).await {
+            Err(e) if e.downcast_ref::<Unreachable>().is_some() => self.get_manifest_once(r, reference).await,
+            other => other,
+        }
+    }
+
+    async fn get_manifest_once(&self, r: &Reference, reference: &str) -> Result<(Bytes, String, String)> {
         let url = format!("{}/v2/{}/manifests/{}", self.base(r), r.repository, reference);
         let resp = self
             .send(r, "pull", |c| c.get(&url).header(ACCEPT, ACCEPT_MANIFESTS))
@@ -248,6 +284,13 @@ impl Registry {
     }
 
     pub async fn get_blob(&self, r: &Reference, digest: &str) -> Result<Response> {
+        match self.get_blob_once(r, digest).await {
+            Err(e) if e.downcast_ref::<Unreachable>().is_some() => self.get_blob_once(r, digest).await,
+            other => other,
+        }
+    }
+
+    async fn get_blob_once(&self, r: &Reference, digest: &str) -> Result<Response> {
         let url = format!("{}/v2/{}/blobs/{}", self.base(r), r.repository, digest);
         let resp = self.send(r, "pull", |c| c.get(&url)).await?;
         if !resp.status().is_success() {
@@ -394,6 +437,13 @@ impl Registry {
     }
 
     pub async fn blob_location(&self, r: &Reference, digest: &str) -> Result<(String, reqwest::header::HeaderMap)> {
+        match self.blob_location_once(r, digest).await {
+            Err(e) if e.downcast_ref::<Unreachable>().is_some() => self.blob_location_once(r, digest).await,
+            other => other,
+        }
+    }
+
+    async fn blob_location_once(&self, r: &Reference, digest: &str) -> Result<(String, reqwest::header::HeaderMap)> {
         let url = format!("{}/v2/{}/blobs/{}", self.base(r), r.repository, digest);
         let resp = self.send_with(&self.noredirect, r, "pull", |c| c.get(&url)).await?;
         let status = resp.status();
