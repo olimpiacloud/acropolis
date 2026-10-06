@@ -1,0 +1,19 @@
+[package]
+name = "acro-toolchain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+acro-events.workspace = true
+acro-store.workspace = true
+acro-fetch.workspace = true
+acro-oci.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+flate2.workspace = true
+liblzma.workspace = true
+semver.workspace = true
+reqwest.workspace = true
