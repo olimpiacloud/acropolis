@@ -1,3 +1,5 @@
+mod bench;
+
 use acro_build::{BuildOptions, Env};
 use acro_exec::{Executor, HostExecutor, Isolation};
 use acro_oci::{Compression, LayerOptions, Reference};
@@ -50,6 +52,35 @@ enum Command {
     Inspect {
         reference: String,
     },
+    Bench {
+        #[arg(long, value_delimiter = ',', default_value = "express-api,go-api")]
+        apps: Vec<String>,
+        #[arg(long, value_delimiter = ',', default_value = "docker,railpack,acro")]
+        tools: Vec<String>,
+        #[arg(long, default_value_t = 2)]
+        runs: usize,
+        #[arg(long, default_value = "0-1")]
+        cpus: String,
+        #[arg(long)]
+        memory: Option<String>,
+        #[arg(long, default_value = "on", value_parser = ["on", "off"])]
+        mirror: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long, default_value = "railpack")]
+        railpack: PathBuf,
+        #[arg(long, default_value = "ghcr.io/railwayapp/railpack-frontend:v0.40.1")]
+        railpack_frontend: String,
+        #[arg(long, default_value = "zstd")]
+        compression: String,
+        #[arg(long)]
+        no_drop_caches: bool,
+    },
+    Report {
+        results: Vec<PathBuf>,
+    },
 }
 
 fn parse_env(pairs: &[String]) -> Result<Env> {
@@ -81,6 +112,47 @@ fn default_home() -> PathBuf {
 
 fn main() {
     let cli = Cli::parse();
+    if let Command::Bench { apps, tools, runs, cpus, memory, mirror, out, repo, railpack, railpack_frontend, compression, no_drop_caches } = &cli.cmd {
+        let repo = std::fs::canonicalize(repo).expect("repo path");
+        let out = out.clone().unwrap_or_else(|| repo.join("bench/results").join(format!("run-{}.jsonl", std::process::id())));
+        let cfg = bench::BenchConfig {
+            repo,
+            apps: apps.clone(),
+            tools: tools.clone(),
+            runs: *runs,
+            cpus: cpus.clone(),
+            memory: memory.clone(),
+            mirror: mirror == "on",
+            out: out.clone(),
+            acro_bin: std::env::current_exe().expect("current exe"),
+            railpack_bin: railpack.clone(),
+            railpack_frontend: railpack_frontend.clone(),
+            compression: compression.clone(),
+            drop_caches: !no_drop_caches,
+        };
+        match bench::run(cfg) {
+            Ok(results) => {
+                println!("{}", bench::summarize(&results));
+                eprintln!("results: {}", out.display());
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("error: {e:#}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if let Command::Report { results } = &cli.cmd {
+        let mut all = Vec::new();
+        for p in results {
+            let text = std::fs::read_to_string(p).expect("results file");
+            for line in text.lines().filter(|l| !l.trim().is_empty()) {
+                all.push(serde_json::from_str::<bench::RunResult>(line).expect("result line"));
+            }
+        }
+        println!("{}", bench::summarize(&all));
+        std::process::exit(0);
+    }
     acro_events::init(match cli.events.as_str() {
         "json" => acro_events::Mode::Json,
         "quiet" => acro_events::Mode::Quiet,
@@ -150,6 +222,7 @@ async fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
+        Command::Bench { .. } | Command::Report { .. } => unreachable!(),
         Command::Inspect { reference } => {
             let r = Reference::parse(&reference)?;
             let client = reqwest::Client::builder().build()?;

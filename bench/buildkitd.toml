@@ -1,0 +1,9 @@
+[dns]
+  nameservers = ["45.235.98.140", "45.235.98.141"]
+
+[registry."docker.io"]
+  mirrors = ["mirror.gcr.io"]
+
+[registry."localhost:5555"]
+  http = true
+  insecure = true

@@ -38,7 +38,9 @@ dependencies = [
  "acro-store",
  "anyhow",
  "clap",
+ "libc",
  "reqwest",
+ "serde",
  "serde_json",
  "tokio",
 ]

@@ -180,8 +180,12 @@ pub fn assemble(base: Option<&ResolvedImage>, layers: &[Layer], patch: &ConfigPa
 }
 
 pub async fn copy_base(reg: &Registry, base: &ResolvedImage, target: &Reference) -> Result<u64> {
-    let futs = base.manifest.layers.iter().map(|d| async move {
-        let copied = reg.copy_blob(&base.reference, target, d).await?;
+    copy_layers(reg, &base.reference, &base.manifest.layers, target).await
+}
+
+pub async fn copy_layers(reg: &Registry, src: &Reference, layers: &[Descriptor], target: &Reference) -> Result<u64> {
+    let futs = layers.iter().map(|d| async move {
+        let copied = reg.copy_blob(src, target, d).await?;
         acro_events::emit(acro_events::Event::Uploaded { what: d.digest.clone(), bytes: d.size, skipped: !copied });
         Ok::<u64, anyhow::Error>(if copied { d.size } else { 0 })
     });

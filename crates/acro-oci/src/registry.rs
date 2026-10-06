@@ -19,6 +19,8 @@ struct Basic {
 
 pub struct Registry {
     client: Client,
+    noredirect: Client,
+    seg: Client,
     tokens: Mutex<HashMap<(String, String), String>>,
     creds: HashMap<String, Basic>,
     mirrors: HashMap<String, String>,
@@ -34,7 +36,20 @@ pub struct ResolvedImage {
 
 impl Registry {
     pub fn new(client: Client) -> Self {
-        Registry { client, tokens: Mutex::new(HashMap::new()), creds: load_docker_creds(), mirrors: HashMap::new() }
+        let noredirect = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(15))
+            .build()
+            .expect("http client");
+        let seg = acro_fetch::segment_client().expect("http client");
+        Registry {
+            client,
+            noredirect,
+            seg,
+            tokens: Mutex::new(HashMap::new()),
+            creds: load_docker_creds(),
+            mirrors: HashMap::new(),
+        }
     }
 
     pub fn with_mirror(mut self, registry: &str, mirror: &str) -> Self {
@@ -77,13 +92,29 @@ impl Registry {
     where
         F: Fn(&Client) -> RequestBuilder,
     {
+        self.send_with(&self.client, r, actions, build).await
+    }
+
+    async fn send_with<F>(&self, client: &Client, r: &Reference, actions: &str, build: F) -> Result<Response>
+    where
+        F: Fn(&Client) -> RequestBuilder,
+    {
         let key = (self.host_for(r), format!("repository:{}:{}", r.repository, actions));
         let mut attempt = 0;
         let mut authed = false;
         loop {
             attempt += 1;
-            let token = self.tokens.lock().unwrap().get(&key).cloned();
-            let mut req = build(&self.client);
+            let mut token = self.tokens.lock().unwrap().get(&key).cloned();
+            if token.is_none()
+                && !authed
+                && let Some(challenge) = known_challenge(&key.0)
+            {
+                let header = self.authenticate(r, challenge, &key.1).await?;
+                self.tokens.lock().unwrap().insert(key.clone(), header.clone());
+                token = Some(header);
+                authed = true;
+            }
+            let mut req = build(client);
             if let Some(t) = &token {
                 req = req.header(AUTHORIZATION, t.clone());
             }
@@ -190,6 +221,17 @@ impl Registry {
     }
 
     pub async fn resolve(&self, r: &Reference, platform: &Platform) -> Result<ResolvedImage> {
+        let (reference, manifest, digest) = self.resolve_manifest(r, platform).await?;
+        self.with_config(reference, manifest, digest).await
+    }
+
+    pub async fn with_config(&self, reference: Reference, manifest: Manifest, digest: String) -> Result<ResolvedImage> {
+        let config_raw = self.get_blob_bytes(&reference, &manifest.config.digest).await?;
+        let config: serde_json::Value = serde_json::from_slice(&config_raw).context("parsing image config")?;
+        Ok(ResolvedImage { reference, manifest, manifest_digest: digest, config_raw, config })
+    }
+
+    pub async fn resolve_manifest(&self, r: &Reference, platform: &Platform) -> Result<(Reference, Manifest, String)> {
         let first = r.reference().to_string();
         let (body, mt, digest) = self.get_manifest(r, &first).await?;
         let (body, digest) = if mt == image::MT_OCI_INDEX || mt == image::MT_DOCKER_LIST {
@@ -202,9 +244,7 @@ impl Registry {
             (body, digest)
         };
         let manifest: Manifest = serde_json::from_slice(&body).context("parsing image manifest")?;
-        let config_raw = self.get_blob_bytes(r, &manifest.config.digest).await?;
-        let config: serde_json::Value = serde_json::from_slice(&config_raw).context("parsing image config")?;
-        Ok(ResolvedImage { reference: r.with_digest(&digest), manifest, manifest_digest: digest, config_raw, config })
+        Ok((r.with_digest(&digest), manifest, digest))
     }
 
     pub async fn get_blob(&self, r: &Reference, digest: &str) -> Result<Response> {
@@ -323,6 +363,13 @@ impl Registry {
                 return Ok(false);
             }
         }
+        if desc.size >= acro_fetch::segmented::MIN_SEGMENTED {
+            match self.copy_blob_segmented(src, dst, desc).await {
+                Ok(()) => return Ok(true),
+                Err(e) if e.downcast_ref::<acro_fetch::segmented::NoRanges>().is_some() => {}
+                Err(e) => return Err(e),
+            }
+        }
         let resp = self.get_blob(src, &desc.digest).await?;
         let cell = Mutex::new(Some(resp));
         let digest = desc.digest.clone();
@@ -346,6 +393,68 @@ impl Registry {
         Ok(true)
     }
 
+    pub async fn blob_location(&self, r: &Reference, digest: &str) -> Result<(String, reqwest::header::HeaderMap)> {
+        let url = format!("{}/v2/{}/blobs/{}", self.base(r), r.repository, digest);
+        let resp = self.send_with(&self.noredirect, r, "pull", |c| c.get(&url)).await?;
+        let status = resp.status();
+        if status.is_redirection() {
+            let loc = resp
+                .headers()
+                .get(LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .ok_or_else(|| anyhow!("redirect without Location for {digest}"))?
+                .to_string();
+            let loc = if loc.starts_with("http") { loc } else { format!("{}{}", self.base(r), loc) };
+            return Ok((loc, reqwest::header::HeaderMap::new()));
+        }
+        if !status.is_success() {
+            bail!("GET blob {digest} from {r}: {status}");
+        }
+        drop(resp);
+        let key = (self.host_for(r), format!("repository:{}:pull", r.repository));
+        let mut h = reqwest::header::HeaderMap::new();
+        if let Some(t) = self.tokens.lock().unwrap().get(&key) {
+            h.insert(AUTHORIZATION, HeaderValue::from_str(t)?);
+        }
+        Ok((url, h))
+    }
+
+    async fn copy_blob_segmented(&self, src: &Reference, dst: &Reference, desc: &Descriptor) -> Result<()> {
+        let (url, headers) = self.blob_location(src, &desc.digest).await?;
+        let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(8);
+        struct Tx(tokio::sync::mpsc::Sender<Bytes>);
+        impl acro_fetch::AsyncSink for Tx {
+            async fn push(&mut self, b: Bytes) -> Result<()> {
+                self.0.send(b).await.map_err(|_| anyhow!("upload side closed"))
+            }
+        }
+        let size = desc.size;
+        let seg = self.seg.clone();
+        let download = tokio::spawn(async move {
+            acro_fetch::segmented::download(&seg, &url, &headers, size, acro_fetch::segmented::Policy::default(), Tx(tx)).await
+        });
+        let cell = Mutex::new(Some(rx));
+        let upload = self.put_upload(dst, &desc.digest, desc.size, || {
+            let rx = cell.lock().unwrap().take();
+            match rx {
+                Some(rx) => {
+                    let s = futures::stream::unfold(rx, |mut rx| async move {
+                        rx.recv().await.map(|b| (Ok::<Bytes, std::io::Error>(b), rx))
+                    });
+                    reqwest::Body::wrap_stream(s)
+                }
+                None => reqwest::Body::from(Vec::new()),
+            }
+        });
+        let (up, down) = tokio::join!(upload, download);
+        let n = down??;
+        up.with_context(|| format!("copying {} from {src} to {dst}", desc.digest))?;
+        if n != desc.size {
+            bail!("copied {n} bytes of {} for {}", desc.size, desc.digest);
+        }
+        Ok(())
+    }
+
     pub async fn put_manifest(&self, r: &Reference, reference: &str, body: Bytes, media_type: &str) -> Result<String> {
         let url = format!("{}/v2/{}/manifests/{}", self.base(r), r.repository, reference);
         let mt = HeaderValue::from_str(media_type)?;
@@ -359,6 +468,14 @@ impl Registry {
         }
         acro_events::add_uploaded(body.len() as u64);
         Ok(acro_store::sha256_bytes(&body).to_oci())
+    }
+}
+
+fn known_challenge(host: &str) -> Option<&'static str> {
+    match host {
+        "registry-1.docker.io" => Some(r#"Bearer realm="https://auth.docker.io/token",service="registry.docker.io""#),
+        "ghcr.io" => Some(r#"Bearer realm="https://ghcr.io/token",service="ghcr.io""#),
+        _ => None,
     }
 }
 

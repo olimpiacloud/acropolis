@@ -1,0 +1,6 @@
+[dns]
+  nameservers = ["45.235.98.140", "45.235.98.141"]
+
+[registry."localhost:5555"]
+  http = true
+  insecure = true

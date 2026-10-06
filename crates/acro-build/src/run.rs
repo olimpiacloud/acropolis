@@ -68,6 +68,7 @@ struct Ctx {
     registry: Arc<Registry>,
     exec: Arc<dyn Executor>,
     out: Mutex<HashMap<String, Out>>,
+    base_copy: Mutex<Option<tokio::task::JoinHandle<Result<u64>>>>,
 }
 
 type StepFuture = Shared<BoxFuture<'static, Result<(), Arc<anyhow::Error>>>>;
@@ -129,6 +130,7 @@ pub async fn execute(plan: Plan, opts: BuildOptions, exec: Arc<dyn Executor>) ->
         registry,
         exec,
         out: Mutex::new(HashMap::new()),
+        base_copy: Mutex::new(None),
     });
     let mut futs: HashMap<String, StepFuture> = HashMap::new();
     let mut order = Vec::new();
@@ -207,24 +209,15 @@ pub async fn execute(plan: Plan, opts: BuildOptions, exec: Arc<dyn Executor>) ->
 
 async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
     match &step.action {
-        Action::ResolveBase { image } => {
-            let r = Reference::parse(image)?;
-            let resolved = ctx.registry.resolve(&r, &ctx.opts.platform).await?;
-            acro_events::log(&step.id, format!("{} -> {}", image, resolved.manifest_digest));
-            Ok(Out::Base(Arc::new(resolved)))
-        }
+        Action::ResolveBase { image } => resolve_base(ctx, step, image).await,
         Action::ResolveNodeBase { spec, variant } => {
             let version = acro_toolchain::node::resolve(&ctx.fetcher, spec).await?;
-            let image = format!("node:{version}-{variant}");
-            let r = Reference::parse(&image)?;
-            let resolved = ctx.registry.resolve(&r, &ctx.opts.platform).await?;
-            acro_events::log(&step.id, format!("{image} -> {}", resolved.manifest_digest));
-            Ok(Out::Base(Arc::new(resolved)))
+            resolve_base(ctx, step, &format!("node:{version}-{variant}")).await
         }
         Action::CopyBase => {
-            let Some(target) = &ctx.opts.target else { return Ok(Out::None) };
-            let base = ctx.base().ok_or_else(|| anyhow!("no base image resolved"))?;
-            let n = assemble::copy_base(&ctx.registry, &base, target).await?;
+            let handle = ctx.base_copy.lock().unwrap().take();
+            let Some(handle) = handle else { return Ok(Out::None) };
+            let n = handle.await??;
             acro_events::log(&step.id, format!("copied {:.1} MB", n as f64 / 1e6));
             Ok(Out::None)
         }
@@ -432,6 +425,21 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             }
         }
     }
+}
+
+async fn resolve_base(ctx: &Arc<Ctx>, step: &Step, image: &str) -> Result<Out> {
+    let r = Reference::parse(image)?;
+    let (reference, manifest, digest) = ctx.registry.resolve_manifest(&r, &ctx.opts.platform).await?;
+    if let Some(target) = ctx.opts.target.clone() {
+        let reg = ctx.registry.clone();
+        let src = reference.clone();
+        let layers = manifest.layers.clone();
+        let handle = tokio::spawn(async move { assemble::copy_layers(&reg, &src, &layers, &target).await });
+        *ctx.base_copy.lock().unwrap() = Some(handle);
+    }
+    let resolved = ctx.registry.with_config(reference, manifest, digest).await?;
+    acro_events::log(&step.id, format!("{} -> {}", image, resolved.manifest_digest));
+    Ok(Out::Base(Arc::new(resolved)))
 }
 
 async fn build_layer(ctx: &Arc<Ctx>, step: &Step, dest: &str, from: &LayerFrom) -> Result<Layer> {

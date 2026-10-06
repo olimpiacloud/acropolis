@@ -9,13 +9,27 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Semaphore, mpsc};
 
+pub mod segmented;
+
 const MAX_ATTEMPTS: u32 = 5;
+const STALL: Duration = Duration::from_secs(6);
 
 #[derive(Clone)]
 pub struct Fetcher {
     client: Client,
+    seg_client: Client,
     store: Arc<Store>,
     limit: Arc<Semaphore>,
+}
+
+pub fn segment_client() -> Result<Client> {
+    Ok(Client::builder()
+        .user_agent(concat!("acropolis/", env!("CARGO_PKG_VERSION")))
+        .http1_only()
+        .pool_max_idle_per_host(16)
+        .connect_timeout(Duration::from_secs(10))
+        .tcp_nodelay(true)
+        .build()?)
 }
 
 impl Fetcher {
@@ -27,11 +41,15 @@ impl Fetcher {
             .read_timeout(Duration::from_secs(60))
             .tcp_nodelay(true)
             .build()?;
-        Ok(Fetcher { client, store, limit: Arc::new(Semaphore::new(concurrency)) })
+        Ok(Fetcher { client, seg_client: segment_client()?, store, limit: Arc::new(Semaphore::new(concurrency)) })
     }
 
     pub fn client(&self) -> &Client {
         &self.client
+    }
+
+    pub fn segment_client(&self) -> &Client {
+        &self.seg_client
     }
 
     pub fn store(&self) -> &Arc<Store> {
@@ -113,12 +131,37 @@ impl Fetcher {
         let mut failures = 0;
         loop {
             let mut r = self.open(url, headers, offset).await?;
+            if offset == 0 {
+                let len = r.content_length().unwrap_or(0);
+                let ranges = r
+                    .headers()
+                    .get(reqwest::header::ACCEPT_RANGES)
+                    .map(|v| v.as_bytes() == b"bytes")
+                    .unwrap_or(false);
+                if len >= segmented::MIN_SEGMENTED && ranges {
+                    let final_url = r.url().to_string();
+                    let seg_headers = if final_url == url { headers.clone() } else { HeaderMap::new() };
+                    drop(r);
+                    match segmented::download(&self.seg_client, &final_url, &seg_headers, len, segmented::Policy::default(), &mut sink).await {
+                        Ok(n) => return Ok(n),
+                        Err(e) if e.downcast_ref::<segmented::NoRanges>().is_some() => {
+                            r = self.open(url, headers, 0).await?;
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+            }
             let mut skip = 0u64;
             if offset > 0 && r.status() != StatusCode::PARTIAL_CONTENT {
                 skip = offset;
             }
             let result: Result<()> = async {
-                while let Some(chunk) = r.chunk().await? {
+                loop {
+                    let chunk = match tokio::time::timeout(STALL, r.chunk()).await {
+                        Ok(c) => c?,
+                        Err(_) => return Err(anyhow!(Stalled)),
+                    };
+                    let Some(chunk) = chunk else { break };
                     acro_events::add_downloaded(chunk.len() as u64);
                     let chunk = if skip > 0 {
                         let s = (skip as usize).min(chunk.len());
@@ -138,7 +181,10 @@ impl Fetcher {
             .await;
             match result {
                 Ok(()) => return Ok(offset),
-                Err(e) if e.downcast_ref::<reqwest::Error>().is_some() && failures < MAX_ATTEMPTS => {
+                Err(e)
+                    if (e.downcast_ref::<reqwest::Error>().is_some() || e.downcast_ref::<Stalled>().is_some())
+                        && failures < MAX_ATTEMPTS =>
+                {
                     failures += 1;
                     tokio::time::sleep(backoff(failures)).await;
                 }
@@ -255,6 +301,17 @@ impl Fetcher {
         Ok((out, blob))
     }
 }
+
+#[derive(Debug)]
+pub struct Stalled;
+
+impl std::fmt::Display for Stalled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("download stalled")
+    }
+}
+
+impl std::error::Error for Stalled {}
 
 pub trait AsyncSink {
     fn push(&mut self, b: Bytes) -> impl std::future::Future<Output = Result<()>>;
