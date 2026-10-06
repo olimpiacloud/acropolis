@@ -548,14 +548,14 @@ impl Registry {
 
     async fn copy_blob_segmented(&self, src: &Reference, dst: &Reference, desc: &Descriptor) -> Result<()> {
         let alt = self.hedge_target(src);
-        let (primary, secondary) = tokio::join!(self.blob_location(src, &desc.digest), async {
-            match &alt {
-                Some(a) => self.blob_location_once(a, &desc.digest).await.ok(),
+        let primary = self.blob_location(src, &desc.digest).await?;
+        let digest = desc.digest.clone();
+        let alternate = async move {
+            match alt {
+                Some(a) => self.blob_location_once(&a, &digest).await.ok(),
                 None => None,
             }
-        });
-        let mut sources = vec![primary?];
-        sources.extend(secondary);
+        };
         let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(8);
         struct Tx(tokio::sync::mpsc::Sender<Bytes>);
         impl acro_fetch::AsyncSink for Tx {
@@ -565,9 +565,7 @@ impl Registry {
         }
         let size = desc.size;
         let seg = self.seg.clone();
-        let download = tokio::spawn(async move {
-            acro_fetch::segmented::download_sources(&seg, &sources, size, acro_fetch::segmented::Policy::default(), Tx(tx)).await
-        });
+        let download = acro_fetch::segmented::download_sources(&seg, primary, alternate, size, acro_fetch::segmented::Policy::default(), Tx(tx));
         let cell = Mutex::new(Some(rx));
         let upload = self.put_upload(dst, &desc.digest, desc.size, || {
             let rx = cell.lock().unwrap().take();
@@ -582,7 +580,7 @@ impl Registry {
             }
         });
         let (up, down) = tokio::join!(upload, download);
-        let n = down??;
+        let n = down?;
         up.with_context(|| format!("copying {} from {src} to {dst}", desc.digest))?;
         if n != desc.size {
             bail!("copied {n} bytes of {} for {}", desc.size, desc.digest);

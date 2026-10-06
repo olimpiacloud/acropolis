@@ -659,9 +659,10 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             let mut extra_path = Vec::new();
             for t in tools {
                 let inst = installed.iter().find(|i| &i.name == t).ok_or_else(|| anyhow!("toolchain {t} not installed"))?;
-                let guest = format!("/opt/acro/{t}/bin");
-                binds.push(acro_exec::rootfs::Bind { host: inst.bin_dir.clone(), guest: guest.clone(), readonly: true });
-                extra_path.push(guest);
+                let root = format!("/opt/acro/{}", t.replace(':', "-"));
+                let rel = inst.bin_dir.strip_prefix(&inst.root).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "bin".into());
+                binds.push(acro_exec::rootfs::Bind { host: inst.root.clone(), guest: root.clone(), readonly: true });
+                extra_path.push(format!("{root}/{rel}"));
             }
             if !extra_path.is_empty() {
                 let p = full_env.get("PATH").cloned().unwrap_or_default();

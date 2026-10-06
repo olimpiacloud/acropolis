@@ -76,17 +76,22 @@ async fn fetch_range(client: &Client, url: &str, headers: &HeaderMap, start: u64
 }
 
 pub async fn download<S: AsyncSink>(client: &Client, url: &str, headers: &HeaderMap, size: u64, policy: Policy, sink: S) -> Result<u64> {
-    download_sources(client, &[(url.to_string(), headers.clone())], size, policy, sink).await
+    download_sources(client, (url.to_string(), headers.clone()), async { None }, size, policy, sink).await
 }
 
-pub async fn download_sources<S: AsyncSink>(
+pub async fn download_sources<S: AsyncSink, A: std::future::Future<Output = Option<(String, HeaderMap)>>>(
     client: &Client,
-    sources: &[(String, HeaderMap)],
+    primary: (String, HeaderMap),
+    alternate: A,
     size: u64,
     policy: Policy,
     mut sink: S,
 ) -> Result<u64> {
-    let url = sources.first().map(|s| s.0.as_str()).ok_or_else(|| anyhow!("no download source"))?;
+    let url = primary.0.clone();
+    let url = url.as_str();
+    let mut sources: Vec<(String, HeaderMap)> = vec![primary];
+    let alternate = futures::FutureExt::fuse(alternate);
+    tokio::pin!(alternate);
     let n = size.div_ceil(policy.segment) as usize;
     let seg = |i: usize| -> (u64, u64) {
         let a = i as u64 * policy.segment;
@@ -100,7 +105,11 @@ pub async fn download_sources<S: AsyncSink>(
     let mut next_launch = 0usize;
     let mut next_emit = 0usize;
     let mut written = 0u64;
-    let launch = |i: usize, running: &mut FuturesUnordered<_>, in_flight: &mut HashMap<usize, (usize, Instant)>, attempts: &mut HashMap<usize, u32>| {
+    let launch = |i: usize,
+                  sources: &[(String, HeaderMap)],
+                  running: &mut FuturesUnordered<_>,
+                  in_flight: &mut HashMap<usize, (usize, Instant)>,
+                  attempts: &mut HashMap<usize, u32>| {
         let (a, b) = seg(i);
         let c = client.clone();
         let attempt = attempts.get(&i).copied().unwrap_or(0) as usize;
@@ -116,11 +125,14 @@ pub async fn download_sources<S: AsyncSink>(
     while next_emit < n {
         while next_launch < n && in_flight.len() < policy.parallel && done.len() < policy.parallel * 2 {
             if !done.contains_key(&next_launch) && !in_flight.contains_key(&next_launch) {
-                launch(next_launch, &mut running, &mut in_flight, &mut attempts);
+                launch(next_launch, &sources, &mut running, &mut in_flight, &mut attempts);
             }
             next_launch += 1;
         }
         tokio::select! {
+            Some(src) = &mut alternate => {
+                sources.push(src);
+            }
             Some((i, started, res)) = running.next() => {
                 match res {
                     Ok(bytes) => {
@@ -141,7 +153,7 @@ pub async fn download_sources<S: AsyncSink>(
                                 if attempts.get(&i).copied().unwrap_or(0) >= policy.max_attempts {
                                     return Err(e.context(format!("segment {i} of {url}")));
                                 }
-                                launch(i, &mut running, &mut in_flight, &mut attempts);
+                                launch(i, &sources, &mut running, &mut in_flight, &mut attempts);
                             }
                         }
                     }
@@ -163,7 +175,7 @@ pub async fn download_sources<S: AsyncSink>(
                         && started.elapsed() > threshold
                         && attempts.get(&i).copied().unwrap_or(0) < policy.max_attempts
                     {
-                        launch(i, &mut running, &mut in_flight, &mut attempts);
+                        launch(i, &sources, &mut running, &mut in_flight, &mut attempts);
                         if let Some(x) = in_flight.get_mut(&i) {
                             x.1 = started;
                         }

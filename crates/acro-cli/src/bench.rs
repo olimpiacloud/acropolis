@@ -265,18 +265,30 @@ fn verify(app: &AppSpec, reference: &str) -> Result<()> {
     result
 }
 
-fn run_one(cfg: &BenchConfig, app: &AppSpec, tool: &str, run: usize, iface: &str, log_dir: &Path) -> RunResult {
+fn acro_variant(cfg: &BenchConfig, tool: &str) -> Option<(String, PathBuf)> {
+    if tool == "acro" {
+        return Some(("acro".into(), cfg.acro_bin.clone()));
+    }
+    let (label, path) = tool.strip_prefix("acro@")?.split_once('=')?;
+    Some((format!("acro@{label}"), PathBuf::from(path)))
+}
+
+fn run_one(cfg: &BenchConfig, app: &AppSpec, tool_spec: &str, run: usize, iface: &str, log_dir: &Path) -> RunResult {
+    let acro = acro_variant(cfg, tool_spec);
+    let tool_label = acro.as_ref().map(|(l, _)| l.clone()).unwrap_or_else(|| tool_spec.to_string());
+    let tool_slug: String = tool_label.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '.' { c } else { '-' }).collect();
+    let tool = if acro.is_some() { "acro" } else { tool_spec };
     let mut r = RunResult {
         app: app.name.clone(),
-        tool: tool.to_string(),
+        tool: tool_label.clone(),
         run,
         cpus: cfg.cpus.clone(),
         started_at: chrono_now(),
         ..Default::default()
     };
     let app_dir = cfg.repo.join("bench/apps").join(&app.name);
-    let reference = format!("localhost:{REGISTRY_PORT}/bench/{}:{tool}-{run}", app.name);
-    let log_path = log_dir.join(format!("{}-{tool}-{run}.log", app.name));
+    let reference = format!("localhost:{REGISTRY_PORT}/bench/{}:{tool_slug}-{run}", app.name);
+    let log_path = log_dir.join(format!("{}-{tool_slug}-{run}.log", app.name));
     let res = (|| -> Result<()> {
         reset_registry()?;
         let mut builder_cg = None;
@@ -342,7 +354,7 @@ fn run_one(cfg: &BenchConfig, app: &AppSpec, tool: &str, run: usize, iface: &str
                 c.arg("-c")
                     .arg(format!("echo $$ > {}/cgroup.procs && exec \"$@\"", cg.display()))
                     .arg("sh")
-                    .arg(&cfg.acro_bin)
+                    .arg(acro.as_ref().map(|(_, b)| b.clone()).unwrap_or_else(|| cfg.acro_bin.clone()))
                     .arg("--home")
                     .arg(&acro_home)
                     .arg("--events")
@@ -396,7 +408,7 @@ fn run_one(cfg: &BenchConfig, app: &AppSpec, tool: &str, run: usize, iface: &str
 }
 
 pub fn image_pull_seconds(log: &str, tool: &str) -> f64 {
-    if tool == "acro" {
+    if tool.starts_with("acro") {
         let mut best = 0.0f64;
         for line in log.lines() {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(line)

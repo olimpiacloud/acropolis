@@ -65,11 +65,16 @@ fn bundler_version(dir: &Path) -> Option<String> {
 
 fn has_gem(dir: &Path, gem: &str) -> bool {
     let lock = read(dir, "Gemfile.lock");
-    lock.lines().any(|l| {
+    let locked = lock.lines().any(|l| {
         let t = l.trim_start();
         let indent = l.len() - t.len();
         indent == 4 && (t == gem || t.starts_with(&format!("{gem} (")))
-    })
+    });
+    locked
+        || read(dir, "Gemfile").lines().any(|l| {
+            let t = l.trim_start();
+            t.starts_with(&format!("gem '{gem}'")) || t.starts_with(&format!("gem \"{gem}\""))
+        })
 }
 
 fn is_rails(dir: &Path) -> bool {
