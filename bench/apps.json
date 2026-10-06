@@ -1,8 +1,44 @@
 [
-  { "name": "express-api", "port": 3000, "path": "/", "expect": "express-api" },
-  { "name": "go-api", "port": 8080, "path": "/", "expect": "go-api" },
-  { "name": "rust-api", "port": 8080, "path": "/", "expect": "rust-api" },
-  { "name": "vite-react", "port": 80, "path": "/", "expect": "<div id=\"root\">" },
-  { "name": "tanstack-start", "port": 3000, "path": "/", "expect": "Start simple, ship quickly." },
-  { "name": "next15", "port": 3000, "path": "/", "expect": "Get started by editing" }
+  {
+    "name": "express-api",
+    "port": 3000,
+    "path": "/",
+    "expect": "express-api"
+  },
+  {
+    "name": "go-api",
+    "port": 8080,
+    "path": "/",
+    "expect": "go-api"
+  },
+  {
+    "name": "rust-api",
+    "port": 8080,
+    "path": "/",
+    "expect": "rust-api"
+  },
+  {
+    "name": "vite-react",
+    "port": 80,
+    "path": "/",
+    "expect": "<div id=\"root\">"
+  },
+  {
+    "name": "tanstack-start",
+    "port": 3000,
+    "path": "/",
+    "expect": "Start simple, ship quickly."
+  },
+  {
+    "name": "next15",
+    "port": 3000,
+    "path": "/",
+    "expect": "Get started by editing"
+  },
+  {
+    "name": "vite-mui",
+    "port": 80,
+    "path": "/",
+    "expect": "<div id=\"root\">"
+  }
 ]

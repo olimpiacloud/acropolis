@@ -372,6 +372,11 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
                 .map(|(c, _)| c)
                 .or_else(|| script_chain(app, "build"))
                 .unwrap_or_default();
+            if let Runtime::Spa { out } = &rt
+                && let Some(checks) = native_bundle_eligible(app, env, &build_cmd, &lockfile)
+            {
+                return plan_native_spa(app, env, b, manager, &lockfile, &lock_sha, out, checks);
+            }
             let mut parts = vec![];
             let dev_opts = acro_npm::InstallOptions { include_dev: true, include_optional: true, platform: Default::default() };
             let dev_scripts = unknown_scripts
@@ -731,6 +736,101 @@ fn plan_bun_binary_lock(app: &NodeApp, env: &Env, mut b: PlanBuilder) -> Result<
     b.plan.image.workdir = Some("/app".into());
     b.plan.image.entrypoint = Some(vec![]);
     b.plan.warnings.push("bun.lockb is installed by the bun CLI with network access".into());
+    Ok(b.finish())
+}
+
+fn native_bundle_eligible(app: &NodeApp, env: &Env, build_cmd: &str, lockfile: &str) -> Option<Vec<String>> {
+    if app.framework != Framework::Vite || lockfile.is_empty() {
+        return None;
+    }
+    if env.config("BUNDLER").map(|(v, _)| v == "vite").unwrap_or(false) || env.config("BUILD_CMD").is_some() {
+        return None;
+    }
+    if !acro_bundle::simple_vite_config(&app.dir) {
+        return None;
+    }
+    let mut checks = Vec::new();
+    let mut saw_vite = false;
+    for part in build_cmd.split("&&").map(|p| p.trim()) {
+        if part == "vite build" {
+            saw_vite = true;
+        } else if !saw_vite && (part.starts_with("tsc") || part.starts_with("vue-tsc")) && !part.contains("--outDir") {
+            checks.push(part.to_string());
+        } else {
+            return None;
+        }
+    }
+    if saw_vite { Some(checks) } else { None }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn plan_native_spa(
+    app: &NodeApp,
+    env: &Env,
+    mut b: PlanBuilder,
+    manager: &str,
+    lockfile: &str,
+    lock_sha: &str,
+    out: &str,
+    checks: Vec<String>,
+) -> Result<Plan> {
+    b.fact("bundler", "acro (rolldown, lazy install)");
+    b.step(
+        "bundle",
+        "bundle with lazy package fetch",
+        Action::BundleSpa { manager: manager.into(), lockfile: lockfile.into(), out: out.into() },
+        &[],
+    );
+    let mut site_deps = vec!["bundle".to_string()];
+    if !checks.is_empty() {
+        let check = checks.join(" && ");
+        b.fact("type-check", check.clone());
+        b.step("node", format!("node {}", app.node.spec), Action::Toolchain { tool: "node".into(), spec: app.node.spec.clone(), parts: vec![] }, &[]);
+        b.step(
+            "npm-fetch",
+            "fetch packages",
+            Action::NpmFetch { manager: manager.into(), lockfile: lockfile.into(), lockfile_sha256: lock_sha.into(), dev: true },
+            &[],
+        );
+        b.step("source", "copy source", Action::CopySource { exclude: vec!["**/node_modules".into()] }, &[]);
+        b.step(
+            "install",
+            "install node_modules",
+            Action::NpmInstall { dev: true, target: "src".into(), scripts: String::new(), manager: manager.into() },
+            &["npm-fetch", "source"],
+        );
+        let mut run_env = BTreeMap::new();
+        run_env.insert("NODE_ENV".to_string(), "production".to_string());
+        b.step(
+            "typecheck",
+            format!("run {check} (in parallel with the bundle)"),
+            Action::Run { argv: vec!["/bin/sh".into(), "-c".into(), check], env: run_env, network: false, cwd: ".".into() },
+            &["node", "install"],
+        );
+        site_deps.push("typecheck".into());
+    }
+    b.step("base", format!("resolve {CADDY_IMAGE}"), Action::ResolveBase { image: CADDY_IMAGE.into() }, &[]);
+    b.step("copy-base", "copy base layers", Action::CopyBase, &["base"]);
+    let mut files = BTreeMap::new();
+    files.insert(
+        "Caddyfile".to_string(),
+        spa_caddyfile("/app/dist", !env.config("SPA_INDEX_FALLBACK").map(|(v, _)| v == "false").unwrap_or(false)),
+    );
+    b.step("layer-caddy", "layer Caddyfile", Action::Layer { dest: "".into(), from: LayerFrom::Inline { files } }, &[]);
+    let deps: Vec<&str> = site_deps.iter().map(|s| s.as_str()).collect();
+    b.step(
+        "layer-site",
+        format!("layer {out}"),
+        Action::Layer { dest: "app/dist".into(), from: LayerFrom::WorkDir { path: format!("@work/bundle/{out}"), exclude: vec![] } },
+        &deps,
+    );
+    b.step("push", "push image", Action::Push, &["base", "copy-base", "layer-caddy", "layer-site"]);
+    b.plan.image.layers = vec!["layer-caddy".into(), "layer-site".into()];
+    b.plan.image.cmd = Some(vec!["/bin/sh".into(), "-c".into(), "exec caddy run --config /Caddyfile --adapter caddyfile 2>&1".into()]);
+    b.plan.image.entrypoint = Some(vec![]);
+    b.plan.image.workdir = Some("/app".into());
+    b.plan.image.ports = vec![80];
+    b.fact("runtime", format!("static site from {out} served by caddy"));
     Ok(b.finish())
 }
 

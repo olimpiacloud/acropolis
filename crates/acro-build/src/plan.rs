@@ -28,6 +28,7 @@ pub enum Action {
     },
     GoModules { gosum_sha256: String },
     CargoVendor { lockfile_sha256: String },
+    BundleSpa { manager: String, lockfile: String, out: String },
     CopySource { exclude: Vec<String> },
     Run { argv: Vec<String>, env: BTreeMap<String, String>, network: bool, cwd: String },
     ImageRun {

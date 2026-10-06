@@ -135,7 +135,19 @@ impl Registry {
                 && !authed
                 && let Some(challenge) = known_challenge(&key.0)
             {
-                let header = self.authenticate(r, challenge, &key.1).await?;
+                let header = match self.authenticate(r, challenge, &key.1).await {
+                    Ok(h) => h,
+                    Err(e) => {
+                        let net = e.downcast_ref::<reqwest::Error>().map(|re| re.is_connect() || re.is_timeout()).unwrap_or(false);
+                        if net && self.mark_down(&key.0) {
+                            return Err(anyhow!(Unreachable(key.0.clone())));
+                        }
+                        if net && key.0 == "registry-1.docker.io" {
+                            return Err(anyhow!(Unreachable(key.0.clone())));
+                        }
+                        return Err(e);
+                    }
+                };
                 self.tokens.lock().unwrap().insert(key.clone(), header.clone());
                 token = Some(header);
                 authed = true;

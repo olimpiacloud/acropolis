@@ -49,6 +49,7 @@ pub struct Fetcher {
     seg_client: Client,
     store: Arc<Store>,
     limit: Arc<Semaphore>,
+    inflight: Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 pub fn segment_client() -> Result<Client> {
@@ -70,7 +71,13 @@ impl Fetcher {
             .read_timeout(Duration::from_secs(60))
             .tcp_nodelay(true)
             .build()?;
-        Ok(Fetcher { client, seg_client: segment_client()?, store, limit: Arc::new(Semaphore::new(concurrency)) })
+        Ok(Fetcher {
+            client,
+            seg_client: segment_client()?,
+            store,
+            limit: Arc::new(Semaphore::new(concurrency)),
+            inflight: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        })
     }
 
     pub fn client(&self) -> &Client {
@@ -247,6 +254,14 @@ impl Fetcher {
         headers: &HeaderMap,
         expected: Option<Integrity>,
     ) -> Result<StoredBlob> {
+        if let Some(exp) = &expected
+            && let Some(b) = self.store.get(exp)
+        {
+            return Ok(b);
+        }
+        let key = expected.as_ref().map(|e| e.to_sri()).unwrap_or_else(|| url.to_string());
+        let lock = self.inflight.lock().unwrap().entry(key.clone()).or_default().clone();
+        let _guard = lock.lock().await;
         if let Some(exp) = &expected
             && let Some(b) = self.store.get(exp)
         {

@@ -1,3 +1,4 @@
 /target
 bench/results/*.logs/
 **/node_modules
+tests/render/node_modules

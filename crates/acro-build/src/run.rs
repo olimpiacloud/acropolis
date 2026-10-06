@@ -408,6 +408,41 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             acro_events::log(&step.id, format!("{} modules, {} go.mod files", stats.modules, stats.gomods));
             Ok(Out::None)
         }
+        Action::BundleSpa { manager, lockfile, out } => {
+            let opts = InstallOptions { include_dev: true, include_optional: true, platform: Default::default() };
+            let plan = install_plan_for(manager, &ctx.opts.app_dir, lockfile, &opts)?;
+            let root = ctx.work.join("bundle");
+            let app = ctx.opts.app_dir.clone();
+            let r2 = root.clone();
+            tokio::task::spawn_blocking(move || source::copy_tree(&app, &r2, &Ignore::load(&app, &["**/node_modules".to_string(), "dist".to_string()]))).await??;
+            let mut env = BTreeMap::new();
+            for (k, v) in &ctx.opts.env.vars {
+                env.insert(k.clone(), v.clone());
+            }
+            let res = acro_bundle::build_spa(acro_bundle::SpaInput {
+                root: root.clone(),
+                out_dir: root.join(out),
+                plan: Arc::new(plan),
+                fetcher: ctx.fetcher.clone(),
+                base: "/".into(),
+                env,
+            })
+            .await?;
+            acro_events::log(
+                &step.id,
+                format!(
+                    "{} of {} packages fetched ({:.1} MB, last at {} ms, extract {} ms), {} files in {} ms",
+                    res.stats.packages_fetched,
+                    res.stats.packages_in_lockfile,
+                    res.stats.bytes_fetched as f64 / 1e6,
+                    res.stats.last_fetch_ms,
+                    res.stats.extract_ms,
+                    res.files,
+                    res.ms
+                ),
+            );
+            Ok(Out::None)
+        }
         Action::CargoVendor { .. } => {
             let text = std::fs::read_to_string(ctx.opts.app_dir.join("Cargo.lock"))?;
             let lock = acro_cargo::parse_lock(&text)?;

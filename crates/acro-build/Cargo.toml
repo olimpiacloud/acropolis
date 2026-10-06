@@ -13,6 +13,7 @@ acro-npm = { path = "../acro-npm" }
 acro-gomod = { path = "../acro-gomod" }
 acro-cargo = { path = "../acro-cargo" }
 acro-semver = { path = "../acro-semver" }
+acro-bundle = { path = "../acro-bundle" }
 acro-toolchain = { path = "../acro-toolchain" }
 acro-exec = { path = "../acro-exec" }
 anyhow.workspace = true
