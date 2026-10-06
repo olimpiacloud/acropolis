@@ -45,6 +45,8 @@ pub struct RunResult {
     pub net_rx_mb: f64,
     pub disk_write_mb: f64,
     pub image_mb: f64,
+    #[serde(default)]
+    pub image_pull_s: f64,
     pub digest: String,
     pub error: Option<String>,
     pub started_at: String,
@@ -379,6 +381,7 @@ fn run_one(cfg: &BenchConfig, app: &AppSpec, tool: &str, run: usize, iface: &str
             bail!("build failed ({status}):\n{tail}");
         }
         r.ok = true;
+        r.image_pull_s = image_pull_seconds(&fs::read_to_string(&log_path).unwrap_or_default(), tool);
         let (size, digest) = image_size(&reference)?;
         r.image_mb = size;
         r.digest = digest;
@@ -390,6 +393,36 @@ fn run_one(cfg: &BenchConfig, app: &AppSpec, tool: &str, run: usize, iface: &str
         r.error = Some(format!("{e:#}"));
     }
     r
+}
+
+pub fn image_pull_seconds(log: &str, tool: &str) -> f64 {
+    if tool == "acro" {
+        let mut best = 0.0f64;
+        for line in log.lines() {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line)
+                && v["type"] == "step_finished"
+                && (v["id"] == "base" || v["id"] == "copy-base")
+            {
+                best += v["ms"].as_f64().unwrap_or(0.0) / 1000.0;
+            }
+        }
+        return best;
+    }
+    let mut names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut done: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+    for line in log.lines() {
+        let Some(rest) = line.strip_prefix('#') else { continue };
+        let Some((id, text)) = rest.split_once(' ') else { continue };
+        if text.starts_with("docker-image://") || text.contains("] FROM ") {
+            names.insert(id.to_string(), text.to_string());
+        } else if let Some(t) = text.strip_prefix("DONE ").and_then(|t| t.trim_end_matches('s').parse::<f64>().ok()) {
+            let e = done.entry(id.to_string()).or_insert(0.0);
+            if t > *e {
+                *e = t;
+            }
+        }
+    }
+    names.iter().filter_map(|(id, _)| done.get(id)).cloned().fold(0.0, f64::max)
 }
 
 fn parse_mem(s: &str) -> u64 {
@@ -445,6 +478,17 @@ pub fn run(cfg: BenchConfig) -> Result<Vec<RunResult>> {
     Ok(results)
 }
 
+pub fn backfill(results: &mut [RunResult], log_dir: &Path) {
+    for r in results.iter_mut() {
+        if r.image_pull_s == 0.0 {
+            let p = log_dir.join(format!("{}-{}-{}.log", r.app, r.tool, r.run));
+            if let Ok(text) = fs::read_to_string(p) {
+                r.image_pull_s = image_pull_seconds(&text, &r.tool);
+            }
+        }
+    }
+}
+
 pub fn summarize(results: &[RunResult]) -> String {
     let mut apps: Vec<String> = Vec::new();
     let mut tools: Vec<String> = Vec::new();
@@ -469,13 +513,14 @@ pub fn summarize(results: &[RunResult]) -> String {
         }
     };
     let mut s = String::new();
-    let metrics: [(&str, fn(&RunResult) -> f64, usize); 6] = [
+    let metrics: [(&str, fn(&RunResult) -> f64, usize); 7] = [
         ("wall time (s)", |r| r.wall_s, 1),
         ("CPU-seconds", |r| r.cpu_s, 1),
         ("peak memory (MB)", |r| r.peak_mem_mb, 0),
         ("downloaded (MB)", |r| r.net_rx_mb, 0),
         ("disk writes (MB)", |r| r.disk_write_mb, 0),
         ("image size (MB)", |r| r.image_mb, 1),
+        ("base/builder image pull (s)", |r| r.image_pull_s, 1),
     ];
     for (title, f, prec) in metrics {
         s.push_str(&format!("\n### {title}\n\n| app | {} |\n|---|{}\n", tools.join(" | "), "---|".repeat(tools.len())));

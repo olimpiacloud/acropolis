@@ -95,6 +95,8 @@ enum Command {
         registry: String,
         #[arg(long)]
         out: Option<PathBuf>,
+        #[arg(long)]
+        isolated: bool,
     },
 }
 
@@ -157,7 +159,7 @@ fn main() {
             }
         }
     }
-    if let Command::E2e { examples, filter, jobs, registry, out } = &cli.cmd {
+    if let Command::E2e { examples, filter, jobs, registry, out, isolated } = &cli.cmd {
         let out = out.clone().unwrap_or_else(|| PathBuf::from(format!("e2e-{}.jsonl", std::process::id())));
         let home = cli.home.clone().unwrap_or_else(|| std::env::temp_dir().join("acro-e2e-home"));
         let cfg = e2e::E2eConfig {
@@ -168,6 +170,7 @@ fn main() {
             registry: registry.clone(),
             out: out.clone(),
             home,
+            isolated: *isolated,
         };
         match e2e::run(cfg) {
             Ok(results) => {
@@ -185,9 +188,13 @@ fn main() {
         let mut all = Vec::new();
         for p in results {
             let text = std::fs::read_to_string(p).expect("results file");
-            for line in text.lines().filter(|l| !l.trim().is_empty()) {
-                all.push(serde_json::from_str::<bench::RunResult>(line).expect("result line"));
-            }
+            let mut rs: Vec<bench::RunResult> = text
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .map(|line| serde_json::from_str::<bench::RunResult>(line).expect("result line"))
+                .collect();
+            bench::backfill(&mut rs, &p.with_extension("logs"));
+            all.extend(rs);
         }
         println!("{}", bench::summarize(&all));
         std::process::exit(0);

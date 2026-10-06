@@ -74,6 +74,7 @@ pub struct E2eConfig {
     pub registry: String,
     pub out: PathBuf,
     pub home: PathBuf,
+    pub isolated: bool,
 }
 
 fn docker(args: &[&str]) -> Result<String> {
@@ -271,8 +272,10 @@ fn run_case(cfg: &E2eConfig, example: &str, idx: usize, case: &TestCase) -> Case
         return r;
     }
     let tag = format!("{}/e2e/{}:case{}", cfg.registry, example.to_ascii_lowercase(), idx);
-    let home = cfg.home.join(format!("{example}-{idx}"));
-    let _ = fs::remove_dir_all(&home);
+    let home = if cfg.isolated { cfg.home.join(format!("{example}-{idx}")) } else { cfg.home.clone() };
+    if cfg.isolated {
+        let _ = fs::remove_dir_all(&home);
+    }
     let log_dir = cfg.out.with_extension("logs");
     let _ = fs::create_dir_all(&log_dir);
     let log_path = log_dir.join(format!("{example}-{idx}.log"));
@@ -294,7 +297,9 @@ fn run_case(cfg: &E2eConfig, example: &str, idx: usize, case: &TestCase) -> Case
     };
     r.build_s = start.elapsed().as_secs_f64();
     let _ = fs::write(&log_path, [out.stdout.as_slice(), out.stderr.as_slice()].concat());
-    let _ = fs::remove_dir_all(&home);
+    if cfg.isolated {
+        let _ = fs::remove_dir_all(&home);
+    }
     if case.should_fail {
         if out.status.success() {
             r.detail = "expected build failure but build succeeded".into();

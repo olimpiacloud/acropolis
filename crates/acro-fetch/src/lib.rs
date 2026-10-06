@@ -1,7 +1,7 @@
 use acro_store::{Integrity, Store, StoredBlob};
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
-use reqwest::header::{HeaderMap, HeaderValue, RANGE};
+use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::{Client, Response, StatusCode};
 use serde::de::DeserializeOwned;
 use std::io::{self, Read, Write};
@@ -13,6 +13,35 @@ pub mod segmented;
 
 const MAX_ATTEMPTS: u32 = 5;
 const STALL: Duration = Duration::from_secs(6);
+const HEDGE_AFTER: Duration = Duration::from_millis(1500);
+
+enum Probe {
+    Small(Bytes),
+    Large { len: u64, url: String },
+    Stream(Response),
+}
+
+#[derive(Debug)]
+struct Fatal;
+
+impl std::fmt::Display for Fatal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("request failed permanently")
+    }
+}
+
+impl std::error::Error for Fatal {}
+
+#[derive(Debug)]
+struct Retryable;
+
+impl std::fmt::Display for Retryable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("request failed, retrying")
+    }
+}
+
+impl std::error::Error for Retryable {}
 
 #[derive(Clone)]
 pub struct Fetcher {
@@ -56,36 +85,6 @@ impl Fetcher {
         &self.store
     }
 
-    async fn open(&self, url: &str, headers: &HeaderMap, offset: u64) -> Result<Response> {
-        let mut attempt = 0;
-        loop {
-            attempt += 1;
-            let mut req = self.client.get(url).headers(headers.clone());
-            if offset > 0 {
-                req = req.header(RANGE, format!("bytes={offset}-"));
-            }
-            acro_events::add_request();
-            let res = req.send().await;
-            match res {
-                Ok(r) if r.status().is_success() => return Ok(r),
-                Ok(r) if retryable(r.status()) && attempt < MAX_ATTEMPTS => {
-                    let wait = retry_after(&r).unwrap_or_else(|| backoff(attempt));
-                    tokio::time::sleep(wait).await;
-                }
-                Ok(r) => {
-                    let status = r.status();
-                    let body = r.text().await.unwrap_or_default();
-                    bail!("GET {url}: {status} {}", body.chars().take(300).collect::<String>());
-                }
-                Err(e) if attempt < MAX_ATTEMPTS => {
-                    let _ = e;
-                    tokio::time::sleep(backoff(attempt)).await;
-                }
-                Err(e) => return Err(anyhow!(e).context(format!("GET {url}"))),
-            }
-        }
-    }
-
     pub async fn bytes(&self, url: &str) -> Result<Bytes> {
         self.bytes_with(url, &HeaderMap::new()).await
     }
@@ -93,27 +92,17 @@ impl Fetcher {
     pub async fn bytes_with(&self, url: &str, headers: &HeaderMap) -> Result<Bytes> {
         let _permit = self.limit.acquire().await?;
         let start = Instant::now();
-        let mut attempt = 0;
-        loop {
-            attempt += 1;
-            let r = self.open(url, headers, 0).await?;
-            match r.bytes().await {
-                Ok(b) => {
-                    acro_events::add_downloaded(b.len() as u64);
-                    acro_events::emit(acro_events::Event::Downloaded {
-                        what: url.to_string(),
-                        bytes: b.len() as u64,
-                        ms: start.elapsed().as_millis() as u64,
-                    });
-                    return Ok(b);
-                }
-                Err(e) if attempt < MAX_ATTEMPTS => {
-                    let _ = e;
-                    tokio::time::sleep(backoff(attempt)).await;
-                }
-                Err(e) => return Err(anyhow!(e).context(format!("GET {url}"))),
+        let mut out = bytes::BytesMut::new();
+        struct Collect<'a>(&'a mut bytes::BytesMut);
+        impl AsyncSink for Collect<'_> {
+            async fn push(&mut self, b: Bytes) -> Result<()> {
+                self.0.extend_from_slice(&b);
+                Ok(())
             }
         }
+        let n = self.stream_chunks(url, headers, Collect(&mut out)).await?;
+        acro_events::emit(acro_events::Event::Downloaded { what: url.to_string(), bytes: n, ms: start.elapsed().as_millis() as u64 });
+        Ok(out.freeze())
     }
 
     pub async fn json<T: DeserializeOwned>(&self, url: &str) -> Result<T> {
@@ -123,72 +112,126 @@ impl Fetcher {
         serde_json::from_slice(&b).with_context(|| format!("parsing JSON from {url}"))
     }
 
+    async fn attempt(&self, client: &Client, url: &str, headers: &HeaderMap) -> Result<Probe> {
+        acro_events::add_request();
+        let r = match tokio::time::timeout(STALL * 2, client.get(url).headers(headers.clone()).send()).await {
+            Err(_) => return Err(anyhow!(Stalled)),
+            Ok(r) => r?,
+        };
+        let status = r.status();
+        if !status.is_success() {
+            let retry = retryable(status);
+            let body = r.text().await.unwrap_or_default();
+            let err = anyhow!("GET {url}: {status} {}", body.chars().take(300).collect::<String>());
+            return Err(if retry { err.context(Retryable) } else { err.context(Fatal) });
+        }
+        let len = r.content_length().unwrap_or(0);
+        let ranges = r.headers().get(reqwest::header::ACCEPT_RANGES).map(|v| v.as_bytes() == b"bytes").unwrap_or(false);
+        if len >= segmented::MIN_SEGMENTED {
+            if ranges {
+                return Ok(Probe::Large { len, url: r.url().to_string() });
+            }
+            return Ok(Probe::Stream(r));
+        }
+        let mut r = r;
+        let mut buf = bytes::BytesMut::with_capacity(len as usize);
+        loop {
+            let chunk = match tokio::time::timeout(STALL, r.chunk()).await {
+                Ok(c) => c?,
+                Err(_) => return Err(anyhow!(Stalled)),
+            };
+            let Some(chunk) = chunk else { break };
+            acro_events::add_downloaded(chunk.len() as u64);
+            buf.extend_from_slice(&chunk);
+        }
+        if len > 0 && buf.len() as u64 != len {
+            return Err(anyhow!("short body: {} of {len} bytes", buf.len()).context(Retryable));
+        }
+        Ok(Probe::Small(buf.freeze()))
+    }
+
+    async fn race(&self, url: &str, headers: &HeaderMap) -> Result<Probe> {
+        let primary = self.attempt(&self.client, url, headers);
+        let hedge = async {
+            tokio::time::sleep(HEDGE_AFTER).await;
+            self.attempt(&self.seg_client, url, headers).await
+        };
+        tokio::pin!(primary);
+        tokio::pin!(hedge);
+        let (mut p_done, mut h_done) = (false, false);
+        let mut last: Option<anyhow::Error>;
+        loop {
+            tokio::select! {
+                r = &mut primary, if !p_done => match r {
+                    Ok(v) => return Ok(v),
+                    Err(e) => {
+                        if e.downcast_ref::<Fatal>().is_some() {
+                            return Err(e);
+                        }
+                        p_done = true;
+                        last = Some(e);
+                        if h_done { break; }
+                    }
+                },
+                r = &mut hedge, if !h_done => match r {
+                    Ok(v) => return Ok(v),
+                    Err(e) => {
+                        if e.downcast_ref::<Fatal>().is_some() {
+                            return Err(e);
+                        }
+                        h_done = true;
+                        last = Some(e);
+                        if p_done { break; }
+                    }
+                },
+            }
+        }
+        Err(last.unwrap_or_else(|| anyhow!("request failed")))
+    }
+
     async fn stream_chunks<F>(&self, url: &str, headers: &HeaderMap, mut sink: F) -> Result<u64>
     where
         F: AsyncSink,
     {
-        let mut offset = 0u64;
         let mut failures = 0;
         loop {
-            let mut r = self.open(url, headers, offset).await?;
-            if offset == 0 {
-                let len = r.content_length().unwrap_or(0);
-                let ranges = r
-                    .headers()
-                    .get(reqwest::header::ACCEPT_RANGES)
-                    .map(|v| v.as_bytes() == b"bytes")
-                    .unwrap_or(false);
-                if len >= segmented::MIN_SEGMENTED && ranges {
-                    let final_url = r.url().to_string();
-                    let seg_headers = if final_url == url { headers.clone() } else { HeaderMap::new() };
-                    drop(r);
-                    match segmented::download(&self.seg_client, &final_url, &seg_headers, len, segmented::Policy::default(), &mut sink).await {
-                        Ok(n) => return Ok(n),
-                        Err(e) if e.downcast_ref::<segmented::NoRanges>().is_some() => {
-                            r = self.open(url, headers, 0).await?;
-                        }
-                        Err(e) => return Err(e),
-                    }
-                }
-            }
-            let mut skip = 0u64;
-            if offset > 0 && r.status() != StatusCode::PARTIAL_CONTENT {
-                skip = offset;
-            }
-            let result: Result<()> = async {
-                loop {
-                    let chunk = match tokio::time::timeout(STALL, r.chunk()).await {
-                        Ok(c) => c?,
-                        Err(_) => return Err(anyhow!(Stalled)),
-                    };
-                    let Some(chunk) = chunk else { break };
-                    acro_events::add_downloaded(chunk.len() as u64);
-                    let chunk = if skip > 0 {
-                        let s = (skip as usize).min(chunk.len());
-                        skip -= s as u64;
-                        chunk.slice(s..)
-                    } else {
-                        chunk
-                    };
-                    if chunk.is_empty() {
-                        continue;
-                    }
-                    offset += chunk.len() as u64;
-                    sink.push(chunk).await?;
-                }
-                Ok(())
-            }
-            .await;
-            match result {
-                Ok(()) => return Ok(offset),
-                Err(e)
-                    if (e.downcast_ref::<reqwest::Error>().is_some() || e.downcast_ref::<Stalled>().is_some())
-                        && failures < MAX_ATTEMPTS =>
-                {
+            let probe = match self.race(url, headers).await {
+                Ok(p) => p,
+                Err(e) if e.downcast_ref::<Fatal>().is_none() && failures < MAX_ATTEMPTS => {
                     failures += 1;
                     tokio::time::sleep(backoff(failures)).await;
+                    continue;
                 }
                 Err(e) => return Err(e.context(format!("GET {url}"))),
+            };
+            match probe {
+                Probe::Small(b) => {
+                    let n = b.len() as u64;
+                    if n > 0 {
+                        sink.push(b).await?;
+                    }
+                    return Ok(n);
+                }
+                Probe::Large { len, url: final_url } => {
+                    let seg_headers = if final_url == url { headers.clone() } else { HeaderMap::new() };
+                    return segmented::download(&self.seg_client, &final_url, &seg_headers, len, segmented::Policy::default(), &mut sink)
+                        .await
+                        .with_context(|| format!("GET {url}"));
+                }
+                Probe::Stream(mut r) => {
+                    let mut offset = 0u64;
+                    loop {
+                        let chunk = match tokio::time::timeout(STALL * 3, r.chunk()).await {
+                            Ok(c) => c.with_context(|| format!("GET {url}"))?,
+                            Err(_) => bail!("GET {url}: stalled after {offset} bytes and the server does not support ranges"),
+                        };
+                        let Some(chunk) = chunk else { break };
+                        acro_events::add_downloaded(chunk.len() as u64);
+                        offset += chunk.len() as u64;
+                        sink.push(chunk).await?;
+                    }
+                    return Ok(offset);
+                }
             }
         }
     }
@@ -351,12 +394,6 @@ impl Read for ChannelReader {
 
 fn retryable(s: StatusCode) -> bool {
     s == StatusCode::TOO_MANY_REQUESTS || s.is_server_error() || s == StatusCode::REQUEST_TIMEOUT
-}
-
-fn retry_after(r: &Response) -> Option<Duration> {
-    let v = r.headers().get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
-    let secs: u64 = v.trim().parse().ok()?;
-    Some(Duration::from_secs(secs.min(30)))
 }
 
 fn backoff(attempt: u32) -> Duration {

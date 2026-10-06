@@ -243,10 +243,11 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                         corepack: parts.iter().any(|p| p == "corepack"),
                         headers: parts.iter().any(|p| p == "headers"),
                     };
-                    let inst = acro_toolchain::node::install(fetcher, &version, &dest, p).await?;
-                    std::fs::write(&marker, "")?;
+                    let tmp = staging(&dest);
+                    acro_toolchain::node::install(fetcher, &version, &tmp, p).await?;
+                    publish(&tmp, &dest)?;
                     acro_events::log(&step.id, format!("node {version}"));
-                    Ok(Out::Tool(inst))
+                    Ok(Out::Tool(Installed { name: "node".into(), version, bin_dir: dest.join("bin"), root: dest, archive: None }))
                 }
                 "go" => {
                     let version = acro_toolchain::go::resolve(fetcher, spec).await?;
@@ -261,18 +262,20 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                             archive: None,
                         }));
                     }
-                    let inst = acro_toolchain::go::install(fetcher, &version, &dest).await?;
-                    std::fs::write(&marker, "")?;
+                    let tmp = staging(&dest);
+                    acro_toolchain::go::install(fetcher, &version, &tmp).await?;
+                    publish(&tmp, &dest)?;
                     acro_events::log(&step.id, format!("go {version}"));
-                    Ok(Out::Tool(inst))
+                    Ok(Out::Tool(Installed { name: "go".into(), version, bin_dir: dest.join("bin"), root: dest, archive: None }))
                 }
                 "bun" => {
                     let release = acro_toolchain::bun::resolve(fetcher, spec).await?;
                     let dest = ctx.opts.home.join("toolchains").join(format!("bun-{}", release.version));
                     let marker = dest.join(".acro-complete");
                     if !marker.exists() {
-                        acro_toolchain::bun::install(fetcher, &release, &dest).await?;
-                        std::fs::write(&marker, "")?;
+                        let tmp = staging(&dest);
+                        acro_toolchain::bun::install(fetcher, &release, &tmp).await?;
+                        publish(&tmp, &dest)?;
                     }
                     acro_events::log(&step.id, format!("bun {}", release.version));
                     Ok(Out::Tool(Installed { name: "bun".into(), version: release.version, bin_dir: dest.join("bin"), root: dest, archive: None }))
@@ -282,8 +285,9 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                     let dest = ctx.opts.home.join("toolchains").join(format!("uv-{}", release.version));
                     let marker = dest.join(".acro-complete");
                     if !marker.exists() {
-                        acro_toolchain::uv::install(fetcher, &release, &dest).await?;
-                        std::fs::write(&marker, "")?;
+                        let tmp = staging(&dest);
+                        acro_toolchain::uv::install(fetcher, &release, &tmp).await?;
+                        publish(&tmp, &dest)?;
                     }
                     acro_events::log(&step.id, format!("uv {}", release.version));
                     Ok(Out::Tool(Installed { name: "uv".into(), version: release.version, bin_dir: dest.join("bin"), root: dest, archive: None }))
@@ -293,8 +297,9 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                     let dest = ctx.opts.home.join("toolchains").join(format!("rust-{}", release.version));
                     let marker = dest.join(".acro-complete");
                     if !marker.exists() {
-                        acro_cargo::install(fetcher, &release, &dest).await?;
-                        std::fs::write(&marker, "")?;
+                        let tmp = staging(&dest);
+                        acro_cargo::install(fetcher, &release, &tmp).await?;
+                        publish(&tmp, &dest)?;
                     }
                     acro_events::log(&step.id, format!("rust {} ({})", release.version, release.date));
                     Ok(Out::Tool(Installed { name: "rust".into(), version: release.version, bin_dir: dest.join("bin"), root: dest, archive: None }))
@@ -642,11 +647,11 @@ async fn image_rootfs(ctx: &Arc<Ctx>, image: &str) -> Result<(Vec<PathBuf>, BTre
             if marker.exists() {
                 return Ok::<PathBuf, anyhow::Error>(dir);
             }
-            let _ = std::fs::remove_dir_all(&dir);
+            let staged = staging(&dir);
             let (url, headers) = ctx.registry.blob_location(&reference, &d.digest).await?;
             let expected = acro_store::Integrity::parse_oci(&d.digest)?;
             let mt = d.media_type.clone();
-            let dir2 = dir.clone();
+            let dir2 = staged.clone();
             ctx.fetcher
                 .blob_streaming(&d.digest, &url, &headers, Some(expected), move |r| {
                     let reader: Box<dyn std::io::Read + '_> = if mt.contains("zstd") {
@@ -659,12 +664,39 @@ async fn image_rootfs(ctx: &Arc<Ctx>, image: &str) -> Result<(Vec<PathBuf>, BTre
                     acro_oci::unpack::unpack_for_overlay(reader, &dir2)
                 })
                 .await?;
+            if std::fs::rename(&staged, &dir).is_err() {
+                let _ = std::fs::remove_dir_all(&staged);
+            }
             std::fs::write(&marker, "")?;
             Ok(dir)
         }
     });
     let dirs = futures::future::try_join_all(futs).await?;
     Ok((dirs, env))
+}
+
+fn staging(dest: &Path) -> PathBuf {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    dest.with_file_name(format!(".{name}.staging-{}-{n}", std::process::id()))
+}
+
+fn publish(staged: &Path, dest: &Path) -> Result<()> {
+    std::fs::write(staged.join(".acro-complete"), "")?;
+    if dest.join(".acro-complete").exists() {
+        let _ = std::fs::remove_dir_all(staged);
+        return Ok(());
+    }
+    let _ = std::fs::remove_dir_all(dest);
+    if let Err(e) = std::fs::rename(staged, dest) {
+        if dest.join(".acro-complete").exists() {
+            let _ = std::fs::remove_dir_all(staged);
+            return Ok(());
+        }
+        return Err(e.into());
+    }
+    Ok(())
 }
 
 async fn resolve_base(ctx: &Arc<Ctx>, step: &Step, image: &str) -> Result<Out> {

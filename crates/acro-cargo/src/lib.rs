@@ -95,7 +95,9 @@ pub async fn resolve(fetcher: &Fetcher, spec: &str, targets: &[String]) -> Resul
             .get(&target)
             .filter(|t| t.available)
             .ok_or_else(|| anyhow!("{pkg} is not available for {target} in {channel}"))?;
+        let prefer_gz = std::env::var("ACRO_RUST_COMPRESSION").map(|v| v == "gz").unwrap_or(true);
         let (url, hash, xz) = match (&t.xz_url, &t.xz_hash, &t.url, &t.hash) {
+            (_, _, Some(u), Some(h)) if prefer_gz => (u.clone(), h.clone(), false),
             (Some(u), Some(h), _, _) => (u.clone(), h.clone(), true),
             (_, _, Some(u), Some(h)) => (u.clone(), h.clone(), false),
             _ => bail!("{pkg} for {target} has no download URL"),
