@@ -45,6 +45,14 @@ pub fn plan_app(dir: &Path, env: &Env) -> Result<Plan> {
         apply_deploy_apt(&mut plan, env)?;
         return Ok(plan);
     }
+    if (forced.as_deref() == Some("php") || (forced.is_none() && !dir.join("go.mod").exists()))
+        && providers::php::is_php(dir)
+        && (forced.as_deref() == Some("php") || dir.join("composer.json").exists() || !detect::has_package_json(dir))
+    {
+        let mut plan = providers::php::plan(dir, env, &name)?;
+        apply_deploy_apt(&mut plan, env)?;
+        return Ok(plan);
+    }
     if (forced.as_deref() == Some("ruby") || (forced.is_none() && !dir.join("go.mod").exists() && !dir.join("Cargo.toml").exists()))
         && providers::ruby::is_ruby(dir)
     {
@@ -60,7 +68,8 @@ pub fn plan_app(dir: &Path, env: &Env) -> Result<Plan> {
         && providers::python::is_python(dir)
     {
         let mut plan = providers::python::plan(dir, env, &name)?;
-        apply_deploy_apt(&mut plan, env)?;
+        apply_mise_extras(&mut plan, dir, env);
+        apply_runtime_packages(&mut plan, env)?;
         return Ok(plan);
     }
     if forced.as_deref().map(|f| !matches!(f, "node" | "go" | "rust" | "python" | "ruby" | "shell")).unwrap_or(!detect::has_package_json(dir))
@@ -76,8 +85,123 @@ pub fn plan_app(dir: &Path, env: &Env) -> Result<Plan> {
         App::Go(g) => providers::go::plan(g, env, &name)?,
         App::Rust(r) => providers::rust::plan(r, env, dir, &name)?,
     };
-    apply_deploy_apt(&mut plan, env)?;
+    apply_mise_extras(&mut plan, dir, env);
+    apply_runtime_packages(&mut plan, env)?;
     Ok(plan)
+}
+
+fn layers_tool(plan: &Plan, tool: &str) -> bool {
+    plan.steps.iter().any(|s| {
+        matches!(&s.action, plan::Action::Layer { from: plan::LayerFrom::Tool { tool: t, .. } | plan::LayerFrom::ToolTree { tool: t }, .. } if t == tool)
+    })
+}
+
+fn apply_mise_extras(plan: &mut Plan, dir: &Path, env: &Env) {
+    if !matches!(plan.provider.as_str(), "node" | "python") {
+        return;
+    }
+    let base = match plan.step("base").map(|s| &s.action) {
+        Some(plan::Action::ResolveBase { image }) => image.clone(),
+        Some(plan::Action::ResolveNodeBase { .. }) => "node:".to_string(),
+        _ => return,
+    };
+    if base.contains("distroless") || base.contains("alpine") || base.starts_with("caddy") {
+        return;
+    }
+    let mut extra_path: Vec<&str> = Vec::new();
+    let mut added: Vec<String> = Vec::new();
+    for tool in ["node", "bun", "go", "python"] {
+        let spec = detect::tool_version(dir, tool)
+            .map(|v| v.spec)
+            .or_else(|| env.vars.get(&format!("ACRO_{}_VERSION", tool.to_ascii_uppercase())).filter(|_| plan.provider != tool).cloned());
+        let Some(spec) = spec else { continue };
+        let provided = match tool {
+            "node" => base.starts_with("node:") || layers_tool(plan, "node"),
+            "bun" => base.starts_with("oven/bun") || layers_tool(plan, "bun"),
+            "go" => base.starts_with("golang:"),
+            _ => base.starts_with("python:"),
+        };
+        if provided {
+            continue;
+        }
+        let spec = if spec == "latest" { String::new() } else { spec };
+        let toolchain = if tool == "python" { "python-standalone" } else { tool };
+        let existing = plan.steps.iter().find(|s| matches!(&s.action, plan::Action::Toolchain { tool: t, .. } if t == toolchain)).map(|s| s.id.clone());
+        let tool_step = match existing {
+            Some(id) => id,
+            None => {
+                let id = format!("mise-{tool}");
+                plan.steps.insert(0, plan::Step {
+                    id: id.clone(),
+                    name: format!("{tool} {} (mise)", if spec.is_empty() { "latest" } else { &spec }),
+                    action: plan::Action::Toolchain { tool: toolchain.into(), spec: spec.clone(), parts: vec![] },
+                    deps: vec![],
+                    hash: String::new(),
+                });
+                id
+            }
+        };
+        let (dest, from) = match tool {
+            "bun" => ("usr/local/bin", plan::LayerFrom::Tool { tool: "bun".into(), files: vec![("bin/bun".into(), "bun".into())] }),
+            "go" => {
+                extra_path.push("/usr/local/go/bin");
+                ("usr/local/go", plan::LayerFrom::ToolTree { tool: "go".into() })
+            }
+            "python" => {
+                extra_path.push("/opt/python/bin");
+                ("opt/python", plan::LayerFrom::ToolTree { tool: "python-standalone".into() })
+            }
+            _ => ("usr/local", plan::LayerFrom::ToolTree { tool: "node".into() }),
+        };
+        let layer_id = format!("layer-mise-{tool}");
+        let push_idx = plan.steps.iter().position(|s| s.id == "push").unwrap_or(plan.steps.len());
+        plan.steps.insert(
+            push_idx,
+            plan::Step { id: layer_id.clone(), name: format!("layer {tool} (mise)"), action: plan::Action::Layer { dest: dest.into(), from }, deps: vec![tool_step], hash: String::new() },
+        );
+        if let Some(push) = plan.steps.iter_mut().find(|s| s.id == "push") {
+            push.deps.push(layer_id.clone());
+        }
+        plan.image.layers.insert(0, layer_id);
+        added.push(tool.to_string());
+    }
+    if added.is_empty() {
+        return;
+    }
+    if !extra_path.is_empty() {
+        let default = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string();
+        match plan.image.env.iter_mut().find(|(k, _)| k == "PATH") {
+            Some((_, v)) => *v = format!("{v}:{}", extra_path.join(":")),
+            None => plan.image.env.push(("PATH".into(), format!("{default}:{}", extra_path.join(":")))),
+        }
+    }
+    plan.facts.insert("mise-extras".into(), added.join(" "));
+    plan.finalize();
+}
+
+fn check_build_apt(plan: &mut Plan, env: &Env) -> Result<()> {
+    let Some(pkgs) = providers::node::build_apt_packages(env) else { return Ok(()) };
+    if plan.facts.contains_key("build-apt-packages") {
+        return Ok(());
+    }
+    if plan.provider == "node" {
+        plan.warnings.push(format!("buildAptPackages ({pkgs}) not applied: this build path runs on the host"));
+        return Ok(());
+    }
+    anyhow::bail!("buildAptPackages ({pkgs}) is not supported for {} projects yet", plan.provider)
+}
+
+fn apply_runtime_packages(plan: &mut Plan, env: &Env) -> Result<()> {
+    check_build_apt(plan, env)?;
+    let Some(pkgs) = plan.facts.get("runtime-packages").cloned() else { return apply_deploy_apt(plan, env) };
+    let mut env2 = env.clone();
+    let cur = env2.config("DEPLOY_APT_PACKAGES").map(|(v, _)| v).unwrap_or_default();
+    let mut all: Vec<String> = cur.split([' ', ',']).chain(pkgs.split(' ')).filter(|p| !p.is_empty() && *p != "...").map(|p| p.to_string()).collect();
+    all.dedup();
+    let mut seen = std::collections::BTreeSet::new();
+    all.retain(|p| seen.insert(p.clone()));
+    env2.vars.insert("ACRO_DEPLOY_APT_PACKAGES".into(), all.join(" "));
+    apply_deploy_apt(plan, &env2)
 }
 
 pub fn apply_deploy_apt(plan: &mut Plan, env: &Env) -> Result<()> {

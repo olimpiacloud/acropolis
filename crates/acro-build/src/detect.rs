@@ -140,6 +140,26 @@ fn read_trim(path: &Path) -> Option<String> {
     std::fs::read_to_string(path).ok().map(|s| s.lines().next().unwrap_or("").trim().to_string()).filter(|s| !s.is_empty())
 }
 
+fn mise_locked(dir: &Path, tool: &str) -> Option<String> {
+    let text = std::fs::read_to_string(dir.join("mise.lock")).ok()?;
+    let header = format!("[[tools.{tool}]]");
+    let mut in_tool = false;
+    for line in text.lines() {
+        let l = line.trim();
+        if l.starts_with('[') {
+            in_tool = l == header;
+            continue;
+        }
+        if in_tool
+            && let Some(v) = l.strip_prefix("version")
+            && let Some(v) = v.trim_start().strip_prefix('=')
+        {
+            return Some(v.trim().trim_matches('"').to_string());
+        }
+    }
+    None
+}
+
 pub fn tool_version(dir: &Path, tool: &str) -> Option<VersionSpec> {
     for file in ["mise.toml", ".mise.toml", "mise/config.toml", ".config/mise.toml"] {
         if let Ok(text) = std::fs::read_to_string(dir.join(file)) {
@@ -164,6 +184,11 @@ pub fn tool_version(dir: &Path, tool: &str) -> Option<VersionSpec> {
                         } else {
                             v.trim_matches('"').trim_matches('\'').to_string()
                         };
+                        if v == "latest"
+                            && let Some(locked) = mise_locked(dir, tool)
+                        {
+                            return Some(VersionSpec { spec: locked, source: "mise.lock".into() });
+                        }
                         if !v.is_empty() {
                             return Some(VersionSpec { spec: v, source: file.to_string() });
                         }
@@ -298,14 +323,6 @@ pub fn detect_node(dir: &Path, env: &Env) -> Result<NodeApp> {
 }
 
 fn node_version(dir: &Path, pj: &Value, env: &Env) -> VersionSpec {
-    if let Some((v, k)) = env.config("NODE_VERSION") {
-        return VersionSpec { spec: v, source: k };
-    }
-    if let Some(e) = pj.get("engines").and_then(|e| e.get("node")).and_then(|v| v.as_str()) {
-        if !e.trim().is_empty() {
-            return VersionSpec { spec: e.trim().to_string(), source: "package.json engines.node".into() };
-        }
-    }
     if let Some(v) = tool_version(dir, "node") {
         return v;
     }
@@ -313,6 +330,24 @@ fn node_version(dir: &Path, pj: &Value, env: &Env) -> VersionSpec {
         if let Some(v) = read_trim(&dir.join(f)) {
             return VersionSpec { spec: v.trim_start_matches('v').to_string(), source: f.into() };
         }
+    }
+    if let Some((v, k)) = env.config("NODE_VERSION") {
+        return VersionSpec { spec: v, source: k };
+    }
+    if let Some(rt) = pj.get("devEngines").and_then(|d| d.get("runtime")) {
+        let items: Vec<&Value> = if let Some(a) = rt.as_array() { a.iter().collect() } else { vec![rt] };
+        for it in items {
+            if it.get("name").and_then(|n| n.as_str()) == Some("node")
+                && let Some(v) = it.get("version").and_then(|v| v.as_str())
+            {
+                return VersionSpec { spec: v.to_string(), source: "package.json devEngines.runtime".into() };
+            }
+        }
+    }
+    if let Some(e) = pj.get("engines").and_then(|e| e.get("node")).and_then(|v| v.as_str())
+        && !e.trim().is_empty()
+    {
+        return VersionSpec { spec: e.trim().to_string(), source: "package.json engines.node".into() };
     }
     VersionSpec { spec: "lts".into(), source: "default".into() }
 }

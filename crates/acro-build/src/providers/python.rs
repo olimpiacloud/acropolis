@@ -61,9 +61,9 @@ pub fn version(dir: &Path, env: &Env) -> VersionSpec {
         return VersionSpec { spec: v.to_string(), source: "runtime.txt".into() };
     }
     let pipfile = read(dir, "Pipfile");
-    for line in pipfile.lines() {
-        let l = line.trim();
-        for key in ["python_full_version", "python_version"] {
+    for key in ["python_full_version", "python_version"] {
+        for line in pipfile.lines() {
+            let l = line.trim();
             if let Some(rest) = l.strip_prefix(key)
                 && let Some(v) = rest.split('=').nth(1)
             {
@@ -78,6 +78,9 @@ pub fn version(dir: &Path, env: &Env) -> VersionSpec {
 }
 
 fn image_for(spec: &str) -> String {
+    if matches!(spec.trim(), "latest" | "*" | "3") {
+        return "python:3-slim-bookworm".into();
+    }
     let s = spec.trim().trim_start_matches("python").trim_start_matches('-').trim();
     let s = s.trim_start_matches(['=', '~', '^', '>', '<', ' ']);
     let s: String = s.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
@@ -89,12 +92,38 @@ fn deps_text(dir: &Path) -> String {
     format!("{}\n{}\n{}", read(dir, "requirements.txt"), read(dir, "pyproject.toml"), read(dir, "Pipfile")).to_ascii_lowercase()
 }
 
+fn locked(dir: &Path, dep: &str) -> bool {
+    let needle = format!("name = \"{dep}\"");
+    ["uv.lock", "poetry.lock", "pdm.lock"].iter().any(|f| read(dir, f).to_ascii_lowercase().lines().any(|l| l.trim() == needle))
+}
+
 fn uses(dir: &Path, dep: &str) -> bool {
+    if locked(dir, dep) {
+        return true;
+    }
     let text = deps_text(dir);
     text.lines().any(|l| {
         let l = l.trim().trim_start_matches('"').trim_start_matches('\'');
         l.starts_with(dep) && l[dep.len()..].chars().next().map(|c| !c.is_ascii_alphanumeric() && c != '-' && c != '_').unwrap_or(true)
     })
+}
+
+fn django_settings_text(dir: &Path) -> String {
+    let mut out = String::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            let name = e.file_name().to_string_lossy().into_owned();
+            if p.is_dir() && !name.starts_with('.') && name != "node_modules" && name != "__pycache__" {
+                stack.push(p);
+            } else if name.ends_with(".py") && let Ok(t) = std::fs::read_to_string(&p) && t.contains("django.db.backends.") {
+                out.push_str(&t);
+            }
+        }
+    }
+    out
 }
 
 fn main_file(dir: &Path) -> Option<&'static str> {
@@ -161,9 +190,43 @@ pub fn start_command(dir: &Path, env: &Env) -> Option<String> {
     start
 }
 
+fn mise_env_truthy(dir: &Path, key: &str) -> bool {
+    for file in ["mise.toml", ".mise.toml"] {
+        let mut in_env = false;
+        for line in read(dir, file).lines() {
+            let l = line.trim();
+            if l.starts_with('[') {
+                in_env = l == "[env]";
+                continue;
+            }
+            if in_env
+                && let Some((k, v)) = l.split_once('=')
+                && k.trim() == key
+            {
+                let v = v.trim().trim_matches(['"', '\'']);
+                return matches!(v, "1" | "true" | "yes");
+            }
+        }
+    }
+    false
+}
+
+fn freethreaded(dir: &Path, env: &Env, spec: &str) -> bool {
+    spec.ends_with('t')
+        || mise_env_truthy(dir, "PYTHON_BUILD_FREE_THREADING")
+        || env.vars.get("MISE_PYTHON_PRECOMPILED_FLAVOR").map(|f| f.contains("freethreaded")).unwrap_or(false)
+}
+
+const UV_PYTHON_DIR: &str = "/opt/uv-python";
+
+const PLAYWRIGHT_DIR: &str = "/app/.cache/ms-playwright";
+
+const PLAYWRIGHT_DEPS: &str = "libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcairo2 libcups2 libdbus-1-3 libdrm2 libgbm1 libglib2.0-0 libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2";
+
 pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     let mut b = PlanBuilder::new(name, "python");
     let v = version(dir, env);
+    let ft = freethreaded(dir, env, &v.spec);
     let m = manager(dir);
     let image = image_for(&v.spec);
     b.fact("python", format!("{} ({})", v.spec, v.source));
@@ -171,7 +234,9 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     b.step("base", format!("resolve {image}"), Action::ResolveBase { image: image.clone() }, &[]);
     b.step("copy-base", "copy base layers", Action::CopyBase, &["base"]);
     b.step("source", "copy source", Action::CopySource { exclude: vec![".venv".into(), "__pycache__".into(), "**/__pycache__".into()] }, &[]);
-    b.step("uv", "uv", Action::Toolchain { tool: "uv".into(), spec: env.config("UV_VERSION").map(|(v, _)| v).unwrap_or_default(), parts: vec![] }, &[]);
+    let uv_spec = env.config("UV_VERSION").map(|(v, _)| v).or_else(|| tool_version(dir, "uv").map(|v| v.spec)).unwrap_or_default();
+    let uv_spec = if uv_spec == "latest" { String::new() } else { uv_spec };
+    b.step("uv", "uv", Action::Toolchain { tool: "uv".into(), spec: uv_spec, parts: vec![] }, &[]);
     let install: Vec<String> = match m {
         Manager::Uv => vec!["uv sync --locked --no-dev --no-editable".into()],
         Manager::Pip => vec!["uv venv /app/.venv".into(), "uv pip install -r requirements.txt".into()],
@@ -210,7 +275,74 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
             env_map.insert(k.clone(), v.clone());
         }
     }
-    let mut commands = install;
+    let text = deps_text(dir);
+    let mut build_pkgs: Vec<&str> = Vec::new();
+    let mut runtime_pkgs: Vec<&str> = Vec::new();
+    let binary_psycopg = uses(dir, "psycopg2-binary") || text.contains("psycopg[binary");
+    let django_db = |backend: &str| django_settings_text(dir).contains(&format!("django.db.backends.{backend}"));
+    if !binary_psycopg && (uses(dir, "psycopg2") || uses(dir, "psycopg") || django_db("postgresql")) {
+        build_pkgs.push("libpq-dev");
+        runtime_pkgs.push("libpq5");
+    }
+    if uses(dir, "mysqlclient") || django_db("mysql") {
+        build_pkgs.push("default-libmysqlclient-dev");
+        runtime_pkgs.push("default-mysql-client");
+    }
+    for (dep, build, runtime) in [
+        ("pycairo", &["libcairo2-dev"][..], &["libcairo2"][..]),
+        ("pdf2image", &[], &["poppler-utils"]),
+        ("pydub", &[], &["ffmpeg"]),
+    ] {
+        if uses(dir, dep) {
+            build_pkgs.extend(build);
+            runtime_pkgs.extend(runtime);
+        }
+    }
+    if text.contains("git+") || read(dir, "uv.lock").contains("git = ") {
+        build_pkgs.push("git");
+    }
+    let extra_build = crate::providers::node::build_apt_packages(env).unwrap_or_default();
+    build_pkgs.extend(extra_build.split(' ').filter(|p| !p.is_empty()));
+    if !extra_build.is_empty() {
+        b.fact("build-apt-packages", extra_build.clone());
+    }
+    build_pkgs.sort();
+    build_pkgs.dedup();
+    runtime_pkgs.sort();
+    runtime_pkgs.dedup();
+    let build_image = if build_pkgs.is_empty() { image.clone() } else { image.replace("-slim-bookworm", "-bookworm") };
+    let mut commands = Vec::new();
+    if ft {
+        let digits: String = v.spec.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+        let minor = digits.split('.').take(2).collect::<Vec<_>>().join(".");
+        let request = format!("{}t", if minor.contains('.') { minor.as_str() } else { "3.14" });
+        b.fact("python-build", format!("free-threaded {request} (uv managed)"));
+        env_map.insert("UV_PYTHON_INSTALL_DIR".into(), UV_PYTHON_DIR.into());
+        env_map.insert("UV_PYTHON_DOWNLOADS".into(), "automatic".into());
+        env_map.insert("UV_PYTHON".into(), request.clone());
+        commands.push(format!("uv python install {request}"));
+        if !install.iter().any(|c| c.starts_with("uv venv") || c.starts_with("uv sync")) {
+            commands.push("uv venv /app/.venv".into());
+        }
+    }
+    if !build_pkgs.is_empty() {
+        let pkgs = build_pkgs.join(" ");
+        commands.push(format!(
+            "dpkg -s {pkgs} >/dev/null 2>&1 || (apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends {pkgs} >/dev/null)"
+        ));
+    }
+    commands.extend(install);
+    let playwright = env.flag("PYTHON_PLAYWRIGHT_INSTALL");
+    if playwright {
+        env_map.insert("PLAYWRIGHT_BROWSERS_PATH".into(), PLAYWRIGHT_DIR.into());
+        commands.push("/app/.venv/bin/playwright install --only-shell".into());
+        runtime_pkgs.extend(PLAYWRIGHT_DEPS.split(' '));
+        runtime_pkgs.sort();
+        runtime_pkgs.dedup();
+    }
+    if !runtime_pkgs.is_empty() {
+        b.fact("runtime-packages", runtime_pkgs.join(" "));
+    }
     if let Some((c, _)) = env.config("BUILD_CMD") {
         commands.push(c);
     }
@@ -220,19 +352,45 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     b.step(
         "install",
         "install python dependencies",
-        Action::ImageRun { image: image.clone(), commands, env: env_map, network: true, mount_app: true, after: None, tools: vec!["uv".into()] },
+        Action::ImageRun { image: build_image.clone(), commands, env: env_map, network: true, mount_app: true, after: None, tools: vec!["uv".into()] },
         &["source", "uv"],
     );
     b.step("layer-app", "layer app + .venv", Action::Layer { dest: "app".into(), from: LayerFrom::WorkDir { path: ".".into(), exclude: vec![] } }, &["install"]);
-    b.step("push", "push image", Action::Push, &["base", "copy-base", "layer-app"]);
+    b.step(
+        "layer-uv",
+        "layer uv CLI",
+        Action::Layer {
+            dest: "usr/local/bin".into(),
+            from: LayerFrom::Tool { tool: "uv".into(), files: vec![("bin/uv".into(), "uv".into()), ("bin/uvx".into(), "uvx".into())] },
+        },
+        &["uv"],
+    );
+    let mut push_deps = vec!["base", "copy-base", "layer-uv", "layer-app"];
+    b.plan.image.layers = vec!["layer-uv".into(), "layer-app".into()];
+    if ft {
+        b.step(
+            "layer-python",
+            "layer free-threaded python",
+            Action::Layer {
+                dest: String::new(),
+                from: LayerFrom::Upper { step: "install".into(), include: vec![UV_PYTHON_DIR.trim_start_matches('/').into()], exclude: vec![] },
+            },
+            &["install"],
+        );
+        push_deps.push("layer-python");
+        b.plan.image.layers.insert(0, "layer-python".into());
+    }
+    b.step("push", "push image", Action::Push, &push_deps);
     b.plan.warnings.push("python dependencies are installed with network access inside the base image".into());
-    b.plan.image.layers = vec!["layer-app".into()];
     b.plan.image.workdir = Some("/app".into());
     b.plan.image.env = vec![
         ("PATH".into(), "/app/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into()),
         ("VIRTUAL_ENV".into(), "/app/.venv".into()),
         ("PYTHONUNBUFFERED".into(), "1".into()),
     ];
+    if playwright {
+        b.plan.image.env.push(("PLAYWRIGHT_BROWSERS_PATH".into(), PLAYWRIGHT_DIR.into()));
+    }
     if let Some(start) = start_command(dir, env) {
         b.plan.image.cmd = Some(vec!["/bin/sh".into(), "-c".into(), start]);
     } else {

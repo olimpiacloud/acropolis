@@ -293,10 +293,17 @@ fn elixir(dir: &Path, env: &Env) -> Result<ImageBuild> {
         .map(|r| r.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect::<String>())
         .filter(|s| !s.is_empty());
     let Some(app) = app else { bail!("could not find the application name in mix.exs") };
-    let version = env
-        .config("ELIXIR_VERSION")
-        .map(|(v, _)| v)
-        .or_else(|| tool_version(dir, "elixir").map(|v| v.spec))
+    let mix_version = mix.lines().find_map(|l| {
+        let rest = l.trim().strip_prefix("elixir:")?;
+        let req = rest.split('"').nth(1)?;
+        let v: String = req.trim_start_matches(['~', '>', '=', '<', ' ']).chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+        (!v.is_empty()).then_some(v)
+    });
+    let version = tool_version(dir, "elixir")
+        .map(|v| v.spec)
+        .or_else(|| env.config("ELIXIR_VERSION").map(|(v, _)| v))
+        .or_else(|| Some(read(dir, ".elixir-version").trim().to_string()).filter(|v| !v.is_empty()))
+        .or(mix_version)
         .unwrap_or_else(|| "1.18".into());
     let tag = if version == "latest" { "latest".to_string() } else { acro_semver::fuzzy_version(&version) };
     let image = format!("elixir:{tag}");

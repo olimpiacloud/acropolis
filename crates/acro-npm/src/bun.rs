@@ -169,6 +169,10 @@ impl BunLock {
             }
             reachable.insert(k.clone());
             let mut deps: Vec<String> = obj_map(e.meta.get("dependencies")).into_keys().collect();
+            deps.extend(obj_map(e.meta.get("peerDependencies")).into_keys().filter(|p| {
+                let optional = e.meta.get("peerDependenciesMeta").and_then(|m| m.get(p)).and_then(|m| m.get("optional")).and_then(|o| o.as_bool()).unwrap_or(false);
+                !optional
+            }));
             if opts.include_optional {
                 deps.extend(obj_map(e.meta.get("optionalDependencies")).into_keys());
             }

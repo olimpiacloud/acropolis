@@ -6,6 +6,8 @@ use std::path::Path;
 
 pub const DEFAULT_RUBY: &str = "3.4";
 
+pub const APT_ARCHIVE_FIX: &str = ". /etc/os-release; case \"$VERSION_CODENAME\" in jessie|stretch|buster) sed -i -e 's|deb.debian.org|archive.debian.org|g' -e 's|security.debian.org|archive.debian.org|g' -e '/-updates/d' /etc/apt/sources.list ;; esac";
+
 pub fn is_ruby(dir: &Path) -> bool {
     dir.join("Gemfile").exists()
 }
@@ -121,17 +123,8 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     b.step("source", "copy source", Action::CopySource { exclude: vec!["vendor/bundle".into(), "tmp".into(), "log/*.log".into()] }, &[]);
     let pg = has_gem(dir, "pg");
     let mysql = has_gem(dir, "mysql2");
-    let mut build_pkgs = vec!["build-essential", "libyaml-dev", "git", "pkg-config"];
-    if pg {
-        build_pkgs.push("libpq-dev");
-    }
-    if mysql {
-        build_pkgs.push("default-libmysqlclient-dev");
-    }
-    let mut commands = vec![format!(
-        "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends {} >/dev/null",
-        build_pkgs.join(" ")
-    )];
+    let build_image = image.trim_end_matches("-slim").to_string();
+    let mut commands: Vec<String> = Vec::new();
     if let Some(bv) = bundler_version(dir) {
         commands.push(format!("(gem list -i bundler -v {bv} >/dev/null || gem install -N bundler -v {bv})"));
     }
@@ -160,8 +153,8 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     }
     b.step(
         "install",
-        "bundle install",
-        Action::ImageRun { image: image.clone(), commands, env: run_env.clone(), network: true, mount_app: true, after: None, tools: vec![] },
+        format!("bundle install (in {build_image})"),
+        Action::ImageRun { image: build_image.clone(), commands, env: run_env.clone(), network: true, mount_app: true, after: None, tools: vec![] },
         &["source"],
     );
     b.step("layer-app", "layer app + gems", Action::Layer { dest: "app".into(), from: LayerFrom::WorkDir { path: ".".into(), exclude: vec![] } }, &["install"]);
@@ -178,7 +171,7 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
         Action::ImageRun {
             image: image.clone(),
             commands: vec![format!(
-                "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends {} >/dev/null && rm -rf /var/lib/apt/lists/*",
+                "{APT_ARCHIVE_FIX}; apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends {} >/dev/null && rm -rf /var/lib/apt/lists/*",
                 runtime_pkgs.join(" ")
             )],
             env: BTreeMap::new(),

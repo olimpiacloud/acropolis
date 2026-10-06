@@ -2,6 +2,7 @@ use crate::detect::{Env, Framework, NodeApp, PackageManager};
 use crate::plan::{Action, LayerFrom, Plan, PlanBuilder};
 use anyhow::{Result, bail};
 use std::collections::BTreeMap;
+use serde_json::Value;
 
 pub const NODE_PATH_ENV: &str = "/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 pub const CADDY_IMAGE: &str = "caddy:2-alpine";
@@ -259,7 +260,154 @@ fn runtime(app: &NodeApp, env: &Env) -> Result<Runtime> {
     }
 }
 
+const PUPPETEER_DEPS: &str = "xvfb libasound2 libatk1.0-0 libc6 libcairo2 libcups2 libdbus-1-3 libexpat1 libfontconfig1 libgbm1 libgcc1 libgdk-pixbuf-2.0-0 libglib2.0-0 libgtk-3-0 libnspr4 libpango-1.0-0 libpangocairo-1.0-0 libstdc++6 libx11-6 libx11-xcb1 libxcb1 libxcomposite1 libxcursor1 libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 libxss1 libxtst6 ca-certificates fonts-liberation libnss3 lsb-release xdg-utils wget";
+
+const PLAYWRIGHT_DEPS: &str = "libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcairo2 libcups2 libdbus-1-3 libdrm2 libgbm1 libglib2.0-0 libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2";
+
+pub fn build_apt_packages(env: &Env) -> Option<String> {
+    let (v, _) = env.config("BUILD_APT_PACKAGES")?;
+    let pkgs: Vec<&str> = v.split([' ', ',']).filter(|p| !p.is_empty() && *p != "...").collect();
+    (!pkgs.is_empty()).then(|| pkgs.join(" "))
+}
+
+fn pnpm_allowed_builds(app: &NodeApp) -> Vec<String> {
+    let mut out: Vec<String> = app
+        .package_json
+        .pointer("/pnpm/onlyBuiltDependencies")
+        .and_then(|o| o.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+        .unwrap_or_default();
+    if let Ok(text) = std::fs::read_to_string(app.dir.join("pnpm-workspace.yaml"))
+        && let Ok(y) = serde_yaml::from_str::<serde_yaml::Value>(&text)
+    {
+        if let Some(m) = y.get("allowBuilds").and_then(|m| m.as_mapping()) {
+            for (k, v) in m {
+                if let Some(k) = k.as_str()
+                    && v.as_bool() != Some(false)
+                {
+                    out.push(k.to_string());
+                }
+            }
+        }
+        if let Some(a) = y.get("onlyBuiltDependencies").and_then(|a| a.as_sequence()) {
+            out.extend(a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())));
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn pnpm_lock_lacks_build_info(app: &NodeApp, lockfile: &str) -> bool {
+    if lockfile.is_empty() {
+        return false;
+    }
+    let text = std::fs::read_to_string(app.dir.join(lockfile)).unwrap_or_default();
+    !text.contains("requiresBuild:")
+}
+
+fn playwright_install(app: &NodeApp, env: &Env) -> bool {
+    env.flag("NODE_PLAYWRIGHT_INSTALL") && app.has_prod_dep("playwright")
+}
+
+fn browser_runtime(b: &mut PlanBuilder, app: &NodeApp, env: &Env, image_env: &mut Vec<(String, String)>) {
+    let mut pkgs: Vec<&str> = Vec::new();
+    if app.has_dep("puppeteer") {
+        pkgs.extend(PUPPETEER_DEPS.split(' '));
+        image_env.push(("PUPPETEER_CACHE_DIR".into(), "/app/node_modules/.cache/puppeteer".into()));
+    }
+    if playwright_install(app, env) {
+        pkgs.extend(PLAYWRIGHT_DEPS.split(' '));
+        image_env.push(("PLAYWRIGHT_BROWSERS_PATH".into(), "/app/node_modules/.cache/ms-playwright".into()));
+    } else if app.has_prod_dep("playwright") {
+        b.plan.warnings.push("playwright is a production dependency: set ACRO_NODE_PLAYWRIGHT_INSTALL=1 to install its headless browser".into());
+    }
+    if !pkgs.is_empty() {
+        let mut seen = std::collections::BTreeSet::new();
+        pkgs.retain(|p| seen.insert(*p));
+        b.fact("runtime-packages", pkgs.join(" "));
+    }
+}
+
+fn workspace_dirs(app: &NodeApp) -> Vec<String> {
+    let mut globs: Vec<String> = Vec::new();
+    if let Ok(text) = std::fs::read_to_string(app.dir.join("pnpm-workspace.yaml")) {
+        let mut in_packages = false;
+        for line in text.lines() {
+            if !line.starts_with(' ') && !line.starts_with('-') {
+                in_packages = line.trim_end() == "packages:";
+                continue;
+            }
+            if in_packages && let Some(g) = line.trim().strip_prefix('-') {
+                globs.push(g.trim().trim_matches(['"', '\'']).to_string());
+            }
+        }
+    }
+    let ws = app.package_json.get("workspaces");
+    let arr = ws.and_then(|w| w.as_array()).or_else(|| ws.and_then(|w| w.get("packages")).and_then(|p| p.as_array()));
+    for g in arr.into_iter().flatten().filter_map(|g| g.as_str()) {
+        globs.push(g.to_string());
+    }
+    let mut out = Vec::new();
+    for g in globs {
+        let g = g.trim_start_matches("./").trim_end_matches('/');
+        if g.starts_with('!') {
+            continue;
+        }
+        if let Some(parent) = g.strip_suffix("/*").or_else(|| g.strip_suffix("/**")) {
+            let Ok(rd) = std::fs::read_dir(app.dir.join(parent)) else { continue };
+            for e in rd.flatten() {
+                if e.path().join("package.json").exists() {
+                    out.push(format!("{parent}/{}", e.file_name().to_string_lossy()));
+                }
+            }
+        } else if app.dir.join(g).join("package.json").exists() {
+            out.push(g.to_string());
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn nx_next_app(app: &NodeApp, env: &Env) -> Option<(String, String)> {
+    if !app.dir.join("nx.json").exists() || !app.has_dep("nx") {
+        return None;
+    }
+    let mut apps = Vec::new();
+    for rel in workspace_dirs(app) {
+        let dir = app.dir.join(&rel);
+        let pj: Value = std::fs::read(dir.join("package.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(Value::Null);
+        let has_config = ["next.config.js", "next.config.mjs", "next.config.ts", "next.config.cjs"].iter().any(|f| dir.join(f).exists());
+        let has_next = ["dependencies", "devDependencies"].iter().any(|k| pj.get(k).and_then(|d| d.get("next")).is_some());
+        if has_config || has_next {
+            let name = pj.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()).unwrap_or_else(|| rel.rsplit('/').next().unwrap_or(&rel).to_string());
+            apps.push((rel, name));
+        }
+    }
+    if let Some((sel, _)) = env.config("NX_APP") {
+        return apps.into_iter().find(|(rel, name)| {
+            *name == sel || *rel == sel || rel.rsplit('/').next() == Some(sel.as_str()) || name.rsplit('/').next() == Some(sel.as_str())
+        });
+    }
+    if apps.len() == 1 { apps.pop() } else { None }
+}
+
 pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
+    if app.script("build").is_none()
+        && env.config("BUILD_CMD").is_none()
+        && let Some((rel, project)) = nx_next_app(app, env)
+    {
+        let mut env = env.clone();
+        env.vars.insert("ACRO_BUILD_CMD".into(), format!("nx build {project}"));
+        if app.script("start").is_none() && env.config("START_CMD").is_none() {
+            env.vars.insert("ACRO_START_CMD".into(), format!("cd {rel} && next start"));
+        }
+        env.vars.entry("NEXT_TELEMETRY_DISABLED".into()).or_insert_with(|| "1".into());
+        let mut p = plan(app, &env, name)?;
+        p.facts.insert("nx-app".into(), format!("{project} ({rel})"));
+        return Ok(p);
+    }
     let mut b = PlanBuilder::new(name, "node");
     b.fact("package-manager", app.pm.name());
     b.fact("node", format!("{} ({})", app.node.spec, app.node.source));
@@ -289,15 +437,37 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
     } else {
         crate::run::install_plan_for(manager, &app.dir, &lockfile, &prod_opts)?
     };
-    let policy = acro_npm::scripts::policy_for(manager, &app.package_json, env.config("INSTALL_SCRIPTS").map(|(v, _)| v).as_deref());
+    let script_override = env.config("INSTALL_SCRIPTS").map(|(v, _)| v);
+    let allowed_builds = if manager == "pnpm" { pnpm_allowed_builds(app) } else { Vec::new() };
+    let policy = if script_override.is_none() && !allowed_builds.is_empty() {
+        acro_npm::scripts::Policy::Only(allowed_builds.clone())
+    } else {
+        acro_npm::scripts::policy_for(manager, &app.package_json, script_override.as_deref())
+    };
     let unknown_scripts = matches!(manager, "yarn" | "bun") || lockfile.is_empty();
-    let prod_scripts: Vec<String> = prod_plan
-        .with_install_scripts()
-        .iter()
-        .filter(|p| policy.allows(&p.name))
-        .map(|p| p.name.clone())
-        .collect();
-    let prod_needs_scripts = !prod_scripts.is_empty() && policy != acro_npm::scripts::Policy::None;
+    let guess_scripts = manager == "pnpm" && pnpm_lock_lacks_build_info(app, &lockfile);
+    let scripted = |plan: &acro_npm::InstallPlan| -> Vec<String> {
+        plan.packages
+            .iter()
+            .filter(|p| {
+                p.has_install_script
+                    || (guess_scripts
+                        && (allowed_builds.contains(&p.name)
+                            || (allowed_builds.is_empty() && acro_npm::scripts::BUN_DEFAULT_TRUSTED.contains(&p.name.as_str()))))
+            })
+            .filter(|p| policy.allows(&p.name))
+            .map(|p| p.name.clone())
+            .collect()
+    };
+    let mut prod_scripts: Vec<String> = scripted(&prod_plan);
+    if lockfile.is_empty()
+        && let Some(deps) = app.package_json.get("dependencies").and_then(|d| d.as_object())
+    {
+        prod_scripts.extend(
+            deps.keys().filter(|k| acro_npm::scripts::BUN_DEFAULT_TRUSTED.contains(&k.as_str()) && policy.allows(k)).cloned(),
+        );
+    }
+    let prod_needs_scripts = (!prod_scripts.is_empty() || playwright_install(app, env)) && policy != acro_npm::scripts::Policy::None;
     if prod_needs_scripts {
         b.fact("install-scripts", prod_scripts.join(", "));
         b.plan.warnings.push(format!(
@@ -382,11 +552,7 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
             let mut parts = vec![];
             let dev_opts = acro_npm::InstallOptions { include_dev: true, include_optional: true, platform: Default::default() };
             let dev_scripts = unknown_scripts
-                || (!lockfile.is_empty()
-                    && crate::run::install_plan_for(manager, &app.dir, &lockfile, &dev_opts)?
-                        .with_install_scripts()
-                        .iter()
-                        .any(|p| policy.allows(&p.name)));
+                || (!lockfile.is_empty() && !scripted(&crate::run::install_plan_for(manager, &app.dir, &lockfile, &dev_opts)?).is_empty());
             let dev_scripts = dev_scripts && policy != acro_npm::scripts::Policy::None;
             if uses_npm_cli(&build_cmd) || dev_scripts || prod_needs_scripts {
                 parts.push("npm".to_string());
@@ -439,14 +605,30 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
             if network {
                 b.plan.warnings.push("the build step runs with network access (next build may fetch fonts); it is not hermetic".into());
             }
+            if let Some(pkgs) = build_apt_packages(env) {
+                b.fact("build-apt-packages", pkgs);
+            }
             b.step(
                 "build",
                 format!("run {build_cmd}"),
-                Action::Run {
-                    argv: vec!["/bin/sh".into(), "-c".into(), build_cmd.clone()],
-                    env: run_env,
-                    network,
-                    cwd: ".".into(),
+                match build_apt_packages(env) {
+                    Some(pkgs) => {
+                        let mut env = run_env;
+                        env.insert("PATH".into(), "/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into());
+                        Action::ImageRun {
+                            image: base_image.clone().unwrap_or_else(|| "node:lts-bookworm-slim".into()),
+                            commands: vec![
+                                format!("apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends {pkgs} >/dev/null"),
+                                build_cmd.clone(),
+                            ],
+                            env,
+                            network: true,
+                            mount_app: true,
+                            after: None,
+                            tools: vec!["node".into()],
+                        }
+                    }
+                    None => Action::Run { argv: vec!["/bin/sh".into(), "-c".into(), build_cmd.clone()], env: run_env, network, cwd: ".".into() },
                 },
                 &["node", "install"],
             );
@@ -562,8 +744,23 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
                         },
                         &["build"],
                     );
-                    b.step("push", "push image", Action::Push, &["base", "copy-base", "layer-deps", "layer-app"]);
-                    b.plan.image.layers = vec!["layer-deps".into(), "layer-app".into()];
+                    let mut layers = vec!["layer-deps".to_string(), "layer-app".to_string()];
+                    let mut push_deps = vec!["base", "copy-base", "layer-deps", "layer-app"];
+                    if app.has_dep("@prisma/client") {
+                        b.step(
+                            "layer-prisma",
+                            "layer generated prisma client",
+                            Action::Layer {
+                                dest: "app".into(),
+                                from: LayerFrom::Paths { items: vec![("node_modules/.prisma".into(), "node_modules/.prisma".into())] },
+                            },
+                            &["build"],
+                        );
+                        layers.push("layer-prisma".into());
+                        push_deps.push("layer-prisma");
+                    }
+                    b.step("push", "push image", Action::Push, &push_deps);
+                    b.plan.image.layers = layers;
                     b.plan.image.cmd = Some(command_argv(&start));
                     image_env.push(("PATH".into(), NODE_PATH_ENV.into()));
                     b.fact("runtime", "node server (built)");
@@ -575,6 +772,7 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
         }
     }
     add_package_manager(&mut b, app, env, &mut image_env);
+    browser_runtime(&mut b, app, env, &mut image_env);
     if app.framework == Framework::Astro {
         image_env.push(("HOST".into(), "0.0.0.0".into()));
     }
@@ -614,8 +812,18 @@ fn plan_yarn_berry(app: &NodeApp, env: &Env, mut b: PlanBuilder) -> Result<Plan>
     let rt = runtime(app, env)?;
     b.step("node", format!("node {}", app.node.spec), Action::Toolchain { tool: "node".into(), spec: app.node.spec.clone(), parts: vec!["headers".into()] }, &[]);
     b.step("source", "copy source", Action::CopySource { exclude: vec!["**/node_modules".into()] }, &[]);
+    let major: u32 = yarn_version.split('.').next().and_then(|m| m.parse().ok()).unwrap_or(4);
     let yarn_js = match &yarn_path {
         Some(p) => format!("{{src}}/{p}"),
+        None if major < 3 => {
+            b.step(
+                "yarn",
+                format!("yarn {yarn_version}"),
+                Action::Toolchain { tool: "yarn-berry".into(), spec: yarn_version.clone(), parts: vec![] },
+                &[],
+            );
+            "{tool:yarn-berry}/yarn.js".to_string()
+        }
         None => {
             b.step(
                 "yarn",
@@ -660,7 +868,7 @@ fn plan_yarn_berry(app: &NodeApp, env: &Env, mut b: PlanBuilder) -> Result<Plan>
             b.step("base", format!("resolve {CADDY_IMAGE}"), Action::ResolveBase { image: CADDY_IMAGE.into() }, &[]);
             b.step("copy-base", "copy base layers", Action::CopyBase, &["base"]);
             let mut files = BTreeMap::new();
-            files.insert("Caddyfile".to_string(), spa_caddyfile("/app/dist", true));
+            files.insert("Caddyfile".to_string(), spa_caddyfile_for(app, env)?);
             b.step("layer-caddy", "layer Caddyfile", Action::Layer { dest: "".into(), from: LayerFrom::Inline { files } }, &[]);
             b.step("layer-site", format!("layer {out}"), Action::Layer { dest: "app/dist".into(), from: LayerFrom::WorkDir { path: out, exclude: vec![] } }, &[&last]);
             b.step("push", "push image", Action::Push, &["base", "copy-base", "layer-caddy", "layer-site"]);
@@ -682,7 +890,7 @@ fn plan_yarn_berry(app: &NodeApp, env: &Env, mut b: PlanBuilder) -> Result<Plan>
                     "/bin/sh".into(),
                     "-c".into(),
                     format!(
-                        "export NODE_OPTIONS=\"--require /app/.pnp.cjs${{NODE_OPTIONS:+ $NODE_OPTIONS}}\"; [ -f /app/.pnp.loader.mjs ] && export NODE_OPTIONS=\"$NODE_OPTIONS --experimental-loader /app/.pnp.loader.mjs\"; exec {start}"
+                        "P=/app/.pnp.cjs; [ -f $P ] || P=/app/.pnp.js; export NODE_OPTIONS=\"--require $P${{NODE_OPTIONS:+ $NODE_OPTIONS}}\"; [ -f /app/.pnp.loader.mjs ] && export NODE_OPTIONS=\"$NODE_OPTIONS --experimental-loader /app/.pnp.loader.mjs\"; exec {start}"
                     ),
                 ]);
             } else {
@@ -821,10 +1029,7 @@ fn plan_native_spa(
     b.step("base", format!("resolve {CADDY_IMAGE}"), Action::ResolveBase { image: CADDY_IMAGE.into() }, &[]);
     b.step("copy-base", "copy base layers", Action::CopyBase, &["base"]);
     let mut files = BTreeMap::new();
-    files.insert(
-        "Caddyfile".to_string(),
-        spa_caddyfile("/app/dist", spa_fallback(app, env)),
-    );
+    files.insert("Caddyfile".to_string(), spa_caddyfile_for(app, env)?);
     b.step("layer-caddy", "layer Caddyfile", Action::Layer { dest: "".into(), from: LayerFrom::Inline { files } }, &[]);
     let deps: Vec<&str> = site_deps.iter().map(|s| s.as_str()).collect();
     b.step(
@@ -888,7 +1093,7 @@ fn add_package_manager(b: &mut PlanBuilder, app: &NodeApp, env: &Env, image_env:
             b.plan.image.layers.insert(0, "layer-pm".into());
             image_env.push(("npm_config_verify_deps_before_run".into(), "false".into()));
             image_env.push(("COREPACK_ENABLE_STRICT".into(), "0".into()));
-            format!("pnpm/{spec} npm/? node/v{} linux x64", app.node.spec)
+            format!("pnpm/{{version:npm:pnpm|{spec}}} npm/? node/v{{version:node|{}}} linux x64", app.node.spec)
         }
         PackageManager::Yarn1 | PackageManager::YarnBerry => {
             format!("yarn/{} npm/? node/v{} linux x64", app.pm_version.clone().unwrap_or_else(|| "1.22.22".into()), app.node.spec)
@@ -901,6 +1106,15 @@ fn add_package_manager(b: &mut PlanBuilder, app: &NodeApp, env: &Env, image_env:
     if let Some(n) = app.package_json.get("name").and_then(|n| n.as_str()) {
         image_env.push(("npm_package_name".into(), n.into()));
     }
+}
+
+fn spa_caddyfile_for(app: &NodeApp, env: &Env) -> Result<String> {
+    for f in ["Caddyfile", "Caddyfile.template"] {
+        if let Ok(t) = std::fs::read_to_string(app.dir.join(f)) {
+            return Ok(t.replace("{{.DIST_DIR}}", "/app/dist"));
+        }
+    }
+    Ok(spa_caddyfile("/app/dist", spa_fallback(app, env)))
 }
 
 fn spa_fallback(app: &NodeApp, env: &Env) -> bool {
@@ -1030,7 +1244,8 @@ mod tests {
         assert_eq!(node_base_tag("22").unwrap(), "node:22-bookworm-slim");
         assert_eq!(node_base_tag("v23.5.0").unwrap(), "node:23.5.0-bookworm-slim");
         assert_eq!(node_base_tag("lts").unwrap(), "node:lts-bookworm-slim");
-        assert!(node_base_tag(">=18").is_none());
+        assert_eq!(node_base_tag(">=18").unwrap(), "node:18-bookworm-slim");
+        assert!(node_base_tag("hydrogen").is_none());
     }
 
     #[test]

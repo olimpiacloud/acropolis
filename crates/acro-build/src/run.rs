@@ -109,6 +109,21 @@ impl Ctx {
         }
         out
     }
+
+    fn subst_versions(&self, s: &str) -> String {
+        let mut out = s.to_string();
+        let mut from = 0;
+        while let Some(i) = out[from..].find("{version:") {
+            let start = from + i;
+            let Some(end) = out[start..].find('}') else { break };
+            let inner = out[start + 9..start + end].to_string();
+            let (name, fallback) = inner.split_once('|').unwrap_or((inner.as_str(), ""));
+            let v = self.tools().into_iter().find(|t| t.name == name).map(|t| t.version).unwrap_or_else(|| fallback.to_string());
+            out.replace_range(start..start + end + 1, &v);
+            from = start + v.len();
+        }
+        out
+    }
 }
 
 pub fn make_registry(client: reqwest::Client, mirrors: &[(String, String)]) -> Registry {
@@ -301,6 +316,35 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                     acro_events::log(&step.id, format!("bun {}", release.version));
                     Ok(Out::Tool(Installed { name: "bun".into(), version: release.version, bin_dir: dest.join("bin"), root: dest, archive: None }))
                 }
+                "yarn-berry" => {
+                    let dest = ctx.opts.home.join("toolchains").join(format!("yarn-berry-{spec}"));
+                    if !dest.join(".acro-complete").exists() {
+                        let tmp = staging(&dest);
+                        let url = format!("https://repo.yarnpkg.com/{spec}/packages/yarnpkg-cli/bin/yarn.js");
+                        acro_events::log(&step.id, format!("warning: {url} has no published checksum; pinned by version only"));
+                        let blob = fetcher.blob("yarn.js", &url, None).await?;
+                        std::fs::create_dir_all(&tmp)?;
+                        std::fs::copy(&blob.path, tmp.join("yarn.js"))?;
+                        publish(&tmp, &dest)?;
+                    }
+                    Ok(Out::Tool(Installed { name: "yarn-berry".into(), version: spec.clone(), bin_dir: dest.clone(), root: dest, archive: None }))
+                }
+                "composer" => {
+                    let dest = ctx.opts.home.join("toolchains").join("composer-latest-stable");
+                    if !dest.join(".acro-complete").exists() {
+                        let tmp = staging(&dest);
+                        let sum = fetcher.bytes("https://getcomposer.org/download/latest-stable/composer.phar.sha256sum").await?;
+                        let hex = String::from_utf8_lossy(&sum).split_whitespace().next().unwrap_or("").to_string();
+                        let expected = acro_store::Integrity::parse_hex(acro_store::Algo::Sha256, &hex)?;
+                        let blob = fetcher.blob("composer.phar", "https://getcomposer.org/download/latest-stable/composer.phar", Some(expected)).await?;
+                        std::fs::create_dir_all(tmp.join("bin"))?;
+                        std::fs::copy(&blob.path, tmp.join("bin/composer"))?;
+                        use std::os::unix::fs::PermissionsExt;
+                        std::fs::set_permissions(tmp.join("bin/composer"), std::fs::Permissions::from_mode(0o755))?;
+                        publish(&tmp, &dest)?;
+                    }
+                    Ok(Out::Tool(Installed { name: "composer".into(), version: "latest-stable".into(), bin_dir: dest.join("bin"), root: dest, archive: None }))
+                }
                 t if t.starts_with("npm:") => {
                     let pkg = &t[4..];
                     let release = acro_toolchain::npmpkg::resolve(fetcher, pkg, spec).await?;
@@ -324,6 +368,57 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                     }
                     acro_events::log(&step.id, format!("uv {}", release.version));
                     Ok(Out::Tool(Installed { name: "uv".into(), version: release.version, bin_dir: dest.join("bin"), root: dest, archive: None }))
+                }
+                "python-standalone" => {
+                    let key = if spec.is_empty() { "latest".to_string() } else { spec.clone() };
+                    let dest = ctx.opts.home.join("toolchains").join(format!("python-standalone-{key}"));
+                    if !dest.join(".acro-complete").exists() {
+                        let uv = acro_toolchain::uv::resolve(fetcher, "").await?;
+                        let uv_dest = ctx.opts.home.join("toolchains").join(format!("uv-{}", uv.version));
+                        if !uv_dest.join(".acro-complete").exists() {
+                            let tmp = staging(&uv_dest);
+                            acro_toolchain::uv::install(fetcher, &uv, &tmp).await?;
+                            publish(&tmp, &uv_dest)?;
+                        }
+                        let tmp = staging(&dest);
+                        let install_dir = tmp.with_extension("uv");
+                        let _ = std::fs::remove_dir_all(&install_dir);
+                        let mut cmd = tokio::process::Command::new(uv_dest.join("bin/uv"));
+                        cmd.arg("python").arg("install").arg("--install-dir").arg(&install_dir);
+                        if !spec.is_empty() {
+                            cmd.arg(spec);
+                        }
+                        let out = cmd
+                            .env("UV_CACHE_DIR", ctx.work.join("uv-cache"))
+                            .env("UV_PYTHON_BIN_DIR", install_dir.join(".bin"))
+                            .env_remove("UV_PYTHON")
+                            .output()
+                            .await?;
+                        if !out.status.success() {
+                            bail!("uv python install {key}: {}", String::from_utf8_lossy(&out.stderr));
+                        }
+                        let inner = std::fs::read_dir(&install_dir)?
+                            .flatten()
+                            .map(|e| e.path())
+                            .find(|p| p.is_dir() && p.file_name().map(|n| n.to_string_lossy().starts_with("cpython-")).unwrap_or(false))
+                            .ok_or_else(|| anyhow!("uv python install {key} produced no cpython directory"))?;
+                        std::fs::rename(&inner, &tmp)?;
+                        let _ = std::fs::remove_dir_all(&install_dir);
+                        let bin = tmp.join("bin");
+                        if !bin.join("python").exists() {
+                            let _ = std::os::unix::fs::symlink("python3", bin.join("python"));
+                        }
+                        publish(&tmp, &dest)?;
+                    }
+                    let version = std::process::Command::new(dest.join("bin/python3"))
+                        .arg("-c")
+                        .arg("import platform; print(platform.python_version())")
+                        .output()
+                        .ok()
+                        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                        .unwrap_or(key);
+                    acro_events::log(&step.id, format!("python {version} (standalone)"));
+                    Ok(Out::Tool(Installed { name: "python-standalone".into(), version, bin_dir: dest.join("bin"), root: dest, archive: None }))
                 }
                 "rust" => {
                     let release = acro_cargo::resolve(fetcher, spec, &[]).await?;
@@ -374,7 +469,7 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             acro_events::log(&step.id, format!("{:.1} MB", n as f64 / 1e6));
             Ok(Out::None)
         }
-        Action::NpmInstall { target, scripts, .. } => {
+        Action::NpmInstall { target, scripts, manager, .. } => {
             let state = ctx
                 .dep_outputs(step)
                 .into_iter()
@@ -389,9 +484,23 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             let s2 = state.clone();
             let n = tokio::task::spawn_blocking(move || acro_npm::install::materialize(&s2.plan, &s2.tarballs, &r2)).await??;
             acro_events::log(&step.id, format!("{:.1} MB written", n as f64 / 1e6));
+            if manager == "pnpm" && !root.join("node_modules/.modules.yaml").exists() {
+                std::fs::create_dir_all(root.join("node_modules"))?;
+                std::fs::write(
+                    root.join("node_modules/.modules.yaml"),
+                    "hoistPattern:\n  - '*'\nhoistedDependencies: {}\nincluded:\n  dependencies: true\n  devDependencies: true\n  optionalDependencies: true\nlayoutVersion: 5\nnodeLinker: isolated\npendingBuilds: []\npublicHoistPattern: []\nregistries:\n  default: https://registry.npmjs.org/\nskipped: []\nvirtualStoreDir: .pnpm\n",
+                )?;
+            }
             if !scripts.is_empty() && scripts != "none" {
                 let policy = acro_npm::scripts::Policy::parse(scripts);
-                let jobs = acro_npm::scripts::lifecycle_jobs(&state.plan, &root, &policy);
+                let mut jobs = acro_npm::scripts::lifecycle_jobs(&state.plan, &root, &policy);
+                if target == "prod" && ctx.opts.env.flag("NODE_PLAYWRIGHT_INSTALL") && root.join("node_modules/playwright/cli.js").exists() {
+                    jobs.push(acro_npm::scripts::ScriptJob {
+                        path: "node_modules/playwright".into(),
+                        name: "playwright".into(),
+                        commands: vec![("install".into(), "node cli.js install --only-shell".into())],
+                    });
+                }
                 run_lifecycle(ctx, step, &root, &jobs).await?;
             }
             Ok(Out::None)
@@ -485,6 +594,10 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             full_env.insert("TMPDIR".into(), tmp.to_string_lossy().into_owned());
             full_env.insert("LANG".into(), "C.UTF-8".into());
             full_env.insert("SOURCE_DATE_EPOCH".into(), "0".into());
+            let pnpm_hoisted = ctx.src.join("node_modules/.pnpm/node_modules");
+            if pnpm_hoisted.is_dir() {
+                full_env.insert("NODE_PATH".into(), pnpm_hoisted.to_string_lossy().into_owned());
+            }
             if tools.iter().any(|t| t.name == "go") {
                 full_env.insert("GOPATH".into(), ctx.work.join("gopath").to_string_lossy().into_owned());
                 full_env.insert("GOMODCACHE".into(), ctx.work.join("gomodcache").to_string_lossy().into_owned());
@@ -602,7 +715,7 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             let mut labels = BTreeMap::new();
             labels.insert("dev.acropolis.plan".to_string(), ctx.plan.hash.clone());
             let patch = ConfigPatch {
-                env: spec.env.clone(),
+                env: spec.env.iter().map(|(k, v)| (k.clone(), ctx.subst_versions(v))).collect(),
                 entrypoint: spec.entrypoint.clone(),
                 cmd: spec.cmd.clone(),
                 workdir: spec.workdir.clone(),
@@ -685,6 +798,8 @@ async fn run_lifecycle(ctx: &Arc<Ctx>, step: &Step, root: &Path, jobs: &[acro_np
             env.insert("npm_config_user_agent".to_string(), format!("npm/10 node/v{} linux x64", node.version));
             env.insert("npm_node_execpath".to_string(), node.bin_dir.join("node").to_string_lossy().into_owned());
             env.insert("INIT_CWD".to_string(), root.to_string_lossy().into_owned());
+            env.insert("PUPPETEER_CACHE_DIR".to_string(), root.join("node_modules/.cache/puppeteer").to_string_lossy().into_owned());
+            env.insert("PLAYWRIGHT_BROWSERS_PATH".to_string(), root.join("node_modules/.cache/ms-playwright").to_string_lossy().into_owned());
             env.insert("NODE_ENV".to_string(), "production".to_string());
             acro_events::log(&step.id, format!("{} {stage}: {command}", job.name));
             ctx.exec
@@ -805,7 +920,14 @@ fn publish(staged: &Path, dest: &Path) -> Result<()> {
 
 async fn resolve_base(ctx: &Arc<Ctx>, step: &Step, image: &str) -> Result<Out> {
     let r = Reference::parse(image)?;
-    let (reference, manifest, digest) = ctx.registry.resolve_manifest(&r, &ctx.opts.platform).await?;
+    let (reference, manifest, digest) = match ctx.registry.resolve_manifest(&r, &ctx.opts.platform).await {
+        Err(e) if image.contains("-trixie-slim") && format!("{e:#}").contains("MANIFEST_UNKNOWN") => {
+            let fallback = image.replace("-trixie-slim", "-bookworm-slim");
+            acro_events::log(&step.id, format!("warning: {image} does not exist, using {fallback}"));
+            ctx.registry.resolve_manifest(&Reference::parse(&fallback)?, &ctx.opts.platform).await?
+        }
+        other => other?,
+    };
     if let Some(target) = ctx.opts.target.clone() {
         let reg = ctx.registry.clone();
         let src = reference.clone();
@@ -981,7 +1103,8 @@ async fn build_layer(ctx: &Arc<Ctx>, step: &Step, dest: &str, from: &LayerFrom) 
                 }
                 for (name, content) in &files {
                     let p = if dest.is_empty() { name.clone() } else { format!("{dest}/{name}") };
-                    tw.file_bytes(&p, 0o644, content.as_bytes())?;
+                    let mode = if name.ends_with(".sh") { 0o755 } else { 0o644 };
+                    tw.file_bytes(&p, mode, content.as_bytes())?;
                 }
                 layer::from_fragments(&store, &comment, vec![std::mem::take(tw.get_mut())], opts)
             })

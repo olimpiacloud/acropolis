@@ -5,7 +5,7 @@ use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Deserialize)]
@@ -75,6 +75,7 @@ pub struct E2eConfig {
     pub out: PathBuf,
     pub home: PathBuf,
     pub isolated: bool,
+    pub only: Option<std::collections::BTreeSet<(String, usize)>>,
 }
 
 fn docker(args: &[&str]) -> Result<String> {
@@ -85,16 +86,40 @@ fn docker(args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-fn ensure_registry(registry: &str) -> Result<()> {
+fn ensure_registry(registry: &str, home: &Path) -> Result<()> {
     let port = registry.rsplit(':').next().unwrap_or("5001");
     let name = format!("acro-e2e-registry-{port}");
-    if docker(&["inspect", "-f", "{{.State.Running}}", &name]).map(|s| s.trim() == "true").unwrap_or(false) {
-        return Ok(());
-    }
     let _ = docker(&["rm", "-f", &name]);
-    docker(&["run", "-d", "--name", &name, "-p", &format!("127.0.0.1:{port}:5000"), "--tmpfs", "/var/lib/registry:size=16g", "registry:3"])?;
+    let data = home.join(format!("e2e-registry-{port}"));
+    let _ = fs::remove_dir_all(&data);
+    fs::create_dir_all(&data)?;
+    let data = fs::canonicalize(&data)?;
+    let mount = format!("{}:/var/lib/registry", data.display());
+    docker(&["run", "-d", "--name", &name, "-p", &format!("127.0.0.1:{port}:5000"), "-v", &mount, "registry:3"])?;
     std::thread::sleep(Duration::from_millis(800));
     Ok(())
+}
+
+fn ensure_compose_images(file: &Path) {
+    let text = fs::read_to_string(file).unwrap_or_default();
+    for line in text.lines() {
+        let Some(image) = line.trim().strip_prefix("image:") else { continue };
+        let image = image.trim().trim_matches(['"', '\'']);
+        if image.is_empty() || docker(&["image", "inspect", image]).is_ok() {
+            continue;
+        }
+        let mirrored = if image.split('/').next().is_some_and(|h| h.contains('.') || h.contains(':')) {
+            continue;
+        } else if image.contains('/') {
+            format!("mirror.gcr.io/{image}")
+        } else {
+            format!("mirror.gcr.io/library/{image}")
+        };
+        if docker(&["pull", "-q", &mirrored]).is_ok() {
+            let _ = docker(&["tag", &mirrored, image]);
+            let _ = docker(&["rmi", &mirrored]);
+        }
+    }
 }
 
 fn compose_up(dir: &Path, project: &str) -> Result<Option<String>> {
@@ -103,6 +128,7 @@ fn compose_up(dir: &Path, project: &str) -> Result<Option<String>> {
         Ok(m) if m.len() > 0 => {}
         _ => return Ok(None),
     }
+    ensure_compose_images(&file);
     let out = Command::new("docker")
         .args(["compose", "-f"])
         .arg(&file)
@@ -172,14 +198,15 @@ fn run_output_check(image: &str, case: &TestCase, network: Option<&str>, name: &
         let _ = tx.send(if ok { Ok(all) } else { Err(all) });
     });
     let res = rx.recv_timeout(Duration::from_secs(180));
+    let stderr_at_match = err_buf.lock().unwrap().clone();
     let _ = docker(&["rm", "-f", name]);
     let _ = child.wait();
     let _ = err_thread.join();
     let stderr_text = err_buf.lock().unwrap().clone();
     match res {
         Ok(Ok(_)) => {
-            if !case.stderr_allowed && !stderr_text.trim().is_empty() {
-                bail!("expected empty stderr, got: {}", stderr_text.chars().take(600).collect::<String>());
+            if !case.stderr_allowed && !stderr_at_match.trim().is_empty() {
+                bail!("expected empty stderr, got: {}", stderr_at_match.chars().take(600).collect::<String>());
             }
             Ok(())
         }
@@ -344,8 +371,102 @@ fn run_case(cfg: &E2eConfig, example: &str, idx: usize, case: &TestCase) -> Case
     r
 }
 
+const MIN_FREE_BYTES: u64 = 5 << 30;
+
+fn free_bytes(path: &Path) -> Option<u64> {
+    let c = std::ffi::CString::new(path.as_os_str().to_string_lossy().as_bytes()).ok()?;
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
+        return None;
+    }
+    Some(st.f_bavail as u64 * st.f_frsize as u64)
+}
+
+fn low_disk(cfg: &E2eConfig) -> bool {
+    free_bytes(&cfg.home).map(|f| f < MIN_FREE_BYTES).unwrap_or(false)
+}
+
+const MAX_REGISTRY_BYTES: u64 = 2 << 30;
+
+fn dir_size(path: &Path) -> u64 {
+    let mut total = 0;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let Ok(m) = e.metadata() else { continue };
+            if m.is_dir() {
+                stack.push(e.path());
+            } else {
+                total += m.len();
+            }
+        }
+    }
+    total
+}
+
+fn registry_dir(cfg: &E2eConfig) -> PathBuf {
+    let port = cfg.registry.rsplit(':').next().unwrap_or("5001");
+    cfg.home.join(format!("e2e-registry-{port}"))
+}
+
+fn registry_full(cfg: &E2eConfig) -> bool {
+    dir_size(&registry_dir(cfg)) > MAX_REGISTRY_BYTES
+}
+
+fn infra_failure(detail: &str) -> bool {
+    ["/var/lib/registry", "No space left on device", "upload side closed", "operation timed out", "Connection refused", "connection reset"]
+        .iter()
+        .any(|m| detail.contains(m))
+        || detail.contains("signal: 9")
+        || detail.contains("exit status: 137")
+}
+
+fn reclaim_disk(cfg: &E2eConfig) {
+    let before = free_bytes(&cfg.home).unwrap_or(0);
+    if let Err(e) = ensure_registry(&cfg.registry, &cfg.home) {
+        eprintln!("[e2e] registry restart failed: {e:#}");
+    }
+    for sub in ["work", "store", "toolchains"] {
+        if !low_disk(cfg) {
+            break;
+        }
+        let _ = fs::remove_dir_all(cfg.home.join(sub));
+    }
+    let after = free_bytes(&cfg.home).unwrap_or(0);
+    eprintln!("[e2e] low disk: reclaimed {:.1} GB ({:.1} GB free)", (after.saturating_sub(before)) as f64 / 1e9, after as f64 / 1e9);
+}
+
+fn remove_stale_rootfs() {
+    let Ok(rd) = fs::read_dir(std::env::temp_dir()) else { return };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("acro-e2e-rootfs-") {
+            continue;
+        }
+        let pid = name.rsplit('-').next().unwrap_or("");
+        if !pid.is_empty() && !Path::new("/proc").join(pid).exists() {
+            let _ = fs::remove_dir_all(e.path());
+        }
+    }
+}
+
+pub fn failed_cases(path: &Path) -> Result<std::collections::BTreeSet<(String, usize)>> {
+    let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let mut last: BTreeMap<(String, usize), String> = BTreeMap::new();
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let v: serde_json::Value = serde_json::from_str(line)?;
+        let example = v["example"].as_str().unwrap_or_default().to_string();
+        let case = v["case"].as_u64().unwrap_or(0) as usize;
+        last.insert((example, case), v["status"].as_str().unwrap_or_default().to_string());
+    }
+    Ok(last.into_iter().filter(|(_, s)| s == "fail").map(|(k, _)| k).collect())
+}
+
 pub fn run(cfg: E2eConfig) -> Result<Vec<CaseResult>> {
-    ensure_registry(&cfg.registry)?;
+    remove_stale_rootfs();
+    fs::create_dir_all(&cfg.home)?;
+    ensure_registry(&cfg.registry, &cfg.home)?;
     let mut cases: Vec<(String, usize, TestCase)> = Vec::new();
     let mut names: Vec<String> = fs::read_dir(&cfg.examples)?
         .filter_map(|e| e.ok())
@@ -363,15 +484,20 @@ pub fn run(cfg: E2eConfig) -> Result<Vec<CaseResult>> {
         }
         let parsed: Vec<TestCase> = json5::from_str(&text).with_context(|| format!("parsing {name}/test.json"))?;
         for (i, c) in parsed.into_iter().enumerate() {
+            if cfg.only.as_ref().is_some_and(|o| !o.contains(&(name.clone(), i))) {
+                continue;
+            }
             cases.push((name.clone(), i, c));
         }
     }
-    let queue = Arc::new(Mutex::new(cases.into_iter().collect::<std::collections::VecDeque<_>>()));
+    let queue = Arc::new(Mutex::new(cases.into_iter().map(|(n, i, c)| (n, i, c, false)).collect::<std::collections::VecDeque<_>>()));
     let results = Arc::new(Mutex::new(Vec::new()));
     let cfg = Arc::new(cfg);
     let out_file = Arc::new(Mutex::new(fs::OpenOptions::new().create(true).append(true).open(&cfg.out)?));
+    let gate = Arc::new(RwLock::new(()));
     let mut handles = Vec::new();
     for _ in 0..cfg.jobs.max(1) {
+        let gate = gate.clone();
         let queue = queue.clone();
         let results = results.clone();
         let cfg = cfg.clone();
@@ -379,8 +505,32 @@ pub fn run(cfg: E2eConfig) -> Result<Vec<CaseResult>> {
         handles.push(std::thread::spawn(move || {
             loop {
                 let next = queue.lock().unwrap().pop_front();
-                let Some((name, idx, case)) = next else { break };
-                let r = run_case(&cfg, &name, idx, &case);
+                let Some((name, idx, case, retried)) = next else { break };
+                if low_disk(&cfg) || registry_full(&cfg) || !registry_dir(&cfg).exists() {
+                    let _w = gate.write().unwrap();
+                    if low_disk(&cfg) {
+                        reclaim_disk(&cfg);
+                    } else if !registry_dir(&cfg).exists() {
+                        eprintln!("[e2e] registry data vanished (external cleanup?): recreating");
+                        if let Err(e) = ensure_registry(&cfg.registry, &cfg.home) {
+                            eprintln!("[e2e] registry restart failed: {e:#}");
+                        }
+                    } else if registry_full(&cfg) {
+                        match ensure_registry(&cfg.registry, &cfg.home) {
+                            Ok(()) => eprintln!("[e2e] registry over {} GB: wiped", MAX_REGISTRY_BYTES >> 30),
+                            Err(e) => eprintln!("[e2e] registry restart failed: {e:#}"),
+                        }
+                    }
+                }
+                let r = {
+                    let _r = gate.read().unwrap();
+                    run_case(&cfg, &name, idx, &case)
+                };
+                if r.status == "fail" && !retried && infra_failure(&r.detail) {
+                    eprintln!("[e2e] retry  {}/case-{} after infra failure: {}", r.example, r.case, r.detail.lines().last().unwrap_or("").chars().take(160).collect::<String>());
+                    queue.lock().unwrap().push_back((name, idx, case, true));
+                    continue;
+                }
                 eprintln!(
                     "[e2e] {:<6} {}/case-{} ({:.1}s) {}",
                     r.status,

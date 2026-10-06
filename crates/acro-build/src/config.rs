@@ -101,8 +101,9 @@ fn command_strings(step: &StepConfig) -> Vec<String> {
 
 pub fn apply(cfg: &Config, env: &mut Env) -> Result<()> {
     let mut unsupported = Vec::new();
-    if !cfg.build_apt_packages.is_empty() {
-        unsupported.push(format!("buildAptPackages ({})", cfg.build_apt_packages.join(", ")));
+    let build_apt: Vec<String> = cfg.build_apt_packages.iter().filter(|p| p.as_str() != "...").cloned().collect();
+    if !build_apt.is_empty() {
+        env.vars.insert("ACRO_BUILD_APT_PACKAGES".into(), build_apt.join(" "));
     }
     let mut other_packages = Vec::new();
     for (k, v) in &cfg.packages {
@@ -154,8 +155,9 @@ pub fn apply(cfg: &Config, env: &mut Env) -> Result<()> {
         if let Some(s) = &d.start_command {
             env.vars.insert("ACRO_START_CMD".into(), s.clone());
         }
-        if !d.apt_packages.is_empty() {
-            env.vars.insert("ACRO_DEPLOY_APT_PACKAGES".into(), d.apt_packages.join(" "));
+        let apt: Vec<String> = d.apt_packages.iter().filter(|p| p.as_str() != "...").cloned().collect();
+        if !apt.is_empty() {
+            env.vars.insert("ACRO_DEPLOY_APT_PACKAGES".into(), apt.join(" "));
         }
         if d.inputs.iter().any(|i| i.get("image").is_some()) {
             unsupported.push("deploy.inputs from images".into());

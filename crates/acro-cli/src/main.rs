@@ -97,6 +97,8 @@ enum Command {
         out: Option<PathBuf>,
         #[arg(long)]
         isolated: bool,
+        #[arg(long)]
+        failed_from: Option<PathBuf>,
     },
 }
 
@@ -159,7 +161,17 @@ fn main() {
             }
         }
     }
-    if let Command::E2e { examples, filter, jobs, registry, out, isolated } = &cli.cmd {
+    if let Command::E2e { examples, filter, jobs, registry, out, isolated, failed_from } = &cli.cmd {
+        let only = match failed_from {
+            Some(p) => match e2e::failed_cases(p) {
+                Ok(set) => Some(set),
+                Err(e) => {
+                    eprintln!("error: {e:#}");
+                    std::process::exit(2);
+                }
+            },
+            None => None,
+        };
         let out = out.clone().unwrap_or_else(|| PathBuf::from(format!("e2e-{}.jsonl", std::process::id())));
         let home = cli.home.clone().unwrap_or_else(|| std::env::temp_dir().join("acro-e2e-home"));
         let cfg = e2e::E2eConfig {
@@ -171,6 +183,7 @@ fn main() {
             out: out.clone(),
             home,
             isolated: *isolated,
+            only,
         };
         match e2e::run(cfg) {
             Ok(results) => {
