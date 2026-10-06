@@ -161,21 +161,28 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
     b.fact("package-manager", app.pm.name());
     b.fact("node", format!("{} ({})", app.node.spec, app.node.source));
     b.fact("framework", format!("{:?}", app.framework).to_ascii_lowercase());
-    if app.pm != PackageManager::Npm {
-        bail!("{} projects are not supported yet (only npm package-lock.json)", app.pm.name());
-    }
-    let lockfile = match &app.lockfile {
-        Some(l) => l.clone(),
-        None => bail!("no package-lock.json found; commit a lockfile for reproducible builds"),
+    let manager = match app.pm {
+        PackageManager::Npm => "npm",
+        PackageManager::Pnpm => "pnpm",
+        PackageManager::Bun if app.lockfile.as_deref() == Some("bun.lock") => "bun",
+        PackageManager::Yarn1 => "yarn",
+        other => bail!("{} projects are not supported yet", other.name()),
     };
-    let lock_bytes = std::fs::read(app.dir.join(&lockfile))?;
-    let lock_sha = acro_store::sha256_bytes(&lock_bytes).hex();
+    let lockfile = app.lockfile.clone().unwrap_or_default();
+    let lock_sha = if lockfile.is_empty() {
+        b.plan.warnings.push("no lockfile: dependencies are resolved from the npm registry at build time, so the build is not reproducible".into());
+        String::new()
+    } else {
+        acro_store::sha256_bytes(&std::fs::read(app.dir.join(&lockfile))?).hex()
+    };
     let rt = runtime(app, env)?;
-    let lock = acro_npm::PackageLock::parse(&lock_bytes)?;
-    let prod_scripts: Vec<String> = acro_npm::InstallPlan::from_lock(
-        &lock,
-        &acro_npm::InstallOptions { include_dev: false, include_optional: true, platform: Default::default() },
-    )?
+    let prod_opts = acro_npm::InstallOptions { include_dev: false, include_optional: true, platform: Default::default() };
+    let prod_plan = if lockfile.is_empty() {
+        acro_npm::InstallPlan::default()
+    } else {
+        crate::run::install_plan_for(manager, &app.dir, &lockfile, &prod_opts)?
+    };
+    let prod_scripts: Vec<String> = prod_plan
     .with_install_scripts()
     .iter()
     .map(|p| p.name.clone())
@@ -207,7 +214,7 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
             b.step(
                 "npm-fetch",
                 "fetch production packages",
-                Action::NpmFetch { lockfile: lockfile.clone(), lockfile_sha256: lock_sha, dev: false },
+                Action::NpmFetch { manager: manager.into(), lockfile: lockfile.clone(), lockfile_sha256: lock_sha, dev: false },
                 &[],
             );
             b.step(
@@ -221,7 +228,7 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
                 "layer app source",
                 Action::Layer {
                     dest: "app".into(),
-                    from: LayerFrom::AppSource { exclude: vec!["node_modules".into()] },
+                    from: LayerFrom::AppSource { exclude: vec!["**/node_modules".into()] },
                 },
                 &[],
             );
@@ -252,10 +259,10 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
             b.step(
                 "npm-fetch",
                 "fetch packages",
-                Action::NpmFetch { lockfile: lockfile.clone(), lockfile_sha256: lock_sha, dev: true },
+                Action::NpmFetch { manager: manager.into(), lockfile: lockfile.clone(), lockfile_sha256: lock_sha, dev: true },
                 &[],
             );
-            b.step("source", "copy source", Action::CopySource { exclude: vec!["node_modules".into()] }, &[]);
+            b.step("source", "copy source", Action::CopySource { exclude: vec!["**/node_modules".into()] }, &[]);
             b.step("install", "install node_modules", Action::NpmInstall { dev: true }, &["npm-fetch", "source"]);
             let mut run_env = BTreeMap::new();
             run_env.insert("NODE_ENV".to_string(), "production".to_string());
@@ -383,7 +390,7 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
                     b.step(
                         "npm-fetch-prod",
                         "select production packages",
-                        Action::NpmFetch { lockfile: lockfile.clone(), lockfile_sha256: String::new(), dev: false },
+                        Action::NpmFetch { manager: manager.into(), lockfile: lockfile.clone(), lockfile_sha256: String::new(), dev: false },
                         &["npm-fetch"],
                     );
                     b.step(
@@ -399,7 +406,7 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
                             dest: "app".into(),
                             from: LayerFrom::WorkDir {
                                 path: ".".into(),
-                                exclude: vec!["node_modules".into(), ".next/cache".into()],
+                                exclude: vec!["**/node_modules".into(), ".next/cache".into()],
                             },
                         },
                         &["build"],

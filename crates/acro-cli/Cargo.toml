@@ -22,3 +22,4 @@ serde_json.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 libc.workspace = true
+json5.workspace = true

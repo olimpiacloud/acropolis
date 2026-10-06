@@ -26,6 +26,7 @@ pub fn plan_app(dir: &Path, env: &Env) -> Result<Plan> {
     match &app {
         App::Node(n) => providers::node::plan(n, env, &name),
         App::Go(g) => providers::go::plan(g, env, &name),
+        App::Rust(r) => providers::rust::plan(r, env, dir, &name),
     }
 }
 

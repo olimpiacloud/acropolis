@@ -1,4 +1,5 @@
 mod bench;
+mod e2e;
 
 use acro_build::{BuildOptions, Env};
 use acro_exec::{Executor, HostExecutor, Isolation};
@@ -40,6 +41,8 @@ enum Command {
         keep_work: bool,
         #[arg(long, default_value_t = 64)]
         concurrency: usize,
+        #[arg(long)]
+        config: Option<String>,
     },
     Plan {
         #[arg(default_value = ".")]
@@ -80,6 +83,18 @@ enum Command {
     },
     Report {
         results: Vec<PathBuf>,
+    },
+    E2e {
+        #[arg(long)]
+        examples: PathBuf,
+        #[arg(long, value_delimiter = ',')]
+        filter: Vec<String>,
+        #[arg(long, default_value_t = 2)]
+        jobs: usize,
+        #[arg(long, default_value = "localhost:5001")]
+        registry: String,
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
 }
 
@@ -142,6 +157,30 @@ fn main() {
             }
         }
     }
+    if let Command::E2e { examples, filter, jobs, registry, out } = &cli.cmd {
+        let out = out.clone().unwrap_or_else(|| PathBuf::from(format!("e2e-{}.jsonl", std::process::id())));
+        let home = cli.home.clone().unwrap_or_else(|| std::env::temp_dir().join("acro-e2e-home"));
+        let cfg = e2e::E2eConfig {
+            examples: std::fs::canonicalize(examples).expect("examples dir"),
+            filter: filter.clone(),
+            jobs: *jobs,
+            acro_bin: std::env::current_exe().expect("current exe"),
+            registry: registry.clone(),
+            out: out.clone(),
+            home,
+        };
+        match e2e::run(cfg) {
+            Ok(results) => {
+                println!("{}", e2e::summary(&results));
+                eprintln!("results: {}", out.display());
+                std::process::exit(if results.iter().any(|r| r.status == "fail") { 1 } else { 0 });
+            }
+            Err(e) => {
+                eprintln!("error: {e:#}");
+                std::process::exit(2);
+            }
+        }
+    }
     if let Command::Report { results } = &cli.cmd {
         let mut all = Vec::new();
         for p in results {
@@ -183,8 +222,11 @@ async fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Command::Build { dir, tag, env, compression, level, hermetic, keep_work, concurrency } => {
-            let env = parse_env(&env)?;
+        Command::Build { dir, tag, env, compression, level, hermetic, keep_work, concurrency, config } => {
+            let mut env = parse_env(&env)?;
+            if let Some(c) = config {
+                env.vars.insert("ACRO_CONFIG_FILE".into(), c);
+            }
             let compression = Compression::parse(&compression).with_context(|| format!("unknown compression {compression}"))?;
             let target = tag.as_deref().map(Reference::parse).transpose()?;
             let exec: Arc<dyn Executor> = if hermetic == "off" {
@@ -222,7 +264,7 @@ async fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Command::Bench { .. } | Command::Report { .. } => unreachable!(),
+        Command::Bench { .. } | Command::Report { .. } | Command::E2e { .. } => unreachable!(),
         Command::Inspect { reference } => {
             let r = Reference::parse(&reference)?;
             let client = reqwest::Client::builder().build()?;

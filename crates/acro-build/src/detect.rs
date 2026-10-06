@@ -115,6 +115,7 @@ pub struct GoApp {
 pub enum App {
     Node(NodeApp),
     Go(GoApp),
+    Rust(crate::providers::rust::RustApp),
 }
 
 impl App {
@@ -122,6 +123,7 @@ impl App {
         match self {
             App::Node(_) => "node",
             App::Go(_) => "go",
+            App::Rust(_) => "rust",
         }
     }
 }
@@ -195,6 +197,9 @@ pub fn detect(dir: &Path, env: &Env) -> Result<App> {
     if dir.join("go.mod").exists() || dir.join("main.go").exists() {
         return Ok(App::Go(detect_go(dir, env)?));
     }
+    if dir.join("Cargo.toml").exists() {
+        return Ok(App::Rust(crate::providers::rust::detect(dir, env)?));
+    }
     bail!("could not detect how to build {}: no package.json or go.mod", dir.display())
 }
 
@@ -205,7 +210,13 @@ pub fn detect_node(dir: &Path, env: &Env) -> Result<NodeApp> {
         .and_then(|s| s.as_object())
         .map(|m| m.iter().filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string()))).collect())
         .unwrap_or_default();
-    let pm_field = pj.get("packageManager").and_then(|p| p.as_str()).map(|s| s.to_string());
+    let dev_engine = pj.get("devEngines").and_then(|d| d.get("packageManager")).and_then(|p| {
+        let first = if let Some(a) = p.as_array() { a.first()? } else { p };
+        let name = first.get("name")?.as_str()?;
+        let version = first.get("version").and_then(|v| v.as_str()).unwrap_or("");
+        Some(if version.is_empty() { name.to_string() } else { format!("{name}@{version}") })
+    });
+    let pm_field = pj.get("packageManager").and_then(|p| p.as_str()).map(|s| s.to_string()).or(dev_engine);
     let (mut pm, mut lockfile) = (PackageManager::Npm, None);
     for (file, m) in [
         ("package-lock.json", PackageManager::Npm),

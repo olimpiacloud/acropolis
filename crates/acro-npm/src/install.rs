@@ -8,7 +8,7 @@ use futures::future::try_join_all;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::{BufReader, Read};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Clone, Debug)]
 pub struct Platform {
@@ -49,15 +49,30 @@ pub struct InstallPackage {
     pub name: String,
     pub version: String,
     pub source: Source,
-    pub bins: Vec<(String, String)>,
+    pub bins: Option<Vec<(String, String)>>,
     pub has_install_script: bool,
     pub optional: bool,
     pub dev: bool,
 }
 
+#[derive(Clone, Debug)]
+pub struct Link {
+    pub path: String,
+    pub target: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct BinDir {
+    pub dir: String,
+    pub packages: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct InstallPlan {
     pub packages: Vec<InstallPackage>,
+    pub links: Vec<Link>,
+    pub bin_dirs: Vec<BinDir>,
+    pub known_bins: HashMap<String, Vec<(String, String)>>,
     pub skipped_platform: Vec<String>,
 }
 
@@ -74,16 +89,32 @@ fn matches_list(list: &Option<Vec<String>>, value: &str) -> bool {
     pos.is_empty() || pos.iter().any(|s| s.as_str() == value || s.as_str() == "any")
 }
 
+pub fn platform_matches(os: &Option<Vec<String>>, cpu: &Option<Vec<String>>, libc: &Option<Vec<String>>, p: &Platform) -> bool {
+    matches_list(os, &p.os) && matches_list(cpu, &p.cpu) && matches_list(libc, &p.libc)
+}
+
 fn platform_ok(e: &LockEntry, p: &Platform) -> bool {
-    matches_list(&e.os, &p.os) && matches_list(&e.cpu, &p.cpu) && matches_list(&e.libc, &p.libc)
+    platform_matches(&e.os, &e.cpu, &e.libc, p)
+}
+
+pub fn parent_node_modules(path: &str) -> Option<(&str, &str)> {
+    let idx = path.rfind("node_modules/")?;
+    Some((&path[..idx + "node_modules".len()], &path[idx + "node_modules/".len()..]))
 }
 
 impl InstallPlan {
     pub fn from_lock(lock: &PackageLock, opts: &InstallOptions) -> Result<Self> {
         let mut out = InstallPlan::default();
         let mut skipped: Vec<String> = Vec::new();
+        let mut bin_dirs: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for (path, e) in &lock.packages {
             if path.is_empty() || !path.contains("node_modules/") {
+                if !path.is_empty() {
+                    let bins = bins_of(e.name.as_deref().unwrap_or(""), &e.bin);
+                    if !bins.is_empty() {
+                        out.known_bins.insert(path.clone(), bins);
+                    }
+                }
                 continue;
             }
             if skipped.iter().any(|s| path.starts_with(&format!("{s}/"))) {
@@ -104,10 +135,21 @@ impl InstallPlan {
                 continue;
             }
             let name = e.name.clone().unwrap_or_else(|| package_name_from_path(path).to_string());
-            let source = if e.link {
+            if let Some((nm, _)) = parent_node_modules(path) {
+                bin_dirs.entry(nm.to_string()).or_default().push(path.clone());
+            }
+            if e.link {
                 let target = e.resolved.clone().ok_or_else(|| anyhow!("link {path} without resolved"))?;
-                Source::Link { target }
-            } else if e.in_bundle {
+                if let Some(t) = lock.packages.get(&target) {
+                    let bins = bins_of(&name, &t.bin);
+                    if !bins.is_empty() {
+                        out.known_bins.insert(path.clone(), bins);
+                    }
+                }
+                out.links.push(Link { path: path.clone(), target: relative_link(Path::new(path), Path::new(&target)) });
+                continue;
+            }
+            let source = if e.in_bundle {
                 Source::Bundled
             } else {
                 let resolved = e.resolved.clone().unwrap_or_default();
@@ -119,40 +161,35 @@ impl InstallPlan {
                         None => None,
                     };
                     Source::Registry { url: resolved, integrity }
-                } else if resolved.starts_with("file:") {
-                    Source::Link { target: resolved.trim_start_matches("file:").to_string() }
+                } else if let Some(target) = resolved.strip_prefix("file:") {
+                    out.links.push(Link { path: path.clone(), target: relative_link(Path::new(path), Path::new(target)) });
+                    continue;
                 } else if resolved.is_empty() {
                     let version = e.version.clone().unwrap_or_default();
                     if version.is_empty() {
                         bail!("{path} has no resolved URL or version in package-lock.json");
                     }
-                    let url = default_registry_url(&name, &version);
                     let integrity = match &e.integrity {
                         Some(i) => Some(Integrity::parse_sri(i)?),
                         None => None,
                     };
-                    Source::Registry { url, integrity }
+                    Source::Registry { url: default_registry_url(&name, &version), integrity }
                 } else {
                     bail!("unsupported resolved URL for {path}: {resolved}");
                 }
             };
-            let mut bins = bins_of(&name, &e.bin);
-            if let Source::Link { target } = &source
-                && let Some(t) = lock.packages.get(target)
-            {
-                bins = bins_of(&name, &t.bin);
-            }
             out.packages.push(InstallPackage {
                 path: path.clone(),
-                name,
+                name: name.clone(),
                 version: e.version.clone().unwrap_or_default(),
                 source,
-                bins,
+                bins: Some(bins_of(&name, &e.bin)),
                 has_install_script: e.has_install_script,
                 optional: e.optional || e.dev_optional,
                 dev: e.dev,
             });
         }
+        out.bin_dirs = bin_dirs.into_iter().map(|(dir, packages)| BinDir { dir, packages }).collect();
         Ok(out)
     }
 
@@ -207,13 +244,27 @@ fn clean_rel(path: &str) -> Option<String> {
     if parts.is_empty() { None } else { Some(parts.join("/")) }
 }
 
-pub fn for_each_tarball_entry(
-    blob: &Path,
-    mut f: impl FnMut(&str, Kind, u32, u64, &mut dyn Read) -> Result<()>,
-) -> Result<()> {
+pub struct TarEntry {
+    pub rel: String,
+    pub kind: Kind,
+    pub mode: u32,
+    pub data: Vec<u8>,
+}
+
+pub fn read_tarball(blob: &Path) -> Result<Vec<TarEntry>> {
     let file = std::fs::File::open(blob)?;
-    let gz = GzDecoder::new(BufReader::with_capacity(128 * 1024, file));
-    let mut tr = TarReader::new(BufReader::with_capacity(128 * 1024, gz));
+    let mut raw = BufReader::with_capacity(128 * 1024, file);
+    let mut magic = [0u8; 2];
+    let n = raw.read(&mut magic)?;
+    let chained = std::io::Cursor::new(magic[..n].to_vec()).chain(raw);
+    let reader: Box<dyn Read> = if n == 2 && magic == [0x1f, 0x8b] {
+        Box::new(GzDecoder::new(chained))
+    } else {
+        Box::new(chained)
+    };
+    let mut tr = TarReader::new(BufReader::with_capacity(128 * 1024, reader));
+    let mut out = Vec::new();
+    let mut seen: HashMap<String, usize> = HashMap::new();
     while let Some(e) = tr.next_entry()? {
         if !matches!(e.kind, Kind::File | Kind::Dir) {
             continue;
@@ -223,87 +274,120 @@ pub fn for_each_tarball_entry(
             None => continue,
         };
         let Some(rel) = clean_rel(rel) else { continue };
-        let size = e.size;
-        let mut data = tr.data();
-        f(&rel, e.kind, e.mode, size, &mut data)?;
+        let data = if e.kind == Kind::File { tr.read_data()? } else { Vec::new() };
+        if let Some(&i) = seen.get(&rel) {
+            out[i] = TarEntry { rel, kind: e.kind, mode: e.mode, data };
+            continue;
+        }
+        seen.insert(rel.clone(), out.len());
+        out.push(TarEntry { rel, kind: e.kind, mode: e.mode, data });
     }
-    Ok(())
+    Ok(out)
 }
 
-fn bin_targets(p: &InstallPackage) -> HashSet<String> {
-    p.bins.iter().filter_map(|(_, t)| clean_rel(t)).collect()
+pub fn bins_from_package_json(name: &str, data: &[u8], files: &[TarEntry]) -> Vec<(String, String)> {
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(data) else { return Vec::new() };
+    let bins = bins_of(name, &v.get("bin").cloned());
+    if !bins.is_empty() {
+        return bins;
+    }
+    if let Some(dir) = v.get("directories").and_then(|d| d.get("bin")).and_then(|b| b.as_str())
+        && let Some(dir) = clean_rel(dir)
+    {
+        let prefix = format!("{dir}/");
+        return files
+            .iter()
+            .filter(|f| f.kind == Kind::File && f.rel.starts_with(&prefix) && !f.rel[prefix.len()..].contains('/'))
+            .map(|f| (f.rel[prefix.len()..].to_string(), f.rel.clone()))
+            .collect();
+    }
+    Vec::new()
 }
 
-fn package_fragment(prefix: &str, p: &InstallPackage, blob: &Path) -> Result<Vec<u8>> {
-    let mut tw = TarWriter::new(Vec::with_capacity(64 * 1024));
+fn package_bins(p: &InstallPackage, entries: &[TarEntry]) -> Vec<(String, String)> {
+    match &p.bins {
+        Some(b) => b.clone(),
+        None => entries
+            .iter()
+            .find(|e| e.rel == "package.json")
+            .map(|e| bins_from_package_json(&p.name, &e.data, entries))
+            .unwrap_or_default(),
+    }
+}
+
+fn package_fragment(prefix: &str, p: &InstallPackage, blob: &Path) -> Result<(Vec<u8>, Vec<(String, String)>)> {
+    let entries = read_tarball(blob).with_context(|| format!("reading tarball of {}", p.path))?;
+    let bins = package_bins(p, &entries);
+    let execs: HashSet<String> = bins.iter().filter_map(|(_, t)| clean_rel(t)).collect();
+    let cap: usize = entries.iter().map(|e| e.data.len() + 1024).sum();
+    let mut tw = TarWriter::new(Vec::with_capacity(cap));
     let mut dirs: HashSet<String> = HashSet::new();
-    let root = format!("{prefix}/{}", p.path);
+    let root = if prefix.is_empty() { p.path.clone() } else { format!("{prefix}/{}", p.path) };
     tw.dir(&root, 0o755)?;
     dirs.insert(root.clone());
-    let execs = bin_targets(p);
-    for_each_tarball_entry(blob, |rel, kind, mode, size, data| {
-        let full = format!("{root}/{rel}");
-        let mut parent = String::new();
+    for e in &entries {
+        let parts: Vec<&str> = e.rel.split('/').collect();
+        let upto = if e.kind == Kind::Dir { parts.len() } else { parts.len() - 1 };
         let mut acc = root.clone();
-        let parts: Vec<&str> = rel.split('/').collect();
-        let upto = if kind == Kind::Dir { parts.len() } else { parts.len() - 1 };
         for part in &parts[..upto] {
             acc.push('/');
             acc.push_str(part);
             if dirs.insert(acc.clone()) {
                 tw.dir(&acc, 0o755)?;
             }
-            parent = acc.clone();
         }
-        let _ = parent;
-        if kind == Kind::File {
-            let mode = if execs.contains(rel) { 0o755 } else { normalize_mode(mode, Kind::File) };
-            tw.file_reader(&full, mode, size, data)?;
+        if e.kind == Kind::File {
+            let mode = if execs.contains(&e.rel) { 0o755 } else { normalize_mode(e.mode, Kind::File) };
+            tw.file_bytes(&format!("{root}/{}", e.rel), mode, &e.data)?;
         }
-        Ok(())
-    })
-    .with_context(|| format!("reading tarball of {}", p.path))?;
-    Ok(tw.finish_fragment())
-}
-
-trait FinishFragment {
-    fn finish_fragment(self) -> Vec<u8>;
-}
-
-impl FinishFragment for TarWriter<Vec<u8>> {
-    fn finish_fragment(mut self) -> Vec<u8> {
-        std::mem::take(self.get_mut())
     }
+    Ok((take(tw), bins))
 }
 
-fn bin_links(packages: &[&InstallPackage]) -> BTreeMap<String, BTreeMap<String, String>> {
+fn take(mut tw: TarWriter<Vec<u8>>) -> Vec<u8> {
+    std::mem::take(tw.get_mut())
+}
+
+fn bin_links(plan: &InstallPlan, bins: &HashMap<String, Vec<(String, String)>>) -> BTreeMap<String, BTreeMap<String, String>> {
     let mut out: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
-    for p in packages {
-        if p.bins.is_empty() {
-            continue;
-        }
-        let Some(idx) = p.path.rfind("node_modules/") else { continue };
-        let nm = &p.path[..idx + "node_modules".len()];
-        let pkg_rel = &p.path[idx + "node_modules/".len()..];
-        for (name, target) in &p.bins {
-            let Some(t) = clean_rel(target) else { continue };
-            if name.contains('/') || name.is_empty() {
-                continue;
+    let link_targets: HashMap<&str, &str> = plan.links.iter().map(|l| (l.path.as_str(), l.target.as_str())).collect();
+    for bd in &plan.bin_dirs {
+        for pkg in &bd.packages {
+            let list = bins.get(pkg).or_else(|| plan.known_bins.get(pkg));
+            let Some(list) = list else { continue };
+            let real = match link_targets.get(pkg.as_str()) {
+                Some(t) => normalize_join(Path::new(pkg).parent().unwrap_or(Path::new("")), t),
+                None => pkg.clone(),
+            };
+            for (name, target) in list {
+                let Some(t) = clean_rel(target) else { continue };
+                if name.contains('/') || name.is_empty() || name == "." || name == ".." {
+                    continue;
+                }
+                let from = format!("{}/.bin/{name}", bd.dir);
+                let to = format!("{real}/{t}");
+                out.entry(bd.dir.clone())
+                    .or_default()
+                    .entry(name.clone())
+                    .or_insert_with(|| relative_link(Path::new(&from), Path::new(&to)));
             }
-            out.entry(nm.to_string()).or_default().insert(name.clone(), format!("../{pkg_rel}/{t}"));
         }
     }
     out
 }
 
-fn ancestors_of(path: &str, prefix: &str, set: &mut BTreeSet<String>) {
-    let mut acc = prefix.to_string();
-    let parts: Vec<&str> = path.split('/').collect();
-    for part in &parts[..parts.len().saturating_sub(1)] {
-        acc.push('/');
-        acc.push_str(part);
-        set.insert(acc.clone());
+fn normalize_join(base: &Path, rel: &str) -> String {
+    let mut parts: Vec<String> = base.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+    for c in rel.split('/') {
+        match c {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            other => parts.push(other.to_string()),
+        }
     }
+    parts.join("/")
 }
 
 pub struct LayerFragments {
@@ -319,49 +403,67 @@ pub fn node_modules_fragments(
     let mut pkgs: Vec<&InstallPackage> = plan.packages.iter().filter(|p| filter(p)).collect();
     pkgs.sort_by(|a, b| a.path.cmp(&b.path));
     let mut head_dirs = BTreeSet::new();
-    for comp in prefix.split('/').scan(String::new(), |acc, c| {
+    let mut acc = String::new();
+    for c in prefix.split('/').filter(|c| !c.is_empty()) {
         if !acc.is_empty() {
             acc.push('/');
         }
         acc.push_str(c);
-        Some(acc.clone())
-    }) {
-        head_dirs.insert(comp);
+        head_dirs.insert(acc.clone());
     }
+    let base = if prefix.is_empty() { String::new() } else { format!("{prefix}/") };
+    let mut ancestors = |path: &str| {
+        let parts: Vec<&str> = path.split('/').collect();
+        let mut acc = prefix.to_string();
+        for part in &parts[..parts.len().saturating_sub(1)] {
+            if !acc.is_empty() {
+                acc.push('/');
+            }
+            acc.push_str(part);
+            head_dirs.insert(acc.clone());
+        }
+    };
     for p in &pkgs {
-        ancestors_of(&p.path, prefix, &mut head_dirs);
+        ancestors(&p.path);
+    }
+    for l in &plan.links {
+        ancestors(&l.path);
     }
     let mut head = TarWriter::new(Vec::new());
     for d in &head_dirs {
         head.dir(d, 0o755)?;
     }
-    for p in &pkgs {
-        if let Source::Link { target } = &p.source {
-            let from = Path::new(&p.path);
-            let link = relative_link(from, Path::new(target));
-            head.symlink(&format!("{prefix}/{}", p.path), &link)?;
-        }
+    let mut links = plan.links.clone();
+    links.sort_by(|a, b| a.path.cmp(&b.path));
+    for l in &links {
+        head.symlink(&format!("{base}{}", l.path), &l.target)?;
     }
-    let mut fragments = vec![head.finish_fragment()];
-    let bodies: Vec<Result<Vec<u8>>> = pkgs
+    let mut fragments = vec![take(head)];
+    let bodies: Vec<Result<(String, Vec<u8>, Vec<(String, String)>)>> = pkgs
         .par_iter()
         .filter(|p| matches!(p.source, Source::Registry { .. }))
         .map(|p| {
             let blob = blob_for(tarballs, p).ok_or_else(|| anyhow!("missing tarball for {}", p.path))?;
-            package_fragment(prefix, p, &blob.path)
+            let (frag, bins) = package_fragment(prefix, p, &blob.path)?;
+            Ok((p.path.clone(), frag, bins))
         })
         .collect();
+    let mut bins: HashMap<String, Vec<(String, String)>> = HashMap::new();
     for b in bodies {
-        fragments.push(b?);
-    }
-    let mut tail = TarWriter::new(Vec::new());
-    for (nm, bins) in bin_links(&pkgs) {
-        tail.dir(&format!("{prefix}/{nm}/.bin"), 0o755)?;
-        for (name, target) in bins {
-            tail.symlink(&format!("{prefix}/{nm}/.bin/{name}"), &target)?;
+        let (path, frag, b) = b?;
+        fragments.push(frag);
+        if !b.is_empty() {
+            bins.insert(path, b);
         }
     }
-    fragments.push(tail.finish_fragment());
+    let mut tail = TarWriter::new(Vec::new());
+    for (dir, entries) in bin_links(plan, &bins) {
+        tail.dir(&format!("{base}{dir}/.bin"), 0o755)?;
+        for (name, target) in entries {
+            tail.symlink(&format!("{base}{dir}/.bin/{name}"), &target)?;
+        }
+    }
+    fragments.push(take(tail));
     Ok(LayerFragments { fragments })
 }
 
@@ -384,37 +486,40 @@ pub fn relative_link(from: &Path, to: &Path) -> String {
 
 pub fn materialize(plan: &InstallPlan, tarballs: &Tarballs, root: &Path) -> Result<u64> {
     let pkgs: Vec<&InstallPackage> = plan.packages.iter().collect();
-    let written: Vec<Result<u64>> = pkgs
+    let written: Vec<Result<(String, u64, Vec<(String, String)>)>> = pkgs
         .par_iter()
         .filter(|p| matches!(p.source, Source::Registry { .. }))
         .map(|p| {
             let blob = blob_for(tarballs, p).ok_or_else(|| anyhow!("missing tarball for {}", p.path))?;
-            extract_package(p, &blob.path, &root.join(&p.path))
+            let (n, bins) = extract_package(p, &blob.path, &root.join(&p.path))?;
+            Ok((p.path.clone(), n, bins))
         })
         .collect();
     let mut total = 0;
+    let mut bins: HashMap<String, Vec<(String, String)>> = HashMap::new();
     for w in written {
-        total += w?;
-    }
-    for p in &pkgs {
-        if let Source::Link { target } = &p.source {
-            let dest = root.join(&p.path);
-            if let Some(parent) = dest.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let link = relative_link(Path::new(&p.path), Path::new(target));
-            let _ = std::fs::remove_file(&dest);
-            std::os::unix::fs::symlink(&link, &dest).with_context(|| format!("linking {}", p.path))?;
+        let (path, n, b) = w?;
+        total += n;
+        if !b.is_empty() {
+            bins.insert(path, b);
         }
     }
-    for (nm, bins) in bin_links(&pkgs) {
-        let dir = root.join(&nm).join(".bin");
-        std::fs::create_dir_all(&dir)?;
-        for (name, target) in bins {
-            let dest = dir.join(&name);
+    for l in &plan.links {
+        let dest = root.join(&l.path);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let _ = std::fs::remove_file(&dest);
+        std::os::unix::fs::symlink(&l.target, &dest).with_context(|| format!("linking {}", l.path))?;
+    }
+    for (dir, entries) in bin_links(plan, &bins) {
+        let bin_dir = root.join(&dir).join(".bin");
+        std::fs::create_dir_all(&bin_dir)?;
+        for (name, target) in entries {
+            let dest = bin_dir.join(&name);
             let _ = std::fs::remove_file(&dest);
             std::os::unix::fs::symlink(&target, &dest)?;
-            let resolved = dir.join(&target);
+            let resolved = bin_dir.join(&target);
             if let Ok(meta) = std::fs::metadata(&resolved) {
                 use std::os::unix::fs::PermissionsExt;
                 let mut perm = meta.permissions();
@@ -427,45 +532,35 @@ pub fn materialize(plan: &InstallPlan, tarballs: &Tarballs, root: &Path) -> Resu
     Ok(total)
 }
 
-pub fn extract_package(p: &InstallPackage, blob: &Path, dest: &Path) -> Result<u64> {
+pub fn extract_package(p: &InstallPackage, blob: &Path, dest: &Path) -> Result<(u64, Vec<(String, String)>)> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
+    let entries = read_tarball(blob).with_context(|| format!("extracting {}", p.path))?;
+    let bins = package_bins(p, &entries);
+    let execs: HashSet<String> = bins.iter().filter_map(|(_, t)| clean_rel(t)).collect();
     std::fs::create_dir_all(dest)?;
-    let execs = bin_targets(p);
-    let mut made: HashSet<PathBuf> = HashSet::new();
+    let mut made: HashSet<std::path::PathBuf> = HashSet::new();
     made.insert(dest.to_path_buf());
     let mut total = 0u64;
-    let mut buf = vec![0u8; 64 * 1024];
-    for_each_tarball_entry(blob, |rel, kind, mode, size, data| {
-        let path = dest.join(rel);
-        if kind == Kind::Dir {
+    for e in &entries {
+        let path = dest.join(&e.rel);
+        if e.kind == Kind::Dir {
             if made.insert(path.clone()) {
                 std::fs::create_dir_all(&path)?;
             }
-            return Ok(());
+            continue;
         }
         if let Some(parent) = path.parent()
             && made.insert(parent.to_path_buf())
         {
             std::fs::create_dir_all(parent)?;
         }
-        let mode = if execs.contains(rel) { 0o755 } else { normalize_mode(mode, Kind::File) };
+        let mode = if execs.contains(&e.rel) { 0o755 } else { normalize_mode(e.mode, Kind::File) };
         let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(mode).open(&path)?;
-        let mut remaining = size;
-        while remaining > 0 {
-            let want = remaining.min(buf.len() as u64) as usize;
-            let n = data.read(&mut buf[..want])?;
-            if n == 0 {
-                bail!("truncated entry {rel}");
-            }
-            f.write_all(&buf[..n])?;
-            remaining -= n as u64;
-        }
-        total += size;
-        Ok(())
-    })
-    .with_context(|| format!("extracting {}", p.path))?;
-    Ok(total)
+        f.write_all(&e.data)?;
+        total += e.data.len() as u64;
+    }
+    Ok((total, bins))
 }
 
 #[cfg(test)]
@@ -475,9 +570,10 @@ mod tests {
     #[test]
     fn rel_links() {
         assert_eq!(relative_link(Path::new("node_modules/a"), Path::new("packages/a")), "../packages/a");
+        assert_eq!(relative_link(Path::new("node_modules/@s/a"), Path::new("packages/a")), "../../packages/a");
         assert_eq!(
-            relative_link(Path::new("node_modules/@s/a"), Path::new("packages/a")),
-            "../../packages/a"
+            relative_link(Path::new("node_modules/.bin/vite"), Path::new("node_modules/vite/bin/vite.js")),
+            "../vite/bin/vite.js"
         );
     }
 
@@ -488,5 +584,10 @@ mod tests {
         assert!(!platform_ok(&e, &p));
         e.os = Some(vec!["!win32".into()]);
         assert!(platform_ok(&e, &p));
+    }
+
+    #[test]
+    fn joins() {
+        assert_eq!(normalize_join(Path::new("node_modules"), "../packages/a"), "packages/a");
     }
 }

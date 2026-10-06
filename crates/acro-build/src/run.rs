@@ -265,14 +265,29 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                     acro_events::log(&step.id, format!("go {version}"));
                     Ok(Out::Tool(inst))
                 }
+                "rust" => {
+                    let release = acro_cargo::resolve(fetcher, spec, &[]).await?;
+                    let dest = ctx.opts.home.join("toolchains").join(format!("rust-{}", release.version));
+                    let marker = dest.join(".acro-complete");
+                    if !marker.exists() {
+                        acro_cargo::install(fetcher, &release, &dest).await?;
+                        std::fs::write(&marker, "")?;
+                    }
+                    acro_events::log(&step.id, format!("rust {} ({})", release.version, release.date));
+                    Ok(Out::Tool(Installed { name: "rust".into(), version: release.version, bin_dir: dest.join("bin"), root: dest, archive: None }))
+                }
                 other => bail!("unsupported toolchain {other}"),
             }
         }
-        Action::NpmFetch { lockfile, dev, .. } => {
-            let bytes = std::fs::read(ctx.opts.app_dir.join(lockfile)).context("reading lockfile")?;
-            let lock = PackageLock::parse(&bytes)?;
+        Action::NpmFetch { manager, lockfile, dev, .. } => {
             let opts = InstallOptions { include_dev: *dev, include_optional: true, platform: Default::default() };
-            let plan = InstallPlan::from_lock(&lock, &opts)?;
+            let plan = if lockfile.is_empty() {
+                let pj: serde_json::Value = serde_json::from_slice(&std::fs::read(ctx.opts.app_dir.join("package.json"))?)?;
+                let ws = acro_npm::yarn::expand_workspaces(&ctx.opts.app_dir, &pj);
+                acro_npm::resolve::plan_without_lockfile(&ctx.fetcher, &pj, &ws, &opts).await?
+            } else {
+                install_plan_for(manager, &ctx.opts.app_dir, lockfile, &opts)?
+            };
             for p in &plan.packages {
                 if let acro_npm::Source::Git { url } = &p.source {
                     bail!("git dependency {} ({url}) is not supported yet", p.path);
@@ -322,6 +337,17 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             acro_events::log(&step.id, format!("{} modules, {} go.mod files", stats.modules, stats.gomods));
             Ok(Out::None)
         }
+        Action::CargoVendor { .. } => {
+            let text = std::fs::read_to_string(ctx.opts.app_dir.join("Cargo.lock"))?;
+            let lock = acro_cargo::parse_lock(&text)?;
+            let vendor_dir = ctx.work.join("vendor");
+            let stats = acro_cargo::vendor(&ctx.fetcher, &lock, &vendor_dir).await?;
+            let cargo_home = ctx.work.join("cargo-home");
+            std::fs::create_dir_all(&cargo_home)?;
+            std::fs::write(cargo_home.join("config.toml"), acro_cargo::cargo_config(&vendor_dir))?;
+            acro_events::log(&step.id, format!("{} crates, {:.1} MB", stats.crates, stats.bytes as f64 / 1e6));
+            Ok(Out::None)
+        }
         Action::Run { argv, env, network, cwd } => {
             let tools = ctx.tools();
             let mut path: Vec<String> = Vec::new();
@@ -357,6 +383,14 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                 full_env.insert("GOSUMDB".into(), "off".into());
                 full_env.insert("GOTOOLCHAIN".into(), "local".into());
                 full_env.insert("GOFLAGS".into(), "-mod=readonly".into());
+            }
+            if tools.iter().any(|t| t.name == "rust") {
+                let cargo_home = ctx.work.join("cargo-home");
+                std::fs::create_dir_all(&cargo_home)?;
+                full_env.insert("CARGO_HOME".into(), cargo_home.to_string_lossy().into_owned());
+                full_env.insert("CARGO_TARGET_DIR".into(), ctx.work.join("target").to_string_lossy().into_owned());
+                full_env.insert("CARGO_TERM_COLOR".into(), "never".into());
+                full_env.insert("CARGO_INCREMENTAL".into(), "0".into());
             }
             if let Some(node) = tools.iter().find(|t| t.name == "node") {
                 full_env.insert("npm_node_execpath".into(), node.bin_dir.join("node").to_string_lossy().into_owned());
@@ -424,6 +458,28 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                 Ok(Out::Pushed(assembled.manifest_digest))
             }
         }
+    }
+}
+
+pub fn install_plan_for(manager: &str, app_dir: &Path, lockfile: &str, opts: &InstallOptions) -> Result<InstallPlan> {
+    let bytes = std::fs::read(app_dir.join(lockfile)).with_context(|| format!("reading {lockfile}"))?;
+    match manager {
+        "npm" => InstallPlan::from_lock(&PackageLock::parse(&bytes)?, opts),
+        "pnpm" => {
+            let text = String::from_utf8(bytes).context("pnpm-lock.yaml is not UTF-8")?;
+            acro_npm::pnpm::PnpmLock::parse(&text)?.install_plan(opts, &[])
+        }
+        "yarn" => {
+            let text = String::from_utf8(bytes).context("yarn.lock is not UTF-8")?;
+            let pj: serde_json::Value = serde_json::from_slice(&std::fs::read(app_dir.join("package.json"))?)?;
+            let ws = acro_npm::yarn::expand_workspaces(app_dir, &pj);
+            acro_npm::yarn::YarnLock::parse(&text)?.install_plan(&pj, &ws, opts)
+        }
+        "bun" => {
+            let text = String::from_utf8(bytes).context("bun.lock is not UTF-8")?;
+            acro_npm::bun::BunLock::parse(&text)?.install_plan(opts)
+        }
+        other => bail!("unsupported package manager {other}"),
     }
 }
 

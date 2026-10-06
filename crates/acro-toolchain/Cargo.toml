@@ -16,4 +16,5 @@ tokio.workspace = true
 flate2.workspace = true
 liblzma.workspace = true
 semver.workspace = true
+acro-semver = { path = "../acro-semver" }
 reqwest.workspace = true

@@ -18,6 +18,11 @@ flate2.workspace = true
 zstd.workspace = true
 rayon.workspace = true
 libc.workspace = true
+serde_yaml = "0.9"
+json5.workspace = true
+acro-semver = { path = "../acro-semver" }
+semver.workspace = true
+reqwest.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

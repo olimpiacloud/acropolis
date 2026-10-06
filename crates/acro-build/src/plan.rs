@@ -9,9 +9,16 @@ pub enum Action {
     ResolveNodeBase { spec: String, variant: String },
     CopyBase,
     Toolchain { tool: String, spec: String, parts: Vec<String> },
-    NpmFetch { lockfile: String, lockfile_sha256: String, dev: bool },
+    NpmFetch {
+        #[serde(default = "default_manager")]
+        manager: String,
+        lockfile: String,
+        lockfile_sha256: String,
+        dev: bool,
+    },
     NpmInstall { dev: bool },
     GoModules { gosum_sha256: String },
+    CargoVendor { lockfile_sha256: String },
     CopySource { exclude: Vec<String> },
     Run { argv: Vec<String>, env: BTreeMap<String, String>, network: bool, cwd: String },
     Layer { dest: String, from: LayerFrom },
@@ -29,10 +36,14 @@ pub enum LayerFrom {
     Inline { files: BTreeMap<String, String> },
 }
 
+fn default_manager() -> String {
+    "npm".to_string()
+}
+
 impl Action {
     pub fn class(&self) -> &'static str {
         match self {
-            Action::ResolveBase { .. } | Action::ResolveNodeBase { .. } | Action::Toolchain { .. } | Action::NpmFetch { .. } | Action::GoModules { .. } => {
+            Action::ResolveBase { .. } | Action::ResolveNodeBase { .. } | Action::Toolchain { .. } | Action::NpmFetch { .. } | Action::GoModules { .. } | Action::CargoVendor { .. } => {
                 "fetch"
             }
             Action::Run { network: true, .. } => "build+net",
