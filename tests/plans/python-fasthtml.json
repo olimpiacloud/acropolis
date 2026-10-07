@@ -116,7 +116,9 @@
    "action": {
     "dest": "app",
     "from": {
-     "exclude": [],
+     "exclude": [
+      ".acro-runtime-debs"
+     ],
      "path": ".",
      "type": "work-dir"
     },

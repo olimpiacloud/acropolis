@@ -43,6 +43,10 @@ enum Command {
         concurrency: usize,
         #[arg(long)]
         config: Option<String>,
+        #[arg(long, value_name = "FILE")]
+        oci: Option<PathBuf>,
+        #[arg(long, value_name = "FILE")]
+        info: Option<PathBuf>,
     },
     Plan {
         #[arg(default_value = ".")]
@@ -110,6 +114,51 @@ enum Command {
         #[arg(long)]
         failed_from: Option<PathBuf>,
     },
+}
+
+fn build_info(plan: Option<&acro_build::Plan>, res: Option<&acro_build::BuildResult>, err: Option<&anyhow::Error>) -> serde_json::Value {
+    let mut packages = serde_json::Map::new();
+    let mut requested: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    if let Some(p) = plan {
+        for s in &p.steps {
+            if let acro_build::plan::Action::Toolchain { tool, spec, .. } = &s.action {
+                requested.insert(tool.clone(), spec.clone());
+            }
+        }
+    }
+    if let Some(r) = res {
+        for (name, version) in &r.tools {
+            let display = match name.as_str() {
+                "python-standalone" => "python",
+                other => other.strip_prefix("npm:").unwrap_or(other),
+            };
+            let mut pkg = serde_json::json!({ "name": display, "resolvedVersion": version, "source": "acro" });
+            if let Some(spec) = requested.get(name).filter(|s| !s.is_empty()) {
+                pkg["requestedVersion"] = serde_json::json!(spec);
+            }
+            packages.insert(display.to_string(), pkg);
+        }
+    }
+    let mut metadata = serde_json::Map::new();
+    if let Some(p) = plan {
+        for (k, v) in &p.facts {
+            metadata.insert(k.clone(), serde_json::json!(v));
+        }
+        if let Some(pm) = p.facts.get("package-manager") {
+            metadata.insert("nodePackageManager".into(), serde_json::json!(pm));
+        }
+    }
+    serde_json::json!({
+        "acroVersion": env!("CARGO_PKG_VERSION"),
+        "detectedProviders": plan.map(|p| vec![p.provider.clone()]).unwrap_or_default(),
+        "resolvedPackages": packages,
+        "metadata": metadata,
+        "planHash": plan.map(|p| p.hash.clone()),
+        "manifestDigest": res.map(|r| r.manifest_digest.clone()),
+        "warnings": plan.map(|p| p.warnings.clone()).unwrap_or_default(),
+        "success": res.is_some(),
+        "error": err.map(|e| format!("{e:#}")),
+    })
 }
 
 fn parse_env(pairs: &[String]) -> Result<Env> {
@@ -263,7 +312,7 @@ async fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Command::Build { dir, tag, env, compression, level, hermetic, keep_work, concurrency, config } => {
+        Command::Build { dir, tag, env, compression, level, hermetic, keep_work, concurrency, config, oci, info } => {
             let mut env = parse_env(&env)?;
             if let Some(c) = config {
                 env.vars.insert("ACRO_CONFIG_FILE".into(), c);
@@ -289,14 +338,20 @@ async fn run(cli: Cli) -> Result<()> {
                 app_dir: std::fs::canonicalize(&dir).with_context(|| format!("{} not found", dir.display()))?,
                 home,
                 target,
-                env,
+                env: env.clone(),
                 layer: LayerOptions { compression, level, threads: 0 },
                 mirrors,
                 concurrency,
                 keep_work,
                 platform: acro_oci::image::host_platform(),
+                oci_out: oci.map(|p| std::path::absolute(&p)).transpose()?,
             };
-            let (_plan, res) = acro_build::build(opts, exec).await?;
+            let built = acro_build::build(opts, exec).await;
+            if let Some(path) = &info {
+                let plan = acro_build::plan_app(&std::fs::canonicalize(&dir)?, &env).ok();
+                std::fs::write(path, serde_json::to_vec_pretty(&build_info(plan.as_ref(), built.as_ref().ok().map(|(_, r)| r), built.as_ref().err()))?)?;
+            }
+            let (_plan, res) = built?;
             acro_events::emit(acro_events::Event::Stats(acro_events::stats()));
             acro_events::emit(acro_events::Event::BuildFinished {
                 ms: acro_events::elapsed_ms(),
@@ -341,6 +396,7 @@ async fn run(cli: Cli) -> Result<()> {
                 concurrency: 64,
                 keep_work: false,
                 platform: acro_oci::image::host_platform(),
+                oci_out: None,
             };
             let exec: Arc<dyn Executor> = Arc::new(HostExecutor { isolation: Isolation::None, readonly: Vec::new() });
             let res = acro_build::run::execute(plan, opts, exec).await;

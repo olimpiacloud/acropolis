@@ -47,7 +47,7 @@ pub fn plan(dir: &Path, env: &Env, name: &str, spec: ImageBuild) -> Result<Plan>
     b.step(
         "build",
         format!("build in {}", spec.build_image),
-        Action::ImageRun { image: spec.build_image.clone(), commands, env: run_env, network: true, mount_app: true, after: None, tools: vec![] },
+        Action::ImageRun { image: spec.build_image.clone(), commands, env: run_env, network: true, mount_app: true, after: None, tools: vec![], lowers: vec![] },
         &deps,
     );
     let from = if spec.outputs.is_empty() {

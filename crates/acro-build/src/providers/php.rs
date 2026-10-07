@@ -108,6 +108,7 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
             mount_app: true,
             after: None,
             tools: if has_composer { vec!["composer".into()] } else { vec![] },
+            lowers: vec![],
         },
         &deps,
     );
@@ -140,6 +141,7 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
                     mount_app: true,
                     after: Some("php-setup".into()),
                     tools: vec!["node".into()],
+                    lowers: vec![],
                 },
                 &["php-setup", "install", "node"],
             );

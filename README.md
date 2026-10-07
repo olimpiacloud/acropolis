@@ -4,6 +4,7 @@ Acropolis turns application source into an OCI image (or static artifacts) as fa
 
 ```
 acro build ./my-app -t registry.example.com/team/my-app:latest
+acro build ./my-app --oci image.tar --info info.json
 acro plan ./my-app
 acro inspect node:22-bookworm-slim
 acro bench --apps express-api,go-api --tools docker,railpack,acro --runs 2 --cpus 0-1
@@ -33,9 +34,13 @@ acro e2e --examples ../railpack/examples
 | Java, .NET, Deno, C/C++ | pom.xml, build.gradle, *.csproj, deno.json, CMakeLists.txt, meson.build | inside the official SDK image | | JRE, ASP.NET runtime, Debian slim |
 | Static sites, shell scripts | Staticfile, index.html, start.sh | | | Caddy, Debian slim |
 
+`railpack.json` / `acro.json` configs are honored: custom steps with `deployOutputs` (like BuildKit, steps nothing in the image depends on are skipped), `packages` beyond the language runtimes (installed with mise, e.g. `pipx:httpie`, `jq`), `buildAptPackages`, `deploy.aptPackages`, `deploy.paths` and `deploy.inputs` from images or local files.
+
 ## Running in production
 
 Run `acro` on builder machines as root (it needs mount namespaces and overlayfs). One process per build; builds can run concurrently against the same `--home`.
+
+**Output.** `-t` pushes to a registry; `--oci FILE` writes an OCI image layout tar (what `buildctl --output type=oci` produces, loadable with `docker load`); `--info FILE` writes a JSON summary in the shape of Railpack's info file (`detectedProviders`, `resolvedPackages`, `metadata`, `success`, `error`), also on failure.
 
 **Builder setup.** `acro prewarm` installs common toolchains ahead of time and precompiles the Go standard library (`--tools node:22,go:1.25,bun:latest,uv:latest,python:3.13`). Cap disk use with `acro gc --max-size 40G` on a timer, or set `ACRO_CACHE_MAX=40G` to collect after every build. GC evicts least recently used store blobs, toolchains, extracted rootfs and app caches; it never touches an app cache that a running build holds.
 

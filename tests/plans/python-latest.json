@@ -2,8 +2,7 @@
  "app": "python-latest",
  "facts": {
   "manager": "pyproject",
-  "python": "latest (mise.toml)",
-  "python-build": "free-threaded 3.14t (uv managed)"
+  "python": "latest (mise.toml)"
  },
  "image": {
   "cmd": [
@@ -27,7 +26,6 @@
    ]
   ],
   "layers": [
-   "layer-python",
    "layer-uv",
    "layer-app"
   ],
@@ -84,7 +82,6 @@
    "action": {
     "after": null,
     "commands": [
-     "uv python install 3.14t",
      "uv venv /app/.venv",
      "uv pip install --python /app/.venv/bin/python -r pyproject.toml"
     ],
@@ -95,9 +92,8 @@
      "UV_COMPILE_BYTECODE": "1",
      "UV_LINK_MODE": "copy",
      "UV_PROJECT_ENVIRONMENT": "/app/.venv",
-     "UV_PYTHON": "3.14t",
-     "UV_PYTHON_DOWNLOADS": "automatic",
-     "UV_PYTHON_INSTALL_DIR": "/opt/uv-python",
+     "UV_PYTHON": "/usr/local/bin/python3",
+     "UV_PYTHON_DOWNLOADS": "never",
      "UV_TOOL_DIR": "/tmp/uv-tools",
      "VIRTUAL_ENV": "/app/.venv"
     },
@@ -120,7 +116,9 @@
    "action": {
     "dest": "app",
     "from": {
-     "exclude": [],
+     "exclude": [
+      ".acro-runtime-debs"
+     ],
      "path": ".",
      "type": "work-dir"
     },
@@ -159,33 +157,13 @@
   },
   {
    "action": {
-    "dest": "",
-    "from": {
-     "exclude": [],
-     "include": [
-      "opt/uv-python"
-     ],
-     "step": "install",
-     "type": "upper"
-    },
-    "kind": "layer"
-   },
-   "deps": [
-    "install"
-   ],
-   "id": "layer-python",
-   "name": "layer free-threaded python"
-  },
-  {
-   "action": {
     "kind": "push"
    },
    "deps": [
     "base",
     "copy-base",
     "layer-uv",
-    "layer-app",
-    "layer-python"
+    "layer-app"
    ],
    "id": "push",
    "name": "push image"

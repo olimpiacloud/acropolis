@@ -118,8 +118,15 @@ pub fn apply(cfg: &Config, env: &mut Env) -> Result<()> {
         }
     }
     if !other_packages.is_empty() {
-        unsupported.push(format!("packages ({})", other_packages.join(", ")));
+        let specs: Vec<String> = cfg
+            .packages
+            .iter()
+            .filter(|(k, _)| other_packages.contains(k))
+            .map(|(k, v)| if v.is_empty() { format!("{k}@latest") } else { format!("{k}@{v}") })
+            .collect();
+        env.vars.insert("ACRO_MISE_PACKAGES".into(), specs.join(" "));
     }
+    let mut custom_steps = Vec::new();
     for (name, step) in &cfg.steps {
         let cmds = command_strings(step);
         match name.as_str() {
@@ -148,7 +155,13 @@ pub fn apply(cfg: &Config, env: &mut Env) -> Result<()> {
                     env.vars.entry(k.clone()).or_insert_with(|| v.clone());
                 }
             }
-            other => unsupported.push(format!("custom step {other:?}")),
+            other => custom_steps.push(serde_json::json!({
+                "name": other,
+                "commands": step.commands,
+                "variables": step.variables,
+                "secrets": step.secrets,
+                "deployOutputs": step.deploy_outputs,
+            })),
         }
     }
     if let Some(d) = &cfg.deploy {
@@ -159,12 +172,19 @@ pub fn apply(cfg: &Config, env: &mut Env) -> Result<()> {
         if !apt.is_empty() {
             env.vars.insert("ACRO_DEPLOY_APT_PACKAGES".into(), apt.join(" "));
         }
-        if d.inputs.iter().any(|i| i.get("image").is_some()) {
-            unsupported.push("deploy.inputs from images".into());
+        let inputs: Vec<&Value> = d.inputs.iter().filter(|i| i.is_object()).collect();
+        if !inputs.is_empty() {
+            env.vars.insert("ACRO_DEPLOY_INPUTS".into(), serde_json::to_string(&inputs)?);
+        }
+        if !d.paths.is_empty() {
+            env.vars.insert("ACRO_DEPLOY_PATHS".into(), d.paths.join(":"));
         }
         for (k, v) in &d.variables {
             env.vars.insert(format!("ACRO_DEPLOY_VAR_{k}"), v.clone());
         }
+    }
+    if !custom_steps.is_empty() {
+        env.vars.insert("ACRO_CUSTOM_STEPS".into(), serde_json::to_string(&custom_steps)?);
     }
     if let Some(p) = &cfg.provider {
         env.vars.insert("ACRO_PROVIDER".into(), p.clone());

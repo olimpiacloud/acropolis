@@ -69,6 +69,13 @@ pub fn assemble(base: Option<&ResolvedImage>, layers: &[Layer], patch: &ConfigPa
             .unwrap_or_default();
         for (k, v) in &patch.env {
             let prefix = format!("{k}=");
+            let placeholder = format!("${{{k}}}");
+            let v = if v.contains(&placeholder) {
+                let old = env.iter().find_map(|e| e.strip_prefix(&prefix)).unwrap_or(if k == "PATH" { DEFAULT_PATH } else { "" }).to_string();
+                v.replace(&placeholder, &old)
+            } else {
+                v.clone()
+            };
             env.retain(|e| !e.starts_with(&prefix));
             env.push(format!("{k}={v}"));
         }
@@ -208,3 +215,5 @@ pub async fn push_manifest(reg: &Registry, target: &Reference, a: &Assembled) ->
     let tag = target.tag.clone().unwrap_or_else(|| a.manifest_digest.clone());
     reg.put_manifest(target, &tag, a.manifest.clone(), image::MT_OCI_MANIFEST).await
 }
+
+const DEFAULT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";

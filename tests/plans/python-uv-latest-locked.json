@@ -82,7 +82,7 @@
    "action": {
     "after": null,
     "commands": [
-     "uv sync --locked --no-dev --no-editable"
+     "true"
     ],
     "env": {
      "PIP_DISABLE_PIP_VERSION_CHECK": "1",
@@ -115,7 +115,9 @@
    "action": {
     "dest": "app",
     "from": {
-     "exclude": [],
+     "exclude": [
+      ".acro-runtime-debs"
+     ],
      "path": ".",
      "type": "work-dir"
     },

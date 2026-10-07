@@ -1,6 +1,7 @@
 pub mod config;
 pub mod detect;
 pub mod errors;
+pub mod extend;
 pub mod gc;
 pub mod ignore;
 pub mod plan;
@@ -28,7 +29,12 @@ pub fn plan_app(dir: &Path, env: &Env) -> Result<Plan> {
     if let Some(cfg) = config::load(dir, &env)? {
         config::apply(&cfg, &mut env)?;
     }
-    let env = &env;
+    let mut plan = plan_provider(dir, &env)?;
+    extend::apply_all(&mut plan, &env)?;
+    Ok(plan)
+}
+
+fn plan_provider(dir: &Path, env: &Env) -> Result<Plan> {
     let name = app_name(dir);
     if let Some((root, fallback)) = providers::simple::staticfile_root(dir, env)
         && (env.config("STATIC_FILE_ROOT").is_some() || !detect::has_package_json(dir))
@@ -82,7 +88,18 @@ pub fn plan_app(dir: &Path, env: &Env) -> Result<Plan> {
         apply_runtime_packages(&mut plan, env)?;
         return Ok(plan);
     }
-    let app = detect::detect(dir, env)?;
+    let app = match detect::detect(dir, env) {
+        Ok(app) => app,
+        Err(e) => {
+            if forced.is_none() && env.config("START_CMD").is_some() {
+                let mut plan = providers::simple::plan_shell(dir, env, &name, "")?;
+                plan.provider = "custom".into();
+                apply_runtime_packages(&mut plan, env)?;
+                return Ok(plan);
+            }
+            return Err(e);
+        }
+    };
     let mut plan = match &app {
         App::Node(n) => providers::node::plan(n, env, &name)?,
         App::Go(g) => providers::go::plan(g, env, &name)?,
@@ -187,20 +204,7 @@ fn apply_mise_extras(plan: &mut Plan, dir: &Path, env: &Env) {
     plan.finalize();
 }
 
-fn check_build_apt(plan: &mut Plan, env: &Env) -> Result<()> {
-    let Some(pkgs) = providers::node::build_apt_packages(env) else { return Ok(()) };
-    if plan.facts.contains_key("build-apt-packages") {
-        return Ok(());
-    }
-    if plan.provider == "node" {
-        plan.warnings.push(format!("buildAptPackages ({pkgs}) not applied: this build path runs on the host"));
-        return Ok(());
-    }
-    anyhow::bail!("buildAptPackages ({pkgs}) is not supported for {} projects yet", plan.provider)
-}
-
 fn apply_runtime_packages(plan: &mut Plan, env: &Env) -> Result<()> {
-    check_build_apt(plan, env)?;
     let Some(pkgs) = plan.facts.get("runtime-packages").cloned() else { return apply_deploy_apt(plan, env) };
     let mut env2 = env.clone();
     let cur = env2.config("DEPLOY_APT_PACKAGES").map(|(v, _)| v).unwrap_or_default();
@@ -236,7 +240,7 @@ pub fn apply_deploy_apt(plan: &mut Plan, env: &Env) -> Result<()> {
         id: "apt".into(),
         name: format!("apt-get install {}", pkgs.join(" ")),
         deps: if image == "@base" { vec!["base".into()] } else { vec![] },
-        action: plan::Action::ImageRun { image, commands: vec![cmd], env: Default::default(), network: true, mount_app: false, after: None, tools: vec![] },
+        action: plan::Action::ImageRun { image, commands: vec![cmd], env: Default::default(), network: true, mount_app: false, after: None, tools: vec![], lowers: vec![] },
         hash: String::new(),
     };
     let layer = plan::Step {

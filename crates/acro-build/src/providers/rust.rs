@@ -138,7 +138,7 @@ fn plan_in_image(app: &RustApp, env: &Env, dir: &Path, name: &str) -> Result<Pla
     b.step(
         "build",
         format!("{cmd} (in {image})"),
-        Action::ImageRun { image, commands: vec![cmd], env: run_env, network: true, mount_app: true, after: None, tools: vec![] },
+        Action::ImageRun { image, commands: vec![cmd], env: run_env, network: true, mount_app: true, after: None, tools: vec![], lowers: vec![] },
         &["source"],
     );
     b.step(

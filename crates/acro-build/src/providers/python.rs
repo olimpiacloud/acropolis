@@ -211,8 +211,62 @@ fn mise_env_truthy(dir: &Path, key: &str) -> bool {
     false
 }
 
+fn python_minor(spec: &str) -> (u32, u32) {
+    let digits: String = spec.trim().trim_start_matches(['=', '~', '^', '>', '<', ' ', 'v']).chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    let mut it = digits.split('.').filter_map(|p| p.parse::<u32>().ok());
+    match (it.next(), it.next()) {
+        (Some(3), Some(m)) => (3, m),
+        _ => {
+            let d: Vec<u32> = DEFAULT_PYTHON.split('.').filter_map(|p| p.parse().ok()).collect();
+            if matches!(spec.trim(), "latest" | "*" | "3") { (3, LATEST_PYTHON_MINOR) } else { (d[0], d[1]) }
+        }
+    }
+}
+
+const LATEST_PYTHON_MINOR: u32 = 14;
+
+fn wheel_fits(wheel: &str, (major, minor): (u32, u32), ft: bool) -> bool {
+    let parts: Vec<&str> = wheel.trim_end_matches(".whl").split('-').collect();
+    if parts.len() < 5 {
+        return false;
+    }
+    let (py, abi, plat) = (parts[parts.len() - 3], parts[parts.len() - 2], parts[parts.len() - 1]);
+    let plat_ok = plat == "any" || plat.split('.').any(|p| (p.starts_with("manylinux") || p.starts_with("linux")) && p.ends_with("x86_64"));
+    if !plat_ok {
+        return false;
+    }
+    if abi == "none" {
+        return py.split('.').any(|t| t == "py3" || t == format!("py{major}{minor}") || t == format!("cp{major}{minor}"));
+    }
+    let want = format!("cp{major}{minor}{}", if ft { "t" } else { "" });
+    if abi == want {
+        return true;
+    }
+    if abi == "abi3" && !ft {
+        return py.split('.').any(|t| t.strip_prefix(&format!("cp{major}")).and_then(|m| m.parse::<u32>().ok()).map(|m| m <= minor).unwrap_or(false));
+    }
+    false
+}
+
+fn needs_compiler(dir: &Path, version: (u32, u32), ft: bool) -> bool {
+    let lock = read(dir, "uv.lock");
+    lock.split("[[package]]").skip(1).any(|pkg| {
+        if !pkg.contains("\nsdist = ") || pkg.contains("source = { virtual") || pkg.contains("source = { editable") {
+            return false;
+        }
+        let wheels: Vec<&str> = pkg.split("url = \"").skip(1).filter_map(|u| u.split('"').next()).filter(|u| u.ends_with(".whl")).map(|u| u.rsplit('/').next().unwrap_or(u)).collect();
+        !wheels.iter().any(|w| wheel_fits(w, version, ft))
+    })
+}
+
+fn uv_lock_installs_nothing(dir: &Path) -> bool {
+    let lock = read(dir, "uv.lock");
+    let pkgs: Vec<&str> = lock.split("[[package]]").skip(1).collect();
+    pkgs.iter().all(|p| p.contains("source = { virtual = \".\" }") && !p.contains("dependencies"))
+}
+
 fn freethreaded(dir: &Path, env: &Env, spec: &str) -> bool {
-    spec.ends_with('t')
+    (spec.ends_with('t') && spec[..spec.len() - 1].ends_with(|c: char| c.is_ascii_digit()))
         || mise_env_truthy(dir, "PYTHON_BUILD_FREE_THREADING")
         || env.vars.get("MISE_PYTHON_PRECOMPILED_FLAVOR").map(|f| f.contains("freethreaded")).unwrap_or(false)
 }
@@ -238,6 +292,7 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     let uv_spec = if uv_spec == "latest" { String::new() } else { uv_spec };
     b.step("uv", "uv", Action::Toolchain { tool: "uv".into(), spec: uv_spec, parts: vec![] }, &[]);
     let install: Vec<String> = match m {
+        Manager::Uv if uv_lock_installs_nothing(dir) => vec![],
         Manager::Uv => vec!["uv sync --locked --no-dev --no-editable".into()],
         Manager::Pip => vec!["uv venv /app/.venv".into(), "uv pip install --python /app/.venv/bin/python -r requirements.txt".into()],
         Manager::Poetry => vec![
@@ -298,6 +353,9 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
             runtime_pkgs.extend(runtime);
         }
     }
+    if needs_compiler(dir, python_minor(&v.spec), ft) {
+        build_pkgs.push("g++");
+    }
     if text.contains("git+") || read(dir, "uv.lock").contains("git = ") {
         build_pkgs.push("git");
     }
@@ -346,16 +404,20 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     if let Some((c, _)) = env.config("BUILD_CMD") {
         commands.push(c);
     }
+    let compiled = build_image != image && !commands.is_empty();
+    if compiled {
+        commands.push(crate::extend::scan_native_libs("/app/.venv /opt/uv-python", crate::extend::NATIVE_DEBS));
+    }
     if commands.is_empty() {
         commands.push("true".into());
     }
     b.step(
         "install",
         "install python dependencies",
-        Action::ImageRun { image: build_image.clone(), commands, env: env_map, network: true, mount_app: true, after: None, tools: vec!["uv".into()] },
+        Action::ImageRun { image: build_image.clone(), commands, env: env_map, network: true, mount_app: true, after: None, tools: vec!["uv".into()], lowers: vec![] },
         &["source", "uv"],
     );
-    b.step("layer-app", "layer app + .venv", Action::Layer { dest: "app".into(), from: LayerFrom::WorkDir { path: ".".into(), exclude: vec![] } }, &["install"]);
+    b.step("layer-app", "layer app + .venv", Action::Layer { dest: "app".into(), from: LayerFrom::WorkDir { path: ".".into(), exclude: vec![crate::extend::NATIVE_DEBS_FILE.into()] } }, &["install"]);
     b.step(
         "layer-uv",
         "layer uv CLI",
@@ -367,6 +429,34 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     );
     let mut push_deps = vec!["base", "copy-base", "layer-uv", "layer-app"];
     b.plan.image.layers = vec!["layer-uv".into(), "layer-app".into()];
+    if compiled {
+        b.step(
+            "native-libs",
+            "install shared libraries needed by compiled packages",
+            Action::ImageRun {
+                image: image.clone(),
+                commands: vec![crate::extend::install_missing_debs(crate::extend::NATIVE_DEBS, &runtime_pkgs)],
+                env: BTreeMap::new(),
+                network: true,
+                mount_app: true,
+                after: None,
+                tools: vec![],
+                lowers: vec![],
+            },
+            &["install"],
+        );
+        b.step(
+            "layer-native-libs",
+            "layer native package libraries",
+            Action::Layer {
+                dest: "".into(),
+                from: LayerFrom::Upper { step: "native-libs".into(), include: vec![], exclude: vec!["var/cache".into(), "var/log".into(), "root".into()] },
+            },
+            &["native-libs"],
+        );
+        push_deps.push("layer-native-libs");
+        b.plan.image.layers.insert(0, "layer-native-libs".into());
+    }
     if ft {
         b.step(
             "layer-python",
@@ -398,4 +488,38 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     }
     b.plan.image.entrypoint = Some(vec![]);
     Ok(b.finish())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn freethreaded_spec() {
+        let env = Env::default();
+        let dir = Path::new("/nonexistent");
+        assert!(!freethreaded(dir, &env, "latest"));
+        assert!(freethreaded(dir, &env, "3.14t"));
+        assert!(!freethreaded(dir, &env, "3.14"));
+    }
+
+    #[test]
+    fn wheels() {
+        let v = (3, 14);
+        assert!(wheel_fits("greenlet-3.2.4-cp314-cp314-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", v, false));
+        assert!(!wheel_fits("greenlet-3.2.4-cp314-cp314-manylinux_2_24_x86_64.whl", v, true));
+        assert!(wheel_fits("greenlet-3.2.4-cp314-cp314t-manylinux_2_24_x86_64.whl", v, true));
+        assert!(!wheel_fits("greenlet-3.2.4-cp313-cp313-manylinux_2_24_x86_64.whl", v, false));
+        assert!(!wheel_fits("greenlet-3.2.4-cp314-cp314-musllinux_1_2_x86_64.whl", v, false));
+        assert!(wheel_fits("six-1.16.0-py2.py3-none-any.whl", v, false));
+        assert!(wheel_fits("cryptography-44.0.0-cp39-abi3-manylinux_2_28_x86_64.whl", v, false));
+        assert!(!wheel_fits("cryptography-44.0.0-cp39-abi3-manylinux_2_28_x86_64.whl", v, true));
+    }
+
+    #[test]
+    fn minor_versions() {
+        assert_eq!(python_minor("3.12.1"), (3, 12));
+        assert_eq!(python_minor(">=3.11"), (3, 11));
+        assert_eq!(python_minor("latest"), (3, LATEST_PYTHON_MINOR));
+    }
 }

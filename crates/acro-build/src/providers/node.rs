@@ -601,6 +601,12 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
             if adapter_auto {
                 run_env.insert("GCP_BUILDPACKS".to_string(), "true".to_string());
             }
+            if app.framework == Framework::Next && !env.flag("NO_NFT_CACHE") {
+                let user = run_env.get("NODE_OPTIONS").cloned().map(|v| format!("{v} ")).unwrap_or_default();
+                run_env.insert("NODE_OPTIONS".to_string(), format!("{user}--require {{work}}/acro-nft-cache.js"));
+                run_env.insert("ACRO_NFT_CACHE".to_string(), "{src}/.next/cache/acro-nft-analysis.json".to_string());
+            }
+            let build_cmd = if adapter_auto { format!("{SVELTEKIT_ADAPTER_NODE} && {build_cmd}") } else { build_cmd };
             let network = matches!(app.framework, Framework::Next) || adapter_auto || env.flag("BUILD_NETWORK");
             if network {
                 b.plan.warnings.push("the build step runs with network access (next build may fetch fonts); it is not hermetic".into());
@@ -626,6 +632,7 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
                             mount_app: true,
                             after: None,
                             tools: vec!["node".into()],
+                            lowers: vec![],
                         }
                     }
                     None => Action::Run { argv: vec!["/bin/sh".into(), "-c".into(), build_cmd.clone()], env: run_env, network, cwd: ".".into() },
@@ -955,6 +962,8 @@ fn plan_bun_binary_lock(app: &NodeApp, env: &Env, mut b: PlanBuilder) -> Result<
     b.plan.warnings.push("bun.lockb is installed by the bun CLI with network access".into());
     Ok(b.finish())
 }
+
+const SVELTEKIT_ADAPTER_NODE: &str = r#"{ [ -e node_modules/@sveltejs/adapter-node ] || { v=$(node -p "(require('fs').readFileSync('node_modules/@sveltejs/adapter-auto/adapters.js','utf8').match(/adapter-node['\"],\s*version:\s*['\"]([^'\"]+)/)||[0,'latest'])[1]" 2>/dev/null || echo latest) && d="${TMPDIR:-/tmp}/sveltekit-adapter-node" && npm install --prefix "$d" --no-save --no-package-lock --no-audit --no-fund --legacy-peer-deps --loglevel=error "@sveltejs/adapter-node@$v" && mkdir -p node_modules/@sveltejs && ln -sfn "$d/node_modules/@sveltejs/adapter-node" node_modules/@sveltejs/adapter-node; }; }"#;
 
 fn native_bundle_eligible(app: &NodeApp, env: &Env, build_cmd: &str, lockfile: &str) -> Option<Vec<String>> {
     if app.framework != Framework::Vite || lockfile.is_empty() {

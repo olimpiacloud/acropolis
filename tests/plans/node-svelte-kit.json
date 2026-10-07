@@ -123,7 +123,7 @@
     "argv": [
      "/bin/sh",
      "-c",
-     "vite build"
+     "{ [ -e node_modules/@sveltejs/adapter-node ] || { v=$(node -p \"(require('fs').readFileSync('node_modules/@sveltejs/adapter-auto/adapters.js','utf8').match(/adapter-node['\\\"],\\s*version:\\s*['\\\"]([^'\\\"]+)/)||[0,'latest'])[1]\" 2>/dev/null || echo latest) && d=\"${TMPDIR:-/tmp}/sveltekit-adapter-node\" && npm install --prefix \"$d\" --no-save --no-package-lock --no-audit --no-fund --legacy-peer-deps --loglevel=error \"@sveltejs/adapter-node@$v\" && mkdir -p node_modules/@sveltejs && ln -sfn \"$d/node_modules/@sveltejs/adapter-node\" node_modules/@sveltejs/adapter-node; }; } && vite build"
     ],
     "cwd": ".",
     "env": {
@@ -141,7 +141,7 @@
     "install"
    ],
    "id": "build",
-   "name": "run vite build"
+   "name": "run { [ -e node_modules/@sveltejs/adapter-node ] || { v=$(node -p \"(require('fs').readFileSync('node_modules/@sveltejs/adapter-auto/adapters.js','utf8').match(/adapter-node['\\\"],\\s*version:\\s*['\\\"]([^'\\\"]+)/)||[0,'latest'])[1]\" 2>/dev/null || echo latest) && d=\"${TMPDIR:-/tmp}/sveltekit-adapter-node\" && npm install --prefix \"$d\" --no-save --no-package-lock --no-audit --no-fund --legacy-peer-deps --loglevel=error \"@sveltejs/adapter-node@$v\" && mkdir -p node_modules/@sveltejs && ln -sfn \"$d/node_modules/@sveltejs/adapter-node\" node_modules/@sveltejs/adapter-node; }; } && vite build"
   },
   {
    "action": {

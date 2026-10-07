@@ -31,6 +31,7 @@ pub struct BuildOptions {
     pub concurrency: usize,
     pub keep_work: bool,
     pub platform: Platform,
+    pub oci_out: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -41,6 +42,7 @@ pub struct BuildResult {
     pub layers: Vec<Layer>,
     pub base: Option<String>,
     pub ms: u64,
+    pub tools: Vec<(String, String)>,
 }
 
 pub struct NpmState {
@@ -110,6 +112,74 @@ fn save_node_caches(cache: &Path, cwd: &Path) {
             let _ = std::fs::rename(&live, &saved);
         }
     }
+}
+
+fn find_node_modules(root: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack = vec![(root.to_path_buf(), String::new(), 0usize)];
+    while let Some((dir, rel, depth)) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            let Ok(ft) = e.file_type() else { continue };
+            if !ft.is_dir() {
+                continue;
+            }
+            let name = e.file_name().to_string_lossy().into_owned();
+            let r = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+            if name == "node_modules" {
+                out.push(r);
+            } else if depth < 5 && !name.starts_with('.') {
+                stack.push((e.path(), r, depth + 1));
+            }
+        }
+    }
+    out
+}
+
+fn stash_node_modules(cache: &Path, src: &Path) {
+    let prev = cache.join("nm-prev");
+    if prev.exists() {
+        let old = cache.join(format!(".nm-old-{}", std::process::id()));
+        if std::fs::rename(&prev, &old).is_ok() {
+            std::thread::spawn(move || {
+                let _ = std::fs::remove_dir_all(old);
+            });
+        }
+    }
+    let Ok(key) = std::fs::read_to_string(cache.join("nm.key")) else { return };
+    let _ = std::fs::remove_file(cache.join("nm.key"));
+    let dirs = find_node_modules(src);
+    if dirs.is_empty() || std::fs::create_dir_all(&prev).is_err() {
+        return;
+    }
+    let mut list = Vec::new();
+    for (i, rel) in dirs.iter().enumerate() {
+        if std::fs::rename(src.join(rel), prev.join(i.to_string())).is_ok() {
+            list.push(format!("{i}\t{rel}"));
+        }
+    }
+    let _ = std::fs::write(prev.join(".list"), list.join("\n"));
+    let _ = std::fs::write(prev.join(".key"), key);
+}
+
+fn restore_node_modules(cache: &Path, src: &Path, key: &str) -> bool {
+    let prev = cache.join("nm-prev");
+    if std::fs::read_to_string(prev.join(".key")).ok().as_deref() != Some(key) {
+        return false;
+    }
+    let Ok(list) = std::fs::read_to_string(prev.join(".list")) else { return false };
+    for line in list.lines() {
+        let Some((i, rel)) = line.split_once('\t') else { continue };
+        let dest = src.join(rel);
+        if let Some(parent) = dest.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if dest.exists() || std::fs::rename(prev.join(i), &dest).is_err() {
+            return false;
+        }
+    }
+    let _ = std::fs::remove_dir_all(&prev);
+    true
 }
 
 struct Ctx {
@@ -227,6 +297,7 @@ pub async fn execute(plan: Plan, opts: BuildOptions, exec: Arc<dyn Executor>) ->
             acro_events::log("cache", format!("using app cache {}", c.dir.display()));
             let src = c.dir.join("src");
             if src.exists() {
+                stash_node_modules(&c.dir, &src);
                 let old = c.dir.join(format!(".src-old-{}", std::process::id()));
                 if std::fs::rename(&src, &old).is_ok() {
                     std::thread::spawn(move || {
@@ -238,7 +309,9 @@ pub async fn execute(plan: Plan, opts: BuildOptions, exec: Arc<dyn Executor>) ->
             }
             if let Ok(rd) = std::fs::read_dir(&c.dir) {
                 for e in rd.flatten() {
-                    if e.file_name().to_string_lossy().starts_with(".src-old-") && e.path() != c.dir.join(format!(".src-old-{}", std::process::id())) {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    let mine = name.ends_with(&format!("-{}", std::process::id())) || name.contains(&format!("-{}-", std::process::id()));
+                    if (name.starts_with(".src-old-") || name.starts_with(".nm-old-")) && !mine {
                         let p = e.path();
                         std::thread::spawn(move || {
                             let _ = std::fs::remove_dir_all(p);
@@ -389,6 +462,7 @@ pub async fn execute(plan: Plan, opts: BuildOptions, exec: Arc<dyn Executor>) ->
         layers,
         base: ctx.base().map(|b| b.reference.to_string()),
         ms: start.elapsed().as_millis() as u64,
+        tools: ctx.tools().into_iter().map(|t| (t.name, t.version)).collect(),
     })
 }
 
@@ -403,16 +477,7 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             resolve_base(ctx, step, &format!("node:{version}-{variant}")).await
         }
         Action::ResolveBaseLatest { template, github } => {
-            let url = format!("https://github.com/{github}/releases/latest");
-            let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build()?;
-            acro_events::add_request();
-            let resp = client.get(&url).send().await?;
-            let loc = resp
-                .headers()
-                .get(reqwest::header::LOCATION)
-                .and_then(|v| v.to_str().ok())
-                .ok_or_else(|| anyhow!("{url} did not redirect to a release"))?;
-            let tag = loc.rsplit('/').next().unwrap_or("").to_string();
+            let tag = github_latest_tag(github).await?;
             resolve_base(ctx, step, &template.replace("{tag}", &tag)).await
         }
         Action::CopyBase => {
@@ -515,6 +580,26 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                         publish(&tmp, &dest)?;
                     }
                     Ok(Out::Tool(Installed { name: "composer".into(), version: "latest-stable".into(), bin_dir: dest.join("bin"), root: dest, archive: None }))
+                }
+                "mise" => {
+                    let tag = if spec.is_empty() || spec == "latest" { github_latest_tag("jdx/mise").await? } else { format!("v{}", spec.trim_start_matches('v')) };
+                    let dest = ctx.opts.home.join("toolchains").join(format!("mise-{tag}"));
+                    if !dest.join(".acro-complete").exists() {
+                        let tmp = staging(&dest);
+                        let arch = if std::env::consts::ARCH == "aarch64" { "arm64" } else { "x64" };
+                        let file = format!("mise-{tag}-linux-{arch}-musl");
+                        let base = format!("https://github.com/jdx/mise/releases/download/{tag}");
+                        let sums = String::from_utf8_lossy(&fetcher.bytes(&format!("{base}/SHASUMS256.txt")).await?).into_owned();
+                        let expected = acro_toolchain::parse_shasums(&sums.replace("./", ""), &file)?;
+                        let blob = fetcher.blob(&file, &format!("{base}/{file}"), Some(expected)).await?;
+                        std::fs::create_dir_all(tmp.join("bin"))?;
+                        std::fs::copy(&blob.path, tmp.join("bin/mise"))?;
+                        use std::os::unix::fs::PermissionsExt;
+                        std::fs::set_permissions(tmp.join("bin/mise"), std::fs::Permissions::from_mode(0o755))?;
+                        publish(&tmp, &dest)?;
+                    }
+                    acro_events::log(&step.id, format!("mise {tag}"));
+                    Ok(Out::Tool(Installed { name: "mise".into(), version: tag, bin_dir: dest.join("bin"), root: dest, archive: None }))
                 }
                 t if t.starts_with("npm:") => {
                     let pkg = &t[4..];
@@ -654,6 +739,27 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                 .ok_or_else(|| anyhow!("install without fetched packages"))?;
             let root = if target == "src" { ctx.src.clone() } else { ctx.work.join(target) };
             std::fs::create_dir_all(&root)?;
+            let reuse = ctx.cache.as_ref().filter(|c| target == "src" && ctx.src.starts_with(&c.dir)).map(|c| c.dir.clone());
+            let mut versions: Vec<String> =
+                ctx.dep_outputs(step).into_iter().filter_map(|o| if let Out::Tool(t) = o { Some(format!("{}={}", t.name, t.version)) } else { None }).collect();
+            versions.sort();
+            let key = format!("{} {}", step.hash, versions.join(" "));
+            if let Some(cache_dir) = &reuse {
+                if restore_node_modules(cache_dir, &root, &key) {
+                    std::fs::write(cache_dir.join("nm.key"), &key)?;
+                    acro_events::log(&step.id, "reused node_modules from the previous build (same lockfile and toolchains)");
+                    return Ok(Out::None);
+                }
+                let prev = cache_dir.join("nm-prev");
+                if prev.exists() {
+                    let old = cache_dir.join(format!(".nm-old-{}-{}", std::process::id(), step.id));
+                    if std::fs::rename(&prev, &old).is_ok() {
+                        std::thread::spawn(move || {
+                            let _ = std::fs::remove_dir_all(old);
+                        });
+                    }
+                }
+            }
             if target != "src" {
                 let _ = std::fs::copy(ctx.opts.app_dir.join("package.json"), root.join("package.json"));
             }
@@ -679,6 +785,9 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                     });
                 }
                 run_lifecycle(ctx, step, &root, &jobs).await?;
+            }
+            if let Some(cache_dir) = &reuse {
+                std::fs::write(cache_dir.join("nm.key"), &key)?;
             }
             Ok(Out::None)
         }
@@ -807,6 +916,9 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             for (k, v) in env {
                 full_env.insert(k.clone(), ctx.subst(v));
             }
+            if env.contains_key("ACRO_NFT_CACHE") {
+                std::fs::write(ctx.work.join("acro-nft-cache.js"), NFT_CACHE_HOOK)?;
+            }
             let argv: Vec<String> = argv.iter().map(|a| ctx.subst(a)).collect();
             let goflags_vendor = argv.iter().any(|a| a == "-mod=vendor");
             if goflags_vendor {
@@ -827,7 +939,7 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             res?;
             Ok(Out::None)
         }
-        Action::ImageRun { image, commands, env, network, mount_app, after, tools } => {
+        Action::ImageRun { image, commands, env, network, mount_app, after, tools, lowers } => {
             let image = if image == "@base" {
                 ctx.base().map(|b| b.reference.to_string()).ok_or_else(|| anyhow!("no base image resolved"))?
             } else if let Some(variant) = image.strip_prefix("@base-variant:") {
@@ -841,7 +953,7 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                 resolve_alias(ctx, image).await?
             };
             let (mut lower, image_env) = image_rootfs(ctx, &image).await?;
-            if let Some(prev) = after {
+            for prev in after.iter().chain(lowers.iter()) {
                 match ctx.get(prev) {
                     Out::Upper(p) => lower.push(p),
                     _ => bail!("step {prev} has no filesystem output"),
@@ -854,7 +966,10 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             full_env.insert("HOME".into(), "/root".into());
             full_env.insert("SOURCE_DATE_EPOCH".into(), "0".into());
             for (k, v) in env {
-                full_env.insert(k.clone(), ctx.subst(v));
+                let v = ctx.subst(v);
+                let placeholder = format!("${{{k}}}");
+                let v = if v.contains(&placeholder) { v.replace(&placeholder, full_env.get(k).map(|s| s.as_str()).unwrap_or("")) } else { v };
+                full_env.insert(k.clone(), v);
             }
             let mut binds = Vec::new();
             let installed = ctx.tools();
@@ -952,6 +1067,10 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                 labels,
             };
             let assembled = assemble::assemble(base.as_deref(), &layers, &patch)?;
+            if let Some(out) = &ctx.opts.oci_out {
+                write_oci_layout(ctx, base.as_deref(), &layers, &assembled, out).await?;
+                acro_events::log(&step.id, format!("wrote OCI layout {}", out.display()));
+            }
             if let Some(target) = &ctx.opts.target {
                 assemble::push_layers(&ctx.registry, target, &layers).await?;
                 let digest = assemble::push_manifest(&ctx.registry, target, &assembled).await?;
@@ -1008,6 +1127,7 @@ async fn run_lifecycle(ctx: &Arc<Ctx>, step: &Step, root: &Path, jobs: &[acro_np
             let mut path = vec![
                 pkg_dir.join("node_modules/.bin").to_string_lossy().into_owned(),
                 root.join("node_modules/.bin").to_string_lossy().into_owned(),
+                npm_dir.join("node_modules/@npmcli/run-script/lib/node-gyp-bin").to_string_lossy().into_owned(),
                 npm_dir.join("bin/node-gyp-bin").to_string_lossy().into_owned(),
             ];
             for t in &tools {
@@ -1306,6 +1426,81 @@ async fn resolve_base(ctx: &Arc<Ctx>, step: &Step, image: &str) -> Result<Out> {
     Ok(Out::Base(Arc::new(resolved)))
 }
 
+async fn write_oci_layout(ctx: &Arc<Ctx>, base: Option<&ResolvedImage>, layers: &[Layer], a: &assemble::Assembled, out: &Path) -> Result<()> {
+    let mut blobs: Vec<(String, PathBuf)> = Vec::new();
+    if let Some(b) = base {
+        let futs = b.manifest.layers.iter().map(|d| async move {
+            let (url, headers) = ctx.registry.blob_location(&b.reference, &d.digest).await?;
+            let expected = acro_store::Integrity::parse_oci(&d.digest)?;
+            let blob = ctx.fetcher.blob_with(&d.digest, &url, &headers, Some(expected)).await?;
+            Ok::<_, anyhow::Error>((d.digest.trim_start_matches("sha256:").to_string(), blob.path))
+        });
+        blobs.extend(futures::future::try_join_all(futs).await?);
+    }
+    for l in layers {
+        blobs.push((l.digest.hex(), l.path.clone()));
+    }
+    let mut desc = serde_json::json!({
+        "mediaType": acro_oci::image::MT_OCI_MANIFEST,
+        "digest": a.manifest_digest,
+        "size": a.manifest.len(),
+    });
+    if let Some(t) = &ctx.opts.target {
+        desc["annotations"] = serde_json::json!({ "org.opencontainers.image.ref.name": t.tag.clone().unwrap_or_else(|| "latest".into()), "io.containerd.image.name": t.to_string() });
+    }
+    let index = serde_json::json!({ "schemaVersion": 2, "mediaType": acro_oci::image::MT_OCI_INDEX, "manifests": [desc] });
+    let manifest = a.manifest.clone();
+    let config = a.config.clone();
+    let manifest_hex = a.manifest_digest.trim_start_matches("sha256:").to_string();
+    let config_hex = a.config_digest.trim_start_matches("sha256:").to_string();
+    let out = out.to_path_buf();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let tmp = out.with_extension("tmp");
+        let file = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(&tmp)?);
+        let mut tw = TarWriter::new(file);
+        tw.dir("blobs", 0o755)?;
+        tw.dir("blobs/sha256", 0o755)?;
+        tw.file_bytes("oci-layout", 0o644, br#"{"imageLayoutVersion":"1.0.0"}"#)?;
+        tw.file_bytes("index.json", 0o644, serde_json::to_vec(&index)?.as_slice())?;
+        tw.file_bytes(&format!("blobs/sha256/{manifest_hex}"), 0o644, &manifest)?;
+        tw.file_bytes(&format!("blobs/sha256/{config_hex}"), 0o644, &config)?;
+        let mut seen = std::collections::HashSet::new();
+        for (hex, path) in blobs {
+            if !seen.insert(hex.clone()) {
+                continue;
+            }
+            let mut f = std::fs::File::open(&path).with_context(|| format!("opening blob {}", path.display()))?;
+            let size = f.metadata()?.len();
+            tw.file_reader(&format!("blobs/sha256/{hex}"), 0o644, size, &mut f)?;
+        }
+        let mut w = tw.finish()?;
+        std::io::Write::flush(&mut w)?;
+        drop(w);
+        std::fs::rename(&tmp, &out)?;
+        Ok(())
+    })
+    .await??;
+    Ok(())
+}
+
+const NFT_CACHE_HOOK: &str = include_str!("nft-cache.js");
+
+async fn github_latest_tag(repo: &str) -> Result<String> {
+    let url = format!("https://github.com/{repo}/releases/latest");
+    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build()?;
+    acro_events::add_request();
+    let resp = client.get(&url).send().await?;
+    let loc = resp
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| anyhow!("{url} did not redirect to a release"))?;
+    Ok(loc.rsplit('/').next().unwrap_or("").to_string())
+}
+
 async fn build_layer(ctx: &Arc<Ctx>, step: &Step, dest: &str, from: &LayerFrom) -> Result<Layer> {
     let opts = ctx.opts.layer;
     let store = ctx.store.clone();
@@ -1475,6 +1670,47 @@ async fn build_layer(ctx: &Arc<Ctx>, step: &Step, dest: &str, from: &LayerFrom) 
                     tw.file_bytes(&p, mode, content.as_bytes())?;
                 }
                 layer::from_fragments(&store, &comment, vec![std::mem::take(tw.get_mut())], opts)
+            })
+            .await?
+        }
+        LayerFrom::Image { image, include } => {
+            let (layers, _) = image_rootfs(ctx, image).await?;
+            let include = include.clone();
+            let image = image.clone();
+            tokio::task::spawn_blocking(move || {
+                let mut b = layer::LayerBuilder::new(&store, &comment, opts)?;
+                let ig = Ignore::new(&[".wh.*".into(), "**/.wh.*".into()]);
+                for path in &include {
+                    let rel = path.trim_matches('/');
+                    let target = if dest.is_empty() { rel.to_string() } else { format!("{dest}/{rel}") };
+                    let found: Vec<PathBuf> = layers.iter().map(|l| l.join(rel)).filter(|p| std::fs::symlink_metadata(p).is_ok()).collect();
+                    if found.is_empty() {
+                        bail!("{rel} not found in {image}");
+                    }
+                    let mut head = TarWriter::new(Vec::new());
+                    let parent = Path::new(&target).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+                    for d in source::ancestors(&parent) {
+                        head.dir(&d, 0o755)?;
+                    }
+                    std::io::Write::write_all(&mut b, head.get_mut())?;
+                    for p in found {
+                        let meta = std::fs::symlink_metadata(&p)?;
+                        let mut tw = TarWriter::new(Vec::new());
+                        if meta.file_type().is_symlink() {
+                            tw.symlink(&target, &std::fs::read_link(&p)?.to_string_lossy())?;
+                            std::io::Write::write_all(&mut b, tw.get_mut())?;
+                        } else if meta.is_file() {
+                            use std::os::unix::fs::PermissionsExt;
+                            let mut f = std::fs::File::open(&p)?;
+                            tw.file_reader(&target, meta.permissions().mode() & 0o7777, meta.len(), &mut f)?;
+                            std::io::Write::write_all(&mut b, tw.get_mut())?;
+                        } else {
+                            let entries = source::walk(&p, &ig)?;
+                            source::stream_tree_into(&p, &entries, &target, true, &mut b)?;
+                        }
+                    }
+                }
+                b.finish()
             })
             .await?
         }

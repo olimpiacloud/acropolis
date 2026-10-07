@@ -42,6 +42,8 @@ pub enum Action {
         after: Option<String>,
         #[serde(default)]
         tools: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        lowers: Vec<String>,
     },
     Layer { dest: String, from: LayerFrom },
     Push,
@@ -60,6 +62,7 @@ pub enum LayerFrom {
     ToolTree { tool: String },
     Upper { step: String, include: Vec<String>, exclude: Vec<String> },
     Inline { files: BTreeMap<String, String> },
+    Image { image: String, include: Vec<String> },
 }
 
 fn default_target() -> String {

@@ -319,12 +319,20 @@ fn run_http_check(image: &str, case: &TestCase, hc: &HttpCheck, network: Option<
             let logs = logs
                 .map(|o| format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)))
                 .unwrap_or_default();
-            break Err(anyhow::anyhow!("http check {url} wanted {want}, last {last}\nlogs: {}", logs.chars().rev().take(1500).collect::<String>().chars().rev().collect::<String>()));
+            break Err(anyhow::anyhow!("http check {url} wanted {want}, last {last}\nlogs: {}", head_tail(&logs, 1500, 1500)));
         }
         std::thread::sleep(Duration::from_millis(200));
     };
     let _ = docker(&["rm", "-f", name]);
     result
+}
+
+fn head_tail(text: &str, head: usize, tail: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= head + tail {
+        return text.to_string();
+    }
+    format!("{}\n[...]\n{}", chars[..head].iter().collect::<String>(), chars[chars.len() - tail..].iter().collect::<String>())
 }
 
 fn run_case(cfg: &E2eConfig, example: &str, idx: usize, case: &TestCase) -> CaseResult {

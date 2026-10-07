@@ -114,6 +114,9 @@ fn image_for(spec: &str) -> String {
     format!("ruby:{v}-slim")
 }
 
+const RAILS_SECRET_FALLBACK: &str =
+    r#"[ -n "$SECRET_KEY_BASE$RAILS_MASTER_KEY" ] || export SECRET_KEY_BASE="$(ruby -rsecurerandom -e 'print SecureRandom.hex(64)')""#;
+
 pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     let mut b = PlanBuilder::new(name, "ruby");
     let v = version(dir, env);
@@ -142,11 +145,12 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     commands.push("bundle install --jobs 4".into());
     let has_node = dir.join("package.json").exists();
     if rails && dir.join("app/assets").exists() && !has_node {
-        commands.push("SECRET_KEY_BASE_DUMMY=1 bundle exec rake assets:precompile".into());
+        commands.push("SECRET_KEY_BASE_DUMMY=1 SECRET_KEY_BASE=\"${SECRET_KEY_BASE:-assets-precompile-placeholder}\" bundle exec rake assets:precompile".into());
     }
     if let Some((c, _)) = env.config("BUILD_CMD") {
         commands.push(c);
     }
+    commands.push(crate::extend::scan_native_libs("/usr/local/bundle", crate::extend::NATIVE_DEBS));
     let mut run_env = BTreeMap::new();
     for (k, v) in [
         ("BUNDLE_WITHOUT", "development:test"),
@@ -164,10 +168,10 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     b.step(
         "install",
         format!("bundle install (in {build_image})"),
-        Action::ImageRun { image: build_image.clone(), commands, env: run_env.clone(), network: true, mount_app: true, after: None, tools: vec![] },
+        Action::ImageRun { image: build_image.clone(), commands, env: run_env.clone(), network: true, mount_app: true, after: None, tools: vec![], lowers: vec![] },
         &["source"],
     );
-    b.step("layer-app", "layer app", Action::Layer { dest: "app".into(), from: LayerFrom::WorkDir { path: ".".into(), exclude: vec![] } }, &["install"]);
+    b.step("layer-app", "layer app", Action::Layer { dest: "app".into(), from: LayerFrom::WorkDir { path: ".".into(), exclude: vec![crate::extend::NATIVE_DEBS_FILE.into()] } }, &["install"]);
     b.step(
         "layer-gems",
         "layer gems (/usr/local/bundle)",
@@ -195,6 +199,7 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
             mount_app: false,
             after: None,
             tools: vec![],
+            lowers: vec![],
         },
         &[],
     );
@@ -207,9 +212,33 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
         },
         &["runtime-libs"],
     );
-    b.step("push", "push image", Action::Push, &["base", "copy-base", "layer-libs", "layer-gems", "layer-app"]);
+    b.step(
+        "native-libs",
+        "install shared libraries needed by native gems",
+        Action::ImageRun {
+            image: image.clone(),
+            commands: vec![crate::extend::install_missing_debs(crate::extend::NATIVE_DEBS, &[])],
+            env: BTreeMap::new(),
+            network: true,
+            mount_app: true,
+            after: None,
+            tools: vec![],
+            lowers: vec!["runtime-libs".into()],
+        },
+        &["runtime-libs", "install"],
+    );
+    b.step(
+        "layer-native-libs",
+        "layer native gem libraries",
+        Action::Layer {
+            dest: "".into(),
+            from: LayerFrom::Upper { step: "native-libs".into(), include: vec![], exclude: vec!["var/cache".into(), "var/log".into(), "root".into()] },
+        },
+        &["native-libs"],
+    );
+    b.step("push", "push image", Action::Push, &["base", "copy-base", "layer-libs", "layer-native-libs", "layer-gems", "layer-app"]);
     b.plan.warnings.push("gems are installed with network access inside the base image".into());
-    b.plan.image.layers = vec!["layer-libs".into(), "layer-gems".into(), "layer-app".into()];
+    b.plan.image.layers = vec!["layer-libs".into(), "layer-native-libs".into(), "layer-gems".into(), "layer-app".into()];
     b.plan.image.workdir = Some("/app".into());
     let mut img_env: Vec<(String, String)> = run_env
         .iter()
@@ -221,6 +250,11 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     img_env.push(("RAILS_LOG_TO_STDOUT".into(), "enabled".into()));
     img_env.push(("RAILS_SERVE_STATIC_FILES".into(), "true".into()));
     b.plan.image.env = img_env;
+    let start = if rails && !dir.join("config/master.key").exists() && !dir.join("config/credentials/production.key").exists() {
+        format!("{RAILS_SECRET_FALLBACK}; {start}")
+    } else {
+        start
+    };
     b.plan.image.cmd = Some(vec!["/bin/sh".into(), "-c".into(), start]);
     b.plan.image.entrypoint = Some(vec![]);
     Ok(b.finish())

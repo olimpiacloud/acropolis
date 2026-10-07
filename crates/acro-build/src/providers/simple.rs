@@ -98,7 +98,7 @@ pub fn plan_shell(dir: &Path, env: &Env, name: &str, script: &str) -> Result<Pla
         b.step(
             "build",
             format!("run {}", commands.join(" && ")),
-            Action::ImageRun { image: base.into(), commands, env: BTreeMap::new(), network: false, mount_app: true, after: None, tools: vec![] },
+            Action::ImageRun { image: base.into(), commands, env: BTreeMap::new(), network: false, mount_app: true, after: None, tools: vec![], lowers: vec![] },
             &["source"],
         );
         b.step(
