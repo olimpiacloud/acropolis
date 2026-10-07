@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
@@ -29,6 +29,7 @@ pub struct BenchConfig {
     pub railpack_frontend: String,
     pub compression: String,
     pub drop_caches: bool,
+    pub scenario: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -50,6 +51,8 @@ pub struct RunResult {
     pub digest: String,
     pub error: Option<String>,
     pub started_at: String,
+    #[serde(default)]
+    pub scenario: String,
 }
 
 const REGISTRY_NAME: &str = "acro-bench-registry";
@@ -184,6 +187,10 @@ fn reset_builder(cfg: &BenchConfig) -> Result<PathBuf> {
     }
     let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     docker(&refs)?;
+    builder_cgroup()
+}
+
+fn builder_cgroup() -> Result<PathBuf> {
     let id = docker(&["inspect", "-f", "{{.Id}}", &format!("buildx_buildkit_{BUILDER}0")])?;
     let id = id.trim();
     let candidates = [
@@ -273,7 +280,40 @@ fn acro_variant(cfg: &BenchConfig, tool: &str) -> Option<(String, PathBuf)> {
     Some((format!("acro@{label}"), PathBuf::from(path)))
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Cold,
+    Prime,
+    Rebuild,
+}
+
+const TOUCH_CANDIDATES: &[&str] =
+    &["src/app/page.tsx", "src/routes/index.tsx", "src/App.tsx", "src/main.rs", "main.go", "index.js", "server.js", "app.py", "main.py"];
+
+fn touch_source(dir: &Path) -> Result<()> {
+    let f = TOUCH_CANDIDATES.iter().map(|c| dir.join(c)).find(|p| p.exists()).ok_or_else(|| anyhow!("no source file to modify in {}", dir.display()))?;
+    let mut text = fs::read_to_string(&f)?;
+    text.push_str(&format!("\n// rebuild {}\n", chrono_now()));
+    fs::write(&f, text)?;
+    Ok(())
+}
+
+fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
+    let _ = fs::remove_dir_all(dst);
+    let ok = Command::new("cp").arg("-a").arg(src).arg(dst).status()?.success();
+    if !ok {
+        bail!("copying {} failed", src.display());
+    }
+    Ok(())
+}
+
 fn run_one(cfg: &BenchConfig, app: &AppSpec, tool_spec: &str, run: usize, iface: &str, log_dir: &Path) -> RunResult {
+    let dir = cfg.repo.join("bench/apps").join(&app.name);
+    run_phase(cfg, app, tool_spec, run, iface, log_dir, Phase::Cold, &dir)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_phase(cfg: &BenchConfig, app: &AppSpec, tool_spec: &str, run: usize, iface: &str, log_dir: &Path, phase: Phase, app_dir: &Path) -> RunResult {
     let acro = acro_variant(cfg, tool_spec);
     let tool_label = acro.as_ref().map(|(l, _)| l.clone()).unwrap_or_else(|| tool_spec.to_string());
     let tool_slug: String = tool_label.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '.' { c } else { '-' }).collect();
@@ -286,14 +326,25 @@ fn run_one(cfg: &BenchConfig, app: &AppSpec, tool_spec: &str, run: usize, iface:
         started_at: chrono_now(),
         ..Default::default()
     };
-    let app_dir = cfg.repo.join("bench/apps").join(&app.name);
+    let app_dir = app_dir.to_path_buf();
+    r.scenario = match phase {
+        Phase::Cold => "cold",
+        Phase::Prime => "prime",
+        Phase::Rebuild => "rebuild",
+    }
+    .to_string();
     let reference = format!("localhost:{REGISTRY_PORT}/bench/{}:{tool_slug}-{run}", app.name);
-    let log_path = log_dir.join(format!("{}-{tool_slug}-{run}.log", app.name));
+    let suffix = if phase == Phase::Cold { String::new() } else { format!("-{}", r.scenario) };
+    let log_path = log_dir.join(format!("{}-{tool_slug}-{run}{suffix}.log", app.name));
     let res = (|| -> Result<()> {
-        reset_registry()?;
+        if phase != Phase::Rebuild {
+            reset_registry()?;
+        }
         let mut builder_cg = None;
         let acro_home = std::env::temp_dir().join(format!("acro-bench-home-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&acro_home);
+        if phase != Phase::Rebuild {
+            let _ = fs::remove_dir_all(&acro_home);
+        }
         let cg = PathBuf::from(format!("/sys/fs/cgroup/acro-bench-{}", std::process::id()));
         if tool == "acro" {
             let _ = fs::remove_dir(&cg);
@@ -303,9 +354,9 @@ fn run_one(cfg: &BenchConfig, app: &AppSpec, tool_spec: &str, run: usize, iface:
                 fs::write(cg.join("memory.max"), parse_mem(m).to_string())?;
             }
         } else {
-            builder_cg = Some(reset_builder(cfg)?);
+            builder_cg = Some(if phase == Phase::Rebuild { builder_cgroup()? } else { reset_builder(cfg)? });
         }
-        if cfg.drop_caches {
+        if cfg.drop_caches && phase != Phase::Rebuild {
             drop_caches();
         }
         let before_cg = builder_cg.as_ref().map(|p| cg_stats(p));
@@ -379,7 +430,9 @@ fn run_one(cfg: &BenchConfig, app: &AppSpec, tool_spec: &str, run: usize, iface:
             r.cpu_s = s.cpu_usec as f64 / 1e6;
             r.peak_mem_mb = s.peak as f64 / 1e6;
             r.disk_write_mb = s.wbytes as f64 / 1e6;
-            let _ = fs::remove_dir_all(&acro_home);
+            if phase != Phase::Prime {
+                let _ = fs::remove_dir_all(&acro_home);
+            }
             let _ = fs::remove_dir(&cg);
         } else if let (Some(p), Some(b)) = (builder_cg.as_ref(), before_cg) {
             let s = cg_stats(p);
@@ -467,7 +520,27 @@ pub fn run(cfg: BenchConfig) -> Result<Vec<RunResult>> {
             let app = specs.iter().find(|s| &s.name == name).with_context(|| format!("unknown app {name}"))?;
             for tool in &cfg.tools {
                 eprintln!("[bench] {} {} run {} on cpus {}", app.name, tool, run, cfg.cpus);
-                let r = run_one(&cfg, app, tool, run, &iface, &log_dir);
+                let r = if cfg.scenario == "rebuild" {
+                    let work = std::env::temp_dir().join(format!("acro-bench-app-{}", std::process::id())).join(&app.name);
+                    let prepared = fs::create_dir_all(work.parent().unwrap())
+                        .map_err(anyhow::Error::from)
+                        .and_then(|_| copy_dir(&cfg.repo.join("bench/apps").join(&app.name), &work));
+                    let prime = match prepared {
+                        Ok(()) => run_phase(&cfg, app, tool, run, &iface, &log_dir, Phase::Prime, &work),
+                        Err(e) => RunResult { app: app.name.clone(), tool: tool.clone(), run, error: Some(format!("{e:#}")), ..Default::default() },
+                    };
+                    eprintln!("[bench]   prime ok={} wall={:.1}s", prime.ok, prime.wall_s);
+                    if prime.ok {
+                        match touch_source(&work) {
+                            Ok(()) => run_phase(&cfg, app, tool, run, &iface, &log_dir, Phase::Rebuild, &work),
+                            Err(e) => RunResult { scenario: "rebuild".into(), error: Some(format!("{e:#}")), ..prime },
+                        }
+                    } else {
+                        RunResult { scenario: "rebuild".into(), ok: false, error: Some(format!("prime failed: {}", prime.error.clone().unwrap_or_default())), ..prime }
+                    }
+                } else {
+                    run_one(&cfg, app, tool, run, &iface, &log_dir)
+                };
                 eprintln!(
                     "[bench]   ok={} verified={} wall={:.1}s cpu={:.1}s mem={:.0}MB net={:.1}MB disk={:.1}MB image={:.1}MB {}",
                     r.ok,

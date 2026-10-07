@@ -57,7 +57,7 @@ if [ "${AB:-0}" = 1 ]; then
   tools="acro@$plabel=$base,acro@$rev-$stamp=$bin"
   out="bench/results/ab-$plabel-vs-$rev-$stamp.jsonl"
 elif [ "$tools" != acro ]; then
-  out="bench/results/full-$rev-$stamp.jsonl"
+  out="bench/results/full-${SCENARIO:-cold}-$rev-$stamp.jsonl"
 fi
 log="/tmp/acro-bench-$stamp.log"
 
@@ -65,7 +65,7 @@ systemd-run --quiet --collect --unit "$UNIT" -p OOMPolicy=continue \
   --working-directory="$PWD" --setenv=PATH="$PATH" --setenv=HOME="$HOME" \
   -p StandardOutput="file:$log" -p StandardError="file:$log" \
   "$bin" bench --apps "${APPS:-express-api,go-api,rust-api,vite-react,vite-mui,tanstack-start,next15}" \
-  --tools "$tools" --runs "${RUNS:-2}" --cpus "${CPUS:-0-1}" --mirror "${MIRROR:-off}" \
+  --tools "$tools" --runs "${RUNS:-2}" --cpus "${CPUS:-0-1}" --mirror "${MIRROR:-off}" --scenario "${SCENARIO:-cold}" \
   --repo . --railpack "$EXT/tools/railpack" --out "$out" "$@"
 
 echo "started $UNIT: $out (log $log)"
