@@ -40,7 +40,7 @@ systemd-run --quiet --collect --unit "$UNIT" \
   -p OOMPolicy=continue -p MemoryMax="${MEM:-6G}" -p MemorySwapMax=1G \
   --working-directory="$PWD" --setenv=PATH="$PATH" --setenv=HOME="$HOME" \
   -p StandardOutput="file:$log" -p StandardError="file:$log" \
-  nice -n 5 "$bin" --home "$HOME_DIR" e2e --examples "$EXAMPLES" --jobs "${JOBS:-3}" --out "$out" "$@"
+  nice -n 5 "$bin" --home "$HOME_DIR" e2e --examples "$EXAMPLES" --jobs "${JOBS:-4}" --out "$out" "$@"
 
 echo "started $UNIT: binary $bin"
 echo "  results: $out"

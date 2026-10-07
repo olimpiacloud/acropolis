@@ -6,7 +6,7 @@ use std::path::Path;
 
 pub const DEFAULT_RUBY: &str = "3.4";
 
-pub const APT_ARCHIVE_FIX: &str = ". /etc/os-release; case \"$VERSION_CODENAME\" in jessie|stretch|buster) sed -i -e 's|deb.debian.org|archive.debian.org|g' -e 's|security.debian.org|archive.debian.org|g' -e '/-updates/d' /etc/apt/sources.list ;; esac";
+pub const APT_ARCHIVE_FIX: &str = ". /etc/os-release; case \"$VERSION_CODENAME\" in jessie|stretch|buster|bullseye) sed -i -e 's|deb.debian.org|archive.debian.org|g' -e 's|security.debian.org|archive.debian.org|g' -e '/-updates/d' /etc/apt/sources.list; echo 'Acquire::Check-Valid-Until \"false\";' > /etc/apt/apt.conf.d/99acro-archive ;; esac";
 
 pub fn is_ruby(dir: &Path) -> bool {
     dir.join("Gemfile").exists()

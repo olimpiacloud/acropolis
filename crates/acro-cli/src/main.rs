@@ -59,6 +59,10 @@ enum Command {
         #[arg(long)]
         max_size: String,
     },
+    Prewarm {
+        #[arg(long, value_delimiter = ',', default_value = "node:lts,node:22,node:24,go:latest,bun:latest,uv:latest")]
+        tools: Vec<String>,
+    },
     Bench {
         #[arg(long, value_delimiter = ',', default_value = "express-api,go-api")]
         apps: Vec<String>,
@@ -305,6 +309,42 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Command::Bench { .. } | Command::Report { .. } | Command::E2e { .. } => unreachable!(),
+        Command::Prewarm { tools } => {
+            let mut b = acro_build::plan::PlanBuilder::new("prewarm", "prewarm");
+            for (i, t) in tools.iter().enumerate() {
+                let (tool, spec) = t.split_once(':').unwrap_or((t.as_str(), "latest"));
+                let spec = if spec == "latest" && tool != "node" { String::new() } else { spec.to_string() };
+                let parts = if tool == "node" { vec!["npm".to_string(), "headers".to_string()] } else { vec![] };
+                let tool = if tool == "python" { "python-standalone" } else { tool };
+                b.step(
+                    &format!("tool-{i}"),
+                    format!("{tool} {}", if spec.is_empty() { "latest" } else { &spec }),
+                    acro_build::plan::Action::Toolchain { tool: tool.to_string(), spec, parts },
+                    &[],
+                );
+            }
+            let plan = b.finish();
+            let scratch = std::env::temp_dir().join(format!("acro-prewarm-{}", std::process::id()));
+            std::fs::create_dir_all(&scratch)?;
+            let mut env = Env::default();
+            env.vars.insert("ACRO_PREWARM".into(), "1".into());
+            let opts = BuildOptions {
+                app_dir: scratch.clone(),
+                home: home.clone(),
+                target: None,
+                env,
+                layer: LayerOptions { compression: Compression::Zstd, level: 0, threads: 0 },
+                mirrors,
+                concurrency: 64,
+                keep_work: false,
+                platform: acro_oci::image::host_platform(),
+            };
+            let exec: Arc<dyn Executor> = Arc::new(HostExecutor { isolation: Isolation::None, readonly: Vec::new() });
+            let res = acro_build::run::execute(plan, opts, exec).await;
+            let _ = std::fs::remove_dir_all(&scratch);
+            res?;
+            Ok(())
+        }
         Command::Gc { max_size } => {
             let max = acro_build::gc::parse_size(&max_size).with_context(|| format!("invalid size {max_size}"))?;
             let rootfs = std::env::var_os("ACRO_ROOTFS").map(PathBuf::from).unwrap_or_else(|| home.join("rootfs"));

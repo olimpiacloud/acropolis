@@ -79,7 +79,7 @@ pub fn plan_app(dir: &Path, env: &Env) -> Result<Plan> {
         && let Some(spec) = providers::images::detect(dir, env)
     {
         let mut plan = providers::images::plan(dir, env, &name, spec?)?;
-        apply_deploy_apt(&mut plan, env)?;
+        apply_runtime_packages(&mut plan, env)?;
         return Ok(plan);
     }
     let app = detect::detect(dir, env)?;
@@ -219,6 +219,7 @@ pub fn apply_deploy_apt(plan: &mut Plan, env: &Env) -> Result<()> {
         return Ok(());
     }
     let image = match plan.step("base").map(|s| &s.action) {
+        Some(plan::Action::ResolveBase { image }) if image.starts_with('@') => "@base".to_string(),
         Some(plan::Action::ResolveBase { image }) => image.clone(),
         _ => anyhow::bail!("apt packages need a resolvable Debian base image"),
     };
@@ -226,15 +227,16 @@ pub fn apply_deploy_apt(plan: &mut Plan, env: &Env) -> Result<()> {
         anyhow::bail!("apt packages are not available on {image}");
     }
     let cmd = format!(
-        "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends {} && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb /var/log/apt /var/log/dpkg.log",
+        "{}; apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends {} && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb /var/log/apt /var/log/dpkg.log",
+        providers::ruby::APT_ARCHIVE_FIX,
         pkgs.join(" ")
     );
     let push_idx = plan.steps.iter().position(|s| s.id == "push").unwrap_or(plan.steps.len());
     let apt = plan::Step {
         id: "apt".into(),
         name: format!("apt-get install {}", pkgs.join(" ")),
+        deps: if image == "@base" { vec!["base".into()] } else { vec![] },
         action: plan::Action::ImageRun { image, commands: vec![cmd], env: Default::default(), network: true, mount_app: false, after: None, tools: vec![] },
-        deps: vec![],
         hash: String::new(),
     };
     let layer = plan::Step {

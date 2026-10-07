@@ -24,7 +24,7 @@
    "action": {
     "github": "gleam-lang/gleam",
     "kind": "resolve-base-latest",
-    "template": "ghcr.io/gleam-lang/gleam:{tag}-erlang"
+    "template": "ghcr.io/gleam-lang/gleam:{tag}-erlang-slim"
    },
    "deps": [],
    "id": "base",
@@ -56,7 +56,7 @@
      "gleam export erlang-shipment"
     ],
     "env": {},
-    "image": "@base",
+    "image": "@base-variant:-erlang-slim=-erlang",
     "kind": "image-run",
     "mount_app": true,
     "network": true,
@@ -67,7 +67,7 @@
     "base"
    ],
    "id": "build",
-   "name": "build in @base"
+   "name": "build in @base-variant:-erlang-slim=-erlang"
   },
   {
    "action": {

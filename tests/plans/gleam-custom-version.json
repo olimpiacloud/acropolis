@@ -22,7 +22,7 @@
  "steps": [
   {
    "action": {
-    "image": "ghcr.io/gleam-lang/gleam:v1.13.0-erlang",
+    "image": "ghcr.io/gleam-lang/gleam:v1.13.0-erlang-slim",
     "kind": "resolve-base"
    },
    "deps": [],
@@ -55,7 +55,7 @@
      "gleam export erlang-shipment"
     ],
     "env": {},
-    "image": "@base",
+    "image": "@base-variant:-erlang-slim=-erlang",
     "kind": "image-run",
     "mount_app": true,
     "network": true,
@@ -66,7 +66,7 @@
     "base"
    ],
    "id": "build",
-   "name": "build in @base"
+   "name": "build in @base-variant:-erlang-slim=-erlang"
   },
   {
    "action": {

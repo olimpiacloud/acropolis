@@ -221,7 +221,8 @@ pub async fn execute(plan: Plan, opts: BuildOptions, exec: Arc<dyn Executor>) ->
     acro_events::emit(acro_events::Event::PlanReady { hash: plan.hash.clone(), steps: plan.steps.len() });
     let home_lock = crate::gc::shared(&opts.home);
     let cache = open_app_cache(&opts);
-    let src = match &cache {
+    let stable_src = opts.env.config("CACHE_SRC").map(|(v, _)| v != "0").unwrap_or(true);
+    let src = match cache.as_ref().filter(|_| stable_src) {
         Some(c) => {
             acro_events::log("cache", format!("using app cache {}", c.dir.display()));
             let src = c.dir.join("src");
@@ -393,7 +394,10 @@ pub async fn execute(plan: Plan, opts: BuildOptions, exec: Arc<dyn Executor>) ->
 
 async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
     match &step.action {
-        Action::ResolveBase { image } => resolve_base(ctx, step, image).await,
+        Action::ResolveBase { image } => {
+            let image = resolve_alias(ctx, image).await?;
+            resolve_base(ctx, step, &image).await
+        }
         Action::ResolveNodeBase { spec, variant } => {
             let version = acro_toolchain::node::resolve(&ctx.fetcher, spec).await?;
             resolve_base(ctx, step, &format!("node:{version}-{variant}")).await
@@ -451,6 +455,9 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                     let dest = ctx.opts.home.join("toolchains").join(format!("go-{version}"));
                     let marker = dest.join(".acro-complete");
                     if marker.exists() {
+                        if ctx.opts.env.flag("PREWARM") {
+                            precompile_go_std(ctx, step, &dest).await?;
+                        }
                         return Ok(Out::Tool(Installed {
                             name: "go".into(),
                             version,
@@ -463,6 +470,9 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                     acro_toolchain::go::install(fetcher, &version, &tmp).await?;
                     publish(&tmp, &dest)?;
                     acro_events::log(&step.id, format!("go {version}"));
+                    if ctx.opts.env.flag("PREWARM") {
+                        precompile_go_std(ctx, step, &dest).await?;
+                    }
                     Ok(Out::Tool(Installed { name: "go".into(), version, bin_dir: dest.join("bin"), root: dest, archive: None }))
                 }
                 "bun" => {
@@ -542,7 +552,7 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                             publish(&tmp, &uv_dest)?;
                         }
                         let tmp = staging(&dest);
-                        let install_dir = tmp.with_extension("uv");
+                        let install_dir = PathBuf::from(format!("{}.uv", tmp.display()));
                         let _ = std::fs::remove_dir_all(&install_dir);
                         let mut cmd = tokio::process::Command::new(uv_dest.join("bin/uv"));
                         cmd.arg("python").arg("install").arg("--install-dir").arg(&install_dir);
@@ -561,7 +571,10 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                         let inner = std::fs::read_dir(&install_dir)?
                             .flatten()
                             .map(|e| e.path())
-                            .find(|p| p.is_dir() && p.file_name().map(|n| n.to_string_lossy().starts_with("cpython-")).unwrap_or(false))
+                            .find(|p| {
+                                std::fs::symlink_metadata(p).map(|m| m.is_dir()).unwrap_or(false)
+                                    && p.file_name().map(|n| n.to_string_lossy().starts_with("cpython-")).unwrap_or(false)
+                            })
                             .ok_or_else(|| anyhow!("uv python install {key} produced no cpython directory"))?;
                         std::fs::rename(&inner, &tmp)?;
                         let _ = std::fs::remove_dir_all(&install_dir);
@@ -762,7 +775,10 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             if pnpm_hoisted.is_dir() {
                 full_env.insert("NODE_PATH".into(), pnpm_hoisted.to_string_lossy().into_owned());
             }
-            if tools.iter().any(|t| t.name == "go") {
+            if let Some(go) = tools.iter().find(|t| t.name == "go") {
+                if env.get("CGO_ENABLED").map(|v| v == "0").unwrap_or(false) {
+                    seed_go_cache(&go.root, &ctx.cache_path("gocache"));
+                }
                 full_env.insert("GOPATH".into(), ctx.work.join("gopath").to_string_lossy().into_owned());
                 full_env.insert("GOMODCACHE".into(), ctx.cache_path("gomodcache").to_string_lossy().into_owned());
                 full_env.insert("GOCACHE".into(), ctx.cache_path("gocache").to_string_lossy().into_owned());
@@ -814,8 +830,15 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
         Action::ImageRun { image, commands, env, network, mount_app, after, tools } => {
             let image = if image == "@base" {
                 ctx.base().map(|b| b.reference.to_string()).ok_or_else(|| anyhow!("no base image resolved"))?
+            } else if let Some(variant) = image.strip_prefix("@base-variant:") {
+                let (from, to) = variant.split_once('=').ok_or_else(|| anyhow!("invalid image alias {image}"))?;
+                let base = ctx.base().ok_or_else(|| anyhow!("no base image resolved"))?;
+                let mut r = base.reference.clone();
+                r.digest = None;
+                r.tag = r.tag.map(|t| t.replacen(from, to, 1));
+                r.to_string()
             } else {
-                image.clone()
+                resolve_alias(ctx, image).await?
             };
             let (mut lower, image_env) = image_rootfs(ctx, &image).await?;
             if let Some(prev) = after {
@@ -851,9 +874,19 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                 std::fs::create_dir_all(&ctx.src)?;
                 binds.push(acro_exec::rootfs::Bind { host: ctx.src.clone(), guest: "/app".into(), readonly: false });
                 if let Some(c) = &ctx.cache {
-                    let host = c.dir.join("root-cache");
-                    std::fs::create_dir_all(&host)?;
-                    binds.push(acro_exec::rootfs::Bind { host, guest: "/root/.cache".into(), readonly: false });
+                    for (name, guest) in [
+                        ("root-cache", "/root/.cache"),
+                        ("m2", "/root/.m2"),
+                        ("gradle", "/root/.gradle"),
+                        ("nuget", "/root/.nuget"),
+                        ("hex", "/root/.hex"),
+                        ("mix", "/root/.mix"),
+                        ("gem-cache", "/usr/local/bundle/cache"),
+                    ] {
+                        let host = c.dir.join(name);
+                        std::fs::create_dir_all(&host)?;
+                        binds.push(acro_exec::rootfs::Bind { host, guest: guest.into(), readonly: false });
+                    }
                     if full_env.contains_key("UV_CACHE_DIR") {
                         full_env.insert("UV_CACHE_DIR".into(), "/root/.cache/uv".into());
                     }
@@ -1012,6 +1045,23 @@ async fn run_lifecycle(ctx: &Arc<Ctx>, step: &Step, root: &Path, jobs: &[acro_np
     Ok(())
 }
 
+async fn resolve_alias(ctx: &Arc<Ctx>, image: &str) -> Result<String> {
+    let Some(build_image) = image.strip_prefix("@slim-of:") else { return Ok(image.to_string()) };
+    let (layers, _) = image_rootfs(ctx, build_image).await?;
+    for dir in layers.iter().rev() {
+        for rel in ["etc/os-release", "usr/lib/os-release"] {
+            let Ok(text) = std::fs::read_to_string(dir.join(rel)) else { continue };
+            let field = |k: &str| text.lines().find_map(|l| l.strip_prefix(k)).map(|v| v.trim_matches('"').to_string());
+            if field("ID=").as_deref() == Some("debian")
+                && let Some(code) = field("VERSION_CODENAME=").filter(|c| !c.is_empty())
+            {
+                return Ok(format!("debian:{code}-slim"));
+            }
+        }
+    }
+    bail!("could not determine the Debian release of {build_image} for a slim runtime image")
+}
+
 async fn image_rootfs(ctx: &Arc<Ctx>, image: &str) -> Result<(Vec<PathBuf>, BTreeMap<String, String>)> {
     let r = Reference::parse(image)?;
     let resolved = ctx.registry.resolve(&r, &ctx.opts.platform).await?;
@@ -1042,7 +1092,8 @@ async fn image_rootfs(ctx: &Arc<Ctx>, image: &str) -> Result<(Vec<PathBuf>, BTre
             let expected = acro_store::Integrity::parse_oci(&d.digest)?;
             let mt = d.media_type.clone();
             let dir2 = staged.clone();
-            ctx.fetcher
+            let (_, stored) = ctx
+                .fetcher
                 .blob_streaming(&d.digest, &url, &headers, Some(expected), move |r| {
                     let reader: Box<dyn std::io::Read + '_> = if mt.contains("zstd") {
                         Box::new(zstd::stream::read::Decoder::new(r)?)
@@ -1058,6 +1109,8 @@ async fn image_rootfs(ctx: &Arc<Ctx>, image: &str) -> Result<(Vec<PathBuf>, BTre
                 let _ = std::fs::remove_dir_all(&staged);
             }
             std::fs::write(&marker, "")?;
+            let _ = std::fs::remove_file(&stored.path);
+            let _ = std::fs::remove_file(stored.path.with_extension("sha256"));
             Ok(dir)
         }
     });
@@ -1097,6 +1150,56 @@ fn staging(dest: &Path) -> PathBuf {
     dest.with_file_name(format!(".{name}.staging-{}-{n}", std::process::id()))
 }
 
+const GO_STD_CACHE: &str = ".acro-std-cgo0";
+
+async fn precompile_go_std(ctx: &Arc<Ctx>, step: &Step, root: &Path) -> Result<()> {
+    let done = root.join(GO_STD_CACHE).join(".complete");
+    if done.exists() {
+        return Ok(());
+    }
+    let staged = staging(&root.join(GO_STD_CACHE));
+    let _ = std::fs::remove_dir_all(&staged);
+    std::fs::create_dir_all(&staged)?;
+    let home = ctx.work.join("prewarm-home");
+    std::fs::create_dir_all(&home)?;
+    let started = Instant::now();
+    let out = tokio::process::Command::new(root.join("bin/go"))
+        .args(["build", "-trimpath", "std"])
+        .env_clear()
+        .env("PATH", format!("{}:/usr/bin:/bin", root.join("bin").display()))
+        .env("HOME", &home)
+        .env("GOCACHE", &staged)
+        .env("GOROOT", root)
+        .env("CGO_ENABLED", "0")
+        .env("GOTOOLCHAIN", "local")
+        .env("GOFLAGS", "")
+        .current_dir(&home)
+        .output()
+        .await?;
+    if !out.status.success() {
+        bail!("precompiling the Go standard library failed: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    std::fs::write(staged.join(".complete"), "")?;
+    if std::fs::rename(&staged, root.join(GO_STD_CACHE)).is_err() {
+        let _ = std::fs::remove_dir_all(&staged);
+    }
+    acro_events::log(&step.id, format!("precompiled the Go standard library in {:.1}s", started.elapsed().as_secs_f64()));
+    Ok(())
+}
+
+fn seed_go_cache(go_root: &Path, gocache: &Path) {
+    let std_cache = go_root.join(GO_STD_CACHE);
+    if !std_cache.join(".complete").exists() {
+        return;
+    }
+    let empty = std::fs::read_dir(gocache).map(|mut rd| rd.next().is_none()).unwrap_or(true);
+    if !empty {
+        return;
+    }
+    let ig = crate::ignore::Ignore::new(&[".complete".to_string()]);
+    let _ = source::copy_tree(&std_cache, gocache, &ig);
+}
+
 fn publish(staged: &Path, dest: &Path) -> Result<()> {
     std::fs::write(staged.join(".acro-complete"), "")?;
     for _ in 0..3 {
@@ -1124,7 +1227,63 @@ fn publish(staged: &Path, dest: &Path) -> Result<()> {
     bail!("could not publish {}", dest.display())
 }
 
+fn image_cache_path(ctx: &Ctx, image: &str) -> PathBuf {
+    let key = acro_store::sha256_bytes(format!("{image}|{:?}", ctx.opts.platform).as_bytes()).hex();
+    ctx.opts.home.join("cache").join("images").join(&key[..24])
+}
+
+fn load_cached_image(ctx: &Ctx, image: &str) -> Option<ResolvedImage> {
+    let base = image_cache_path(ctx, image);
+    let meta = std::fs::metadata(base.with_extension("json")).ok()?;
+    let ttl = ctx.opts.env.config("TAG_TTL").and_then(|(v, _)| v.parse::<u64>().ok()).unwrap_or(900);
+    let pinned = image.contains("@sha256:");
+    let age = meta.modified().ok()?.elapsed().ok()?;
+    if !pinned && (ttl == 0 || age.as_secs() > ttl) {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(base.with_extension("json")).ok()?).ok()?;
+    let config_raw = bytes::Bytes::from(std::fs::read(base.with_extension("config")).ok()?);
+    let config_digest = acro_store::sha256_bytes(&config_raw).to_oci();
+    let manifest: acro_oci::image::Manifest = serde_json::from_value(v.get("manifest")?.clone()).ok()?;
+    if manifest.config.digest != config_digest {
+        return None;
+    }
+    Some(ResolvedImage {
+        reference: Reference::parse(v.get("reference")?.as_str()?).ok()?,
+        manifest,
+        manifest_digest: v.get("digest")?.as_str()?.to_string(),
+        config: serde_json::from_slice(&config_raw).ok()?,
+        config_raw,
+    })
+}
+
+fn save_cached_image(ctx: &Ctx, image: &str, r: &ResolvedImage) {
+    let base = image_cache_path(ctx, image);
+    if let Some(parent) = base.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let v = serde_json::json!({ "reference": r.reference.to_string(), "digest": r.manifest_digest, "manifest": r.manifest });
+    let _ = std::fs::write(base.with_extension("config"), &r.config_raw);
+    if let Ok(bytes) = serde_json::to_vec(&v) {
+        let tmp = base.with_extension(format!("json.{}", std::process::id()));
+        if std::fs::write(&tmp, bytes).is_ok() {
+            let _ = std::fs::rename(&tmp, base.with_extension("json"));
+        }
+    }
+}
+
 async fn resolve_base(ctx: &Arc<Ctx>, step: &Step, image: &str) -> Result<Out> {
+    if let Some(resolved) = load_cached_image(ctx, image) {
+        if let Some(target) = ctx.opts.target.clone() {
+            let reg = ctx.registry.clone();
+            let src = resolved.reference.clone();
+            let layers = resolved.manifest.layers.clone();
+            let handle = tokio::spawn(async move { assemble::copy_layers(&reg, &src, &layers, &target).await });
+            *ctx.base_copy.lock().unwrap() = Some(handle);
+        }
+        acro_events::log(&step.id, format!("{} -> {} (cached)", image, resolved.manifest_digest));
+        return Ok(Out::Base(Arc::new(resolved)));
+    }
     let r = Reference::parse(image)?;
     let (reference, manifest, digest) = match ctx.registry.resolve_manifest(&r, &ctx.opts.platform).await {
         Err(e) if image.contains("-trixie-slim") && format!("{e:#}").contains("MANIFEST_UNKNOWN") => {
@@ -1142,6 +1301,7 @@ async fn resolve_base(ctx: &Arc<Ctx>, step: &Step, image: &str) -> Result<Out> {
         *ctx.base_copy.lock().unwrap() = Some(handle);
     }
     let resolved = ctx.registry.with_config(reference, manifest, digest).await?;
+    save_cached_image(ctx, image, &resolved);
     acro_events::log(&step.id, format!("{} -> {}", image, resolved.manifest_digest));
     Ok(Out::Base(Arc::new(resolved)))
 }
@@ -1295,7 +1455,7 @@ async fn build_layer(ctx: &Arc<Ctx>, step: &Step, dest: &str, from: &LayerFrom) 
         LayerFrom::ToolTree { tool } => {
             let t = ctx.tools().into_iter().find(|t| &t.name == tool).ok_or_else(|| anyhow!("toolchain {tool} not installed"))?;
             tokio::task::spawn_blocking(move || {
-                let entries = source::walk(&t.root, &Ignore::new(&[".acro-complete".into()]))?;
+                let entries = source::walk(&t.root, &Ignore::new(&[".acro-complete".into(), ".acro-std-*".into()]))?;
                 let mut b = layer::LayerBuilder::new(&store, &comment, opts)?;
                 source::stream_tree_into(&t.root, &entries, &dest, true, &mut b)?;
                 b.finish()

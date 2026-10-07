@@ -30,6 +30,30 @@ acro e2e --examples ../railpack/examples
 | Ruby | Gemfile, .ruby-version | bundler inside `ruby:<v>-slim` | | same base + runtime libraries |
 | Static sites, shell scripts | Staticfile, index.html, start.sh | | | Caddy, Debian slim |
 
+## Running in production
+
+Run `acro` on builder machines as root (it needs mount namespaces and overlayfs). One process per build; builds can run concurrently against the same `--home`.
+
+**Builder setup.** `acro prewarm` installs common toolchains ahead of time and precompiles the Go standard library (`--tools node:22,go:1.25,bun:latest,uv:latest,python:3.13`). Cap disk use with `acro gc --max-size 40G` on a timer, or set `ACRO_CACHE_MAX=40G` to collect after every build. GC evicts least recently used store blobs, toolchains, extracted rootfs and app caches; it never touches an app cache that a running build holds.
+
+**Caches.** Every build of the same app reuses a persistent cache: Go build and module caches, the cargo target and vendor directories, `.next/cache`, `node_modules/.cache`, and `/root/.cache` (uv, pip, composer) for steps that run inside an image. Pass `-e ACRO_CACHE_KEY=<service id>` so the key survives path changes; without it the key is the app path. Concurrent builds of the same app run without the cache instead of sharing it. `ACRO_NO_CACHE=1` disables it. Base image tags are re-resolved after `ACRO_TAG_TTL` seconds (default 900, `0` always resolves).
+
+**Isolation.** Build commands and install scripts run in a private mount namespace where the store, toolchains and extracted base images are read-only, with `CAP_SYS_ADMIN`, `CAP_SYS_CHROOT`, `CAP_MKNOD`, ptrace, module and raw I/O capabilities dropped and `no_new_privs` set. Steps that run inside a base image get a minimal `/dev` and a read-only `/sys`. Steps without network access get their own network namespace. Aborted or finished steps kill their whole process group. This protects the builder's shared caches from a malicious build; it is not a VM boundary, so run builders for different trust domains on separate machines.
+
+**Limits.** `ACRO_STEP_TIMEOUT` and `ACRO_BUILD_TIMEOUT` (seconds). SIGTERM or SIGINT cancels the build and its processes. The first failing step cancels the rest.
+
+**Results.** With `--events json`, stdout carries one JSON event per line (`step_started`, `step_finished`, `log`, `image_pushed`, `build_finished`, `build_failed`). Exit codes:
+
+| code | class | meaning |
+|---|---|---|
+| 0 | | image built and pushed |
+| 1 | user | the app's build or install script failed |
+| 70 | internal | bug in acro |
+| 75 | infra | registry, network, disk or OOM kill; safe to retry |
+| 78 | config | the app cannot be built as configured (detection, config file, lockfile) |
+
+**Reproducibility.** Lockfiles are honored exactly. An npm lockfile out of sync with `package.json` falls back to registry resolution like `npm install`; set `ACRO_STRICT_LOCKFILE=1` to fail instead. Environment values never appear in plans (`acro plan --json` shows `{env:NAME}` placeholders), so plans can be logged and diffed safely.
+
 ## Repository layout
 
 - `crates/acro-store` content-addressed store and integrity types

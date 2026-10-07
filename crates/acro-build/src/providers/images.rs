@@ -43,7 +43,7 @@ pub fn plan(dir: &Path, env: &Env, name: &str, spec: ImageBuild) -> Result<Plan>
     if let Some((c, _)) = env.config("BUILD_CMD") {
         commands.push(c);
     }
-    let deps: Vec<&str> = if spec.build_image == "@base" { vec!["source", "base"] } else { vec!["source"] };
+    let deps: Vec<&str> = if spec.build_image.starts_with("@base") { vec!["source", "base"] } else { vec!["source"] };
     b.step(
         "build",
         format!("build in {}", spec.build_image),
@@ -142,15 +142,15 @@ fn gleam(dir: &Path, env: &Env) -> Result<ImageBuild> {
         .map(|(v, _)| v)
         .or_else(|| tool_version(dir, "gleam").map(|v| v.spec));
     let base = match &version {
-        Some(v) => Action::ResolveBase { image: format!("ghcr.io/gleam-lang/gleam:v{}-erlang", v.trim_start_matches('v')) },
-        None => Action::ResolveBaseLatest { template: "ghcr.io/gleam-lang/gleam:{tag}-erlang".into(), github: "gleam-lang/gleam".into() },
+        Some(v) => Action::ResolveBase { image: format!("ghcr.io/gleam-lang/gleam:v{}-erlang-slim", v.trim_start_matches('v')) },
+        None => Action::ResolveBaseLatest { template: "ghcr.io/gleam-lang/gleam:{tag}-erlang-slim".into(), github: "gleam-lang/gleam".into() },
     };
     let include_source = env.flag("GLEAM_INCLUDE_SOURCE");
     let outputs = if include_source { vec![] } else { vec![("build/erlang-shipment".into(), "build/erlang-shipment".into())] };
     Ok(ImageBuild {
         provider: "gleam",
         base,
-        build_image: "@base".into(),
+        build_image: "@base-variant:-erlang-slim=-erlang".into(),
         commands: vec!["gleam export erlang-shipment".into()],
         env: BTreeMap::new(),
         outputs,
@@ -323,19 +323,19 @@ fn elixir(dir: &Path, env: &Env) -> Result<ImageBuild> {
     }
     commands.push("mix release --overwrite".into());
     let mut e = BTreeMap::new();
-    for (k, v) in [("MIX_ENV", "prod"), ("MIX_HOME", "/app/.mix"), ("HEX_HOME", "/app/.hex"), ("ELIXIR_ERL_OPTIONS", "+fnu"), ("LANG", "C.UTF-8")] {
+    for (k, v) in [("MIX_ENV", "prod"), ("MIX_HOME", "/root/.mix"), ("HEX_HOME", "/root/.hex"), ("ELIXIR_ERL_OPTIONS", "+fnu"), ("LANG", "C.UTF-8")] {
         e.insert(k.to_string(), v.to_string());
     }
     let rel = format!("_build/prod/rel/{app}");
     Ok(ImageBuild {
         provider: "elixir",
-        base: Action::ResolveBase { image: image.clone() },
-        build_image: "@base".into(),
+        base: Action::ResolveBase { image: format!("@slim-of:{image}") },
+        build_image: image.clone(),
         commands,
         env: e,
         outputs: vec![(rel.clone(), rel.clone())],
         cmd: format!("/app/{rel}/bin/{app} start"),
         image_env: vec![("MIX_ENV".into(), "prod".into()), ("LANG".into(), "C.UTF-8".into()), ("PORT".into(), "4000".into())],
-        facts: vec![("elixir".into(), tag), ("app".into(), app)],
+        facts: vec![("elixir".into(), tag), ("app".into(), app), ("runtime-packages".into(), "libstdc++6 openssl libncurses6 ca-certificates".into())],
     })
 }

@@ -26,6 +26,7 @@ json5.workspace = true
 serde_yaml = "0.9"
 reqwest.workspace = true
 hex.workspace = true
+bytes.workspace = true
 libc.workspace = true
 zstd.workspace = true
 flate2.workspace = true

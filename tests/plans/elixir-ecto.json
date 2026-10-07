@@ -2,7 +2,9 @@
  "app": "elixir-ecto",
  "facts": {
   "app": "friends",
-  "elixir": "1.13"
+  "apt-packages": "libstdc++6 openssl libncurses6 ca-certificates",
+  "elixir": "1.13",
+  "runtime-packages": "libstdc++6 openssl libncurses6 ca-certificates"
  },
  "image": {
   "cmd": [
@@ -26,6 +28,7 @@
    ]
   ],
   "layers": [
+   "layer-apt",
    "layer-app"
   ],
   "ports": [],
@@ -36,7 +39,7 @@
  "steps": [
   {
    "action": {
-    "image": "elixir:1.13",
+    "image": "@slim-of:elixir:1.13",
     "kind": "resolve-base"
    },
    "deps": [],
@@ -76,23 +79,22 @@
     ],
     "env": {
      "ELIXIR_ERL_OPTIONS": "+fnu",
-     "HEX_HOME": "/app/.hex",
+     "HEX_HOME": "/root/.hex",
      "LANG": "C.UTF-8",
      "MIX_ENV": "prod",
-     "MIX_HOME": "/app/.mix"
+     "MIX_HOME": "/root/.mix"
     },
-    "image": "@base",
+    "image": "elixir:1.13",
     "kind": "image-run",
     "mount_app": true,
     "network": true,
     "tools": []
    },
    "deps": [
-    "source",
-    "base"
+    "source"
    ],
    "id": "build",
-   "name": "build in @base"
+   "name": "build in elixir:1.13"
   },
   {
    "action": {
@@ -116,12 +118,53 @@
   },
   {
    "action": {
+    "after": null,
+    "commands": [
+     ". /etc/os-release; case \"$VERSION_CODENAME\" in jessie|stretch|buster|bullseye) sed -i -e 's|deb.debian.org|archive.debian.org|g' -e 's|security.debian.org|archive.debian.org|g' -e '/-updates/d' /etc/apt/sources.list; echo 'Acquire::Check-Valid-Until \"false\";' > /etc/apt/apt.conf.d/99acro-archive ;; esac; apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libstdc++6 openssl libncurses6 ca-certificates && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb /var/log/apt /var/log/dpkg.log"
+    ],
+    "env": {},
+    "image": "@base",
+    "kind": "image-run",
+    "mount_app": false,
+    "network": true,
+    "tools": []
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "apt",
+   "name": "apt-get install libstdc++6 openssl libncurses6 ca-certificates"
+  },
+  {
+   "action": {
+    "dest": "",
+    "from": {
+     "exclude": [
+      "var/cache",
+      "var/log",
+      "root"
+     ],
+     "include": [],
+     "step": "apt",
+     "type": "upper"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "apt"
+   ],
+   "id": "layer-apt",
+   "name": "layer apt packages"
+  },
+  {
+   "action": {
     "kind": "push"
    },
    "deps": [
     "base",
     "copy-base",
-    "layer-app"
+    "layer-app",
+    "layer-apt"
    ],
    "id": "push",
    "name": "push image"

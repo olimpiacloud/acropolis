@@ -63,6 +63,8 @@ pub struct CaseResult {
     pub case: usize,
     pub status: String,
     pub build_s: f64,
+    #[serde(default)]
+    pub total_s: f64,
     pub detail: String,
 }
 
@@ -84,6 +86,49 @@ fn docker(args: &[&str]) -> Result<String> {
         bail!("docker {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+fn start_registry(registry: &str, home: &Path) -> Result<()> {
+    let port = registry.rsplit(':').next().unwrap_or("5001");
+    let name = format!("acro-e2e-registry-{port}");
+    let data = home.join(format!("e2e-registry-{port}"));
+    let running = docker(&["inspect", "-f", "{{.State.Running}}", &name]).map(|s| s.trim() == "true").unwrap_or(false);
+    let mounted = docker(&["inspect", "-f", "{{range .Mounts}}{{.Source}}{{end}}", &name]).map(|s| s.trim() == data.to_string_lossy()).unwrap_or(false);
+    if running && mounted && data.join("docker").exists() {
+        return Ok(());
+    }
+    ensure_registry(registry, home)
+}
+
+fn remove_image(tag: &str) {
+    match docker(&["image", "inspect", "-f", "{{.Id}}", tag]) {
+        Ok(id) if !id.trim().is_empty() => {
+            let _ = docker(&["rmi", "-f", id.trim()]);
+        }
+        _ => {
+            let _ = docker(&["rmi", "-f", tag]);
+        }
+    }
+}
+
+fn prune_e2e_images(registry: &str) {
+    if let Ok(list) = docker(&["images", "--format", "{{.Repository}}:{{.Tag}}"]) {
+        let prefix = format!("{registry}/e2e/");
+        let tags: Vec<&str> = list.lines().filter(|l| l.starts_with(&prefix)).collect();
+        for chunk in tags.chunks(50) {
+            let mut args = vec!["rmi", "-f"];
+            args.extend(chunk);
+            let _ = docker(&args);
+        }
+    }
+    if let Ok(list) = docker(&["images", "-f", "dangling=true", "--format", "{{.ID}} {{.CreatedAt}}"]) {
+        let ids: Vec<&str> = list.lines().filter(|l| l.contains(" 1970-01-01") || l.contains(" 1969-12-31")).filter_map(|l| l.split_whitespace().next()).collect();
+        for chunk in ids.chunks(50) {
+            let mut args = vec!["rmi", "-f"];
+            args.extend(chunk);
+            let _ = docker(&args);
+        }
+    }
 }
 
 fn ensure_registry(registry: &str, home: &Path) -> Result<()> {
@@ -244,7 +289,6 @@ fn run_http_check(image: &str, case: &TestCase, hc: &HttpCheck, network: Option<
     args.push(image.into());
     let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     docker(&refs)?;
-    std::thread::sleep(Duration::from_secs(2));
     let path = hc.path.clone().unwrap_or_else(|| "/".into());
     let want = hc.expected.unwrap_or(200);
     let url = format!("http://127.0.0.1:{port}{path}");
@@ -269,14 +313,15 @@ fn run_http_check(image: &str, case: &TestCase, hc: &HttpCheck, network: Option<
             break Err(anyhow::anyhow!("body missing {:?}: {}", missing, body.chars().take(400).collect::<String>()));
         }
         last = format!("status {} body {}", code.trim(), body.chars().take(200).collect::<String>());
-        if Instant::now() > deadline {
+        let running = docker(&["inspect", "-f", "{{.State.Running}}", name]).map(|o| o.trim() == "true").unwrap_or(false);
+        if !running || Instant::now() > deadline {
             let logs = Command::new("docker").args(["logs", name]).output().ok();
             let logs = logs
                 .map(|o| format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)))
                 .unwrap_or_default();
             break Err(anyhow::anyhow!("http check {url} wanted {want}, last {last}\nlogs: {}", logs.chars().rev().take(1500).collect::<String>().chars().rev().collect::<String>()));
         }
-        std::thread::sleep(Duration::from_millis(300));
+        std::thread::sleep(Duration::from_millis(200));
     };
     let _ = docker(&["rm", "-f", name]);
     result
@@ -284,7 +329,7 @@ fn run_http_check(image: &str, case: &TestCase, hc: &HttpCheck, network: Option<
 
 fn run_case(cfg: &E2eConfig, example: &str, idx: usize, case: &TestCase) -> CaseResult {
     let dir = cfg.examples.join(example);
-    let mut r = CaseResult { example: example.into(), case: idx, status: "fail".into(), build_s: 0.0, detail: String::new() };
+    let mut r = CaseResult { example: example.into(), case: idx, status: "fail".into(), build_s: 0.0, total_s: 0.0, detail: String::new() };
     let arch = if std::env::consts::ARCH == "x86_64" { "amd64" } else { "arm64" };
     if case.skip_arch.iter().any(|a| a == arch) {
         r.status = "skip".into();
@@ -306,16 +351,20 @@ fn run_case(cfg: &E2eConfig, example: &str, idx: usize, case: &TestCase) -> Case
     let log_dir = cfg.out.with_extension("logs");
     let _ = fs::create_dir_all(&log_dir);
     let log_path = log_dir.join(format!("{example}-{idx}.log"));
-    let rootfs = std::env::temp_dir().join(format!("acro-e2e-rootfs-{example}-{idx}-{}", std::process::id()));
     let mut cmd = Command::new(&cfg.acro_bin);
-    cmd.env("ACRO_ROOTFS", &rootfs);
+    if cfg.isolated {
+        cmd.env("ACRO_ROOTFS", home.join("rootfs"));
+    }
 
     cmd.arg("--home").arg(&home).arg("build").arg(&dir).arg("-t").arg(&tag);
     for (k, v) in &case.envs {
         cmd.arg("-e").arg(format!("{k}={v}"));
     }
-    if std::env::var_os("ACRO_E2E_CACHE").is_none() {
+    if std::env::var_os("E2E_COLD").is_some() {
         cmd.arg("-e").arg("ACRO_NO_CACHE=1");
+    } else {
+        cmd.arg("-e").arg(format!("ACRO_CACHE_KEY=e2e-{example}-{idx}"));
+        cmd.arg("-e").arg("ACRO_CACHE_SRC=0");
     }
     if let Some(c) = &case.config_file {
         cmd.arg("--config").arg(c);
@@ -330,7 +379,6 @@ fn run_case(cfg: &E2eConfig, example: &str, idx: usize, case: &TestCase) -> Case
     };
     r.build_s = start.elapsed().as_secs_f64();
     let _ = fs::write(&log_path, [out.stdout.as_slice(), out.stderr.as_slice()].concat());
-    let _ = fs::remove_dir_all(&rootfs);
     if cfg.isolated {
         let _ = fs::remove_dir_all(&home);
     }
@@ -367,7 +415,7 @@ fn run_case(cfg: &E2eConfig, example: &str, idx: usize, case: &TestCase) -> Case
     if network.is_some() {
         compose_down(&dir, &project);
     }
-    let _ = docker(&["rmi", "-f", &tag]);
+    remove_image(&tag);
     match res {
         Ok(()) => r.status = "pass".into(),
         Err(e) => r.detail = format!("{e:#}"),
@@ -375,7 +423,9 @@ fn run_case(cfg: &E2eConfig, example: &str, idx: usize, case: &TestCase) -> Case
     r
 }
 
-const MIN_FREE_BYTES: u64 = 5 << 30;
+const MIN_FREE_BYTES: u64 = 6 << 30;
+const HEAVY_BUILD_S: f64 = 45.0;
+const MAX_HEAVY: usize = 2;
 
 fn free_bytes(path: &Path) -> Option<u64> {
     let c = std::ffi::CString::new(path.as_os_str().to_string_lossy().as_bytes()).ok()?;
@@ -390,7 +440,7 @@ fn low_disk(cfg: &E2eConfig) -> bool {
     free_bytes(&cfg.home).map(|f| f < MIN_FREE_BYTES).unwrap_or(false)
 }
 
-const MAX_REGISTRY_BYTES: u64 = 2 << 30;
+const MAX_REGISTRY_BYTES: u64 = 4 << 30;
 
 fn dir_size(path: &Path) -> u64 {
     let mut total = 0;
@@ -419,19 +469,19 @@ fn registry_full(cfg: &E2eConfig) -> bool {
 }
 
 fn infra_failure(detail: &str) -> bool {
-    ["/var/lib/registry", "No space left on device", "upload side closed", "operation timed out", "Connection refused", "connection reset"]
-        .iter()
-        .any(|m| detail.contains(m))
-        || detail.contains("signal: 9")
-        || detail.contains("exit status: 137")
+    detail.contains("error class: infra")
+        || ["/var/lib/registry", "failed to extract layer", "docker pull -q", "No space left on device", "compose up failed"]
+            .iter()
+            .any(|m| detail.contains(m))
 }
 
 fn reclaim_disk(cfg: &E2eConfig) {
     let before = free_bytes(&cfg.home).unwrap_or(0);
+    prune_e2e_images(&cfg.registry);
     if let Err(e) = ensure_registry(&cfg.registry, &cfg.home) {
         eprintln!("[e2e] registry restart failed: {e:#}");
     }
-    for sub in ["work", "cache", "store", "toolchains"] {
+    for sub in ["work", "rootfs", "cache", "store", "toolchains"] {
         if !low_disk(cfg) {
             break;
         }
@@ -455,6 +505,31 @@ fn remove_stale_rootfs() {
     }
 }
 
+fn previous_durations(out: &Path) -> BTreeMap<(String, usize), f64> {
+    let dir = out.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = fs::read_dir(dir)
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "jsonl") && p != out)
+                .filter_map(|p| Some((fs::metadata(&p).ok()?.modified().ok()?, p)))
+                .collect()
+        })
+        .unwrap_or_default();
+    files.sort();
+    let mut out_map = BTreeMap::new();
+    for (_, f) in files.iter().rev().take(5).rev() {
+        for line in fs::read_to_string(f).unwrap_or_default().lines() {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+            let (Some(ex), Some(case), Some(t)) = (v["example"].as_str(), v["case"].as_u64(), v["build_s"].as_f64()) else { continue };
+            if t > 0.0 {
+                out_map.insert((ex.to_string(), case as usize), t);
+            }
+        }
+    }
+    out_map
+}
+
 pub fn failed_cases(path: &Path) -> Result<std::collections::BTreeSet<(String, usize)>> {
     let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let mut last: BTreeMap<(String, usize), String> = BTreeMap::new();
@@ -469,8 +544,9 @@ pub fn failed_cases(path: &Path) -> Result<std::collections::BTreeSet<(String, u
 
 pub fn run(cfg: E2eConfig) -> Result<Vec<CaseResult>> {
     remove_stale_rootfs();
+    prune_e2e_images(&cfg.registry);
     fs::create_dir_all(&cfg.home)?;
-    ensure_registry(&cfg.registry, &cfg.home)?;
+    start_registry(&cfg.registry, &cfg.home)?;
     let mut cases: Vec<(String, usize, TestCase)> = Vec::new();
     let mut names: Vec<String> = fs::read_dir(&cfg.examples)?
         .filter_map(|e| e.ok())
@@ -494,6 +570,18 @@ pub fn run(cfg: E2eConfig) -> Result<Vec<CaseResult>> {
             cases.push((name.clone(), i, c));
         }
     }
+    let durations = previous_durations(&cfg.out);
+    if !durations.is_empty() {
+        cases.sort_by(|a, b| {
+            let da = durations.get(&(a.0.clone(), a.1)).copied().unwrap_or(f64::MAX);
+            let db = durations.get(&(b.0.clone(), b.1)).copied().unwrap_or(f64::MAX);
+            db.partial_cmp(&da).unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
+    let heavy: Arc<std::collections::BTreeSet<(String, usize)>> = Arc::new(
+        durations.iter().filter(|(_, t)| **t > HEAVY_BUILD_S).map(|(k, _)| k.clone()).collect(),
+    );
+    let heavy_running = Arc::new(Mutex::new(0usize));
     let queue = Arc::new(Mutex::new(cases.into_iter().map(|(n, i, c)| (n, i, c, false)).collect::<std::collections::VecDeque<_>>()));
     let results = Arc::new(Mutex::new(Vec::new()));
     let cfg = Arc::new(cfg);
@@ -502,13 +590,41 @@ pub fn run(cfg: E2eConfig) -> Result<Vec<CaseResult>> {
     let mut handles = Vec::new();
     for _ in 0..cfg.jobs.max(1) {
         let gate = gate.clone();
+        let heavy = heavy.clone();
+        let heavy_running = heavy_running.clone();
         let queue = queue.clone();
         let results = results.clone();
         let cfg = cfg.clone();
         let out_file = out_file.clone();
         handles.push(std::thread::spawn(move || {
             loop {
-                let next = queue.lock().unwrap().pop_front();
+                let next = {
+                    let mut q = queue.lock().unwrap();
+                    let mut hr = heavy_running.lock().unwrap();
+                    let pos = if *hr >= MAX_HEAVY {
+                        q.iter().position(|c| !heavy.contains(&(c.0.clone(), c.1))).or(if q.is_empty() { None } else { Some(usize::MAX) })
+                    } else {
+                        if q.is_empty() { None } else { Some(0) }
+                    };
+                    match pos {
+                        Some(usize::MAX) => {
+                            drop(hr);
+                            drop(q);
+                            std::thread::sleep(Duration::from_millis(500));
+                            continue;
+                        }
+                        Some(p) => {
+                            let item = q.remove(p);
+                            if let Some(it) = &item
+                                && heavy.contains(&(it.0.clone(), it.1))
+                            {
+                                *hr += 1;
+                            }
+                            item
+                        }
+                        None => None,
+                    }
+                };
                 let Some((name, idx, case, retried)) = next else { break };
                 if low_disk(&cfg) || registry_full(&cfg) || !registry_dir(&cfg).exists() {
                     let _w = gate.write().unwrap();
@@ -526,21 +642,27 @@ pub fn run(cfg: E2eConfig) -> Result<Vec<CaseResult>> {
                         }
                     }
                 }
-                let r = {
+                let started = Instant::now();
+                let mut r = {
                     let _r = gate.read().unwrap();
                     run_case(&cfg, &name, idx, &case)
                 };
+                r.total_s = started.elapsed().as_secs_f64();
+                if heavy.contains(&(name.clone(), idx)) {
+                    *heavy_running.lock().unwrap() -= 1;
+                }
                 if r.status == "fail" && !retried && infra_failure(&r.detail) {
                     eprintln!("[e2e] retry  {}/case-{} after infra failure: {}", r.example, r.case, r.detail.lines().last().unwrap_or("").chars().take(160).collect::<String>());
                     queue.lock().unwrap().push_back((name, idx, case, true));
                     continue;
                 }
                 eprintln!(
-                    "[e2e] {:<6} {}/case-{} ({:.1}s) {}",
+                    "[e2e] {:<6} {}/case-{} ({:.1}s build, {:.1}s total) {}",
                     r.status,
                     r.example,
                     r.case,
                     r.build_s,
+                    r.total_s,
                     r.detail.lines().next().unwrap_or("")
                 );
                 {
@@ -554,6 +676,9 @@ pub fn run(cfg: E2eConfig) -> Result<Vec<CaseResult>> {
     }
     for h in handles {
         let _ = h.join();
+    }
+    if free_bytes(&cfg.home).map(|f| f < 15 << 30).unwrap_or(false) {
+        prune_e2e_images(&cfg.registry);
     }
     let mut v = results.lock().unwrap().clone();
     v.sort_by(|a, b| (a.example.clone(), a.case).cmp(&(b.example.clone(), b.case)));
