@@ -18,6 +18,7 @@ dependencies = [
  "acro-store",
  "acro-toolchain",
  "anyhow",
+ "bytes",
  "flate2",
  "futures",
  "hex",

@@ -26,8 +26,11 @@ acro e2e --examples ../railpack/examples
 | Bun | bun.lock, packageManager, start scripts | bun.lock installer | | Bun binary from the official npm package |
 | Go | go.mod, toolchain, mise | modules from the proxy verified against go.sum | `go build` without network | `distroless/static` |
 | Rust | Cargo.toml, rust-toolchain, rust-version | crates vendored from the store | `cargo build --locked --offline` without network | `distroless/cc` matching the host glibc |
-| Python | uv, poetry, pdm, pipenv, pip, pyproject | inside `python:<v>-slim` with uv | | same base + `/app/.venv` |
+| Python | uv, poetry, pdm, pipenv, pip, pyproject, mise | inside `python:<v>` with uv; system libraries for psycopg, mysqlclient, cairo, poppler, ffmpeg | | `python:<v>-slim` + `/app/.venv`; free-threaded CPython via uv |
 | Ruby | Gemfile, .ruby-version | bundler inside `ruby:<v>-slim` | | same base + runtime libraries |
+| PHP | composer.json, index.php, Laravel | composer and extensions inside FrankenPHP | Vite assets with the app's package manager | `dunglas/frankenphp` |
+| Elixir, Gleam | mix.exs, gleam.toml, .tool-versions | `mix deps.get` / `gleam export` in the official image | `mix release` | Debian slim matching the build image's glibc; `gleam:*-erlang-slim` |
+| Java, .NET, Deno, C/C++ | pom.xml, build.gradle, *.csproj, deno.json, CMakeLists.txt, meson.build | inside the official SDK image | | JRE, ASP.NET runtime, Debian slim |
 | Static sites, shell scripts | Staticfile, index.html, start.sh | | | Caddy, Debian slim |
 
 ## Running in production
