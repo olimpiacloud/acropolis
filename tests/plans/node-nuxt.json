@@ -114,7 +114,7 @@
      "npm_package_name": "nuxt-app"
     },
     "kind": "run",
-    "network": false
+    "network": true
    },
    "deps": [
     "node",
@@ -172,6 +172,7 @@
   }
  ],
  "warnings": [
-  "install scripts of vue-demi, @parcel/watcher, esbuild, vue-demi, vue-demi run with network access (policy: all); set ACRO_INSTALL_SCRIPTS=none to disable"
+  "install scripts of vue-demi, @parcel/watcher, esbuild, vue-demi, vue-demi run with network access (policy: all); set ACRO_INSTALL_SCRIPTS=none to disable",
+  "the build step runs with network access like docker build; set ACRO_HERMETIC_BUILD=1 to run it without network"
  ]
 }

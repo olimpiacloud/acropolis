@@ -98,6 +98,8 @@ enum Command {
         cache: Option<PathBuf>,
         #[arg(long)]
         fresh: bool,
+        #[arg(long)]
+        apps_file: Option<PathBuf>,
     },
     Report {
         results: Vec<PathBuf>,
@@ -194,7 +196,7 @@ fn default_home() -> PathBuf {
 
 fn main() {
     let cli = Cli::parse();
-    if let Command::Bench { apps, tools, runs, cpus, memory, mirror, out, repo, railpack, railpack_frontend, compression, no_drop_caches, scenario, cache, fresh } = &cli.cmd {
+    if let Command::Bench { apps, tools, runs, cpus, memory, mirror, out, repo, railpack, railpack_frontend, compression, no_drop_caches, scenario, cache, fresh, apps_file } = &cli.cmd {
         let repo = std::fs::canonicalize(repo).expect("repo path");
         let cache = Some(cache.clone().unwrap_or_else(|| repo.join("bench/results/competitors.jsonl")));
         let out = out.clone().unwrap_or_else(|| repo.join("bench/results").join(format!("run-{}.jsonl", std::process::id())));
@@ -215,6 +217,7 @@ fn main() {
             scenario: scenario.clone(),
             cache,
             fresh: *fresh,
+            apps_file: apps_file.clone(),
         };
         match bench::run(cfg) {
             Ok(results) => {

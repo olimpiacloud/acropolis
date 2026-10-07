@@ -112,7 +112,19 @@ pub(crate) unsafe fn bind_readonly(path: &std::ffi::CStr) -> std::io::Result<()>
     Ok(())
 }
 
-fn enter_hardened(readonly: &[std::ffi::CString], network: bool) -> std::io::Result<()> {
+pub(crate) const OFFLINE_RESOLV: &str = "nameserver 192.0.2.1\noptions timeout:1 attempts:1\n";
+
+pub(crate) fn offline_resolv_conf() -> Option<std::ffi::CString> {
+    let path = std::env::temp_dir().join(format!("acro-offline-resolv-{}.conf", unsafe { libc::geteuid() }));
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(OFFLINE_RESOLV) {
+        let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+        std::fs::write(&tmp, OFFLINE_RESOLV).ok()?;
+        std::fs::rename(&tmp, &path).ok()?;
+    }
+    std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).ok()
+}
+
+fn enter_hardened(readonly: &[std::ffi::CString], network: bool, resolv: Option<&std::ffi::CStr>) -> std::io::Result<()> {
     unsafe {
         let mut flags = libc::CLONE_NEWNS;
         if !network {
@@ -123,6 +135,9 @@ fn enter_hardened(readonly: &[std::ffi::CString], network: bool) -> std::io::Res
         }
         if libc::mount(std::ptr::null(), c"/".as_ptr(), std::ptr::null(), libc::MS_REC | libc::MS_PRIVATE, std::ptr::null()) != 0 {
             return Err(std::io::Error::last_os_error());
+        }
+        if !network && let Some(r) = resolv {
+            libc::mount(r.as_ptr(), c"/etc/resolv.conf".as_ptr(), std::ptr::null(), libc::MS_BIND, std::ptr::null());
         }
         for p in readonly {
             bind_readonly(p)?;
@@ -278,8 +293,9 @@ impl Executor for HostExecutor {
                     .filter_map(|p| std::ffi::CString::new(p.as_os_str().as_encoded_bytes()).ok())
                     .collect();
                 let network = cmd.network;
+                let resolv = if network { None } else { offline_resolv_conf() };
                 unsafe {
-                    c.pre_exec(move || enter_hardened(&ro, network));
+                    c.pre_exec(move || enter_hardened(&ro, network, resolv.as_deref()));
                 }
             } else if !cmd.network {
                 if self.isolation != Isolation::NetNamespace {

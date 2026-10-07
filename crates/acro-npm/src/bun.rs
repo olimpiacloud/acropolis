@@ -137,10 +137,14 @@ impl BunLock {
     }
 
     pub fn install_plan(&self, opts: &InstallOptions) -> Result<InstallPlan> {
+        self.install_plan_scoped(opts, &[])
+    }
+
+    pub fn install_plan_scoped(&self, opts: &InstallOptions, only: &[String]) -> Result<InstallPlan> {
         let mut reachable: BTreeSet<String> = BTreeSet::new();
         let mut queue: VecDeque<String> = VecDeque::new();
         let mut plan = InstallPlan::default();
-        for w in &self.workspaces {
+        for w in self.workspaces.iter().filter(|w| only.is_empty() || only.contains(&w.path)) {
             let scope = if w.path.is_empty() { String::new() } else { w.name.clone() };
             let mut roots: Vec<&String> = w.deps.keys().collect();
             if opts.include_optional {
@@ -274,5 +278,15 @@ mod tests {
         assert_eq!(plan.links.len(), 2);
         let b = plan.links.iter().find(|l| l.path == "node_modules/pkg-b").unwrap();
         assert_eq!(b.target, "../packages/pkg-b");
+        let scoped = lock
+            .install_plan_scoped(&InstallOptions { include_dev: false, include_optional: true, platform: Default::default() }, &["packages/pkg-a".into()])
+            .unwrap();
+        assert_eq!(scoped.packages.len(), 1);
+        assert!(scoped.links.is_empty());
+        let scoped = lock
+            .install_plan_scoped(&InstallOptions { include_dev: false, include_optional: true, platform: Default::default() }, &["packages/pkg-b".into()])
+            .unwrap();
+        assert_eq!(scoped.links.len(), 1);
+        assert_eq!(scoped.packages.len(), 1);
     }
 }

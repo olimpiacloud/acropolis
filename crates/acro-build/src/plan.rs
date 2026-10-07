@@ -16,6 +16,8 @@ pub enum Action {
         lockfile: String,
         lockfile_sha256: String,
         dev: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        workspaces: Vec<String>,
     },
     NpmInstall {
         dev: bool,
@@ -123,6 +125,8 @@ pub struct Plan {
     pub warnings: Vec<String>,
     #[serde(default)]
     pub hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
 }
 
 fn canonical(v: &Value) -> String {
@@ -214,6 +218,7 @@ impl PlanBuilder {
                 image: ImageSpec::default(),
                 warnings: Vec::new(),
                 hash: String::new(),
+                context: None,
             },
         }
     }

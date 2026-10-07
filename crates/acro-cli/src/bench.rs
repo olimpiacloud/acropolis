@@ -12,6 +12,38 @@ pub struct AppSpec {
     pub port: u16,
     pub path: String,
     pub expect: String,
+    #[serde(default)]
+    pub source: Option<PathBuf>,
+    #[serde(default)]
+    pub subdir: Option<String>,
+    #[serde(default)]
+    pub dockerfile: Option<String>,
+    #[serde(default)]
+    pub build_args: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub env: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub touch: Option<String>,
+}
+
+impl AppSpec {
+    fn root(&self, repo: &Path) -> PathBuf {
+        self.source.clone().unwrap_or_else(|| repo.join("bench/apps").join(&self.name))
+    }
+
+    fn target(&self, root: &Path) -> PathBuf {
+        match &self.subdir {
+            Some(s) => root.join(s),
+            None => root.to_path_buf(),
+        }
+    }
+
+    fn dockerfile(&self, repo: &Path, root: &Path) -> PathBuf {
+        match &self.dockerfile {
+            Some(d) => root.join(d),
+            None => repo.join("bench/dockerfiles").join(format!("{}.Dockerfile", self.name)),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -32,6 +64,7 @@ pub struct BenchConfig {
     pub scenario: String,
     pub cache: Option<PathBuf>,
     pub fresh: bool,
+    pub apps_file: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -249,7 +282,13 @@ fn verify(app: &AppSpec, reference: &str) -> Result<()> {
     let _ = docker(&["rm", "-f", &name]);
     docker(&["pull", "-q", reference])?;
     let host_port = 39000 + (std::process::id() % 1000) as u16;
-    docker(&["run", "-d", "--name", &name, "-p", &format!("127.0.0.1:{host_port}:{}", app.port), reference])?;
+    let mut args: Vec<String> = vec!["run".into(), "-d".into(), "--name".into(), name.clone(), "-p".into(), format!("127.0.0.1:{host_port}:{}", app.port)];
+    for (k, v) in &app.env {
+        args.push("-e".into());
+        args.push(format!("{k}={v}"));
+    }
+    args.push(reference.into());
+    docker(&args.iter().map(|s| s.as_str()).collect::<Vec<_>>())?;
     let url = format!("http://127.0.0.1:{host_port}{}", app.path);
     let deadline = Instant::now() + Duration::from_secs(40);
     let mut last = String::new();
@@ -297,6 +336,12 @@ const TOUCH_CANDIDATES: &[&str] =
     &["src/app/page.tsx", "src/routes/index.tsx", "src/App.tsx", "src/main.rs", "main.go", "index.js", "server.js", "app.py", "main.py"];
 
 fn touch_source(dir: &Path) -> Result<()> {
+    if dir.is_file() {
+        let mut text = fs::read_to_string(dir)?;
+        text.push_str(&format!("\n// rebuild {}\n", chrono_now()));
+        fs::write(dir, text)?;
+        return Ok(());
+    }
     let f = TOUCH_CANDIDATES.iter().map(|c| dir.join(c)).find(|p| p.exists()).ok_or_else(|| anyhow!("no source file to modify in {}", dir.display()))?;
     let mut text = fs::read_to_string(&f)?;
     text.push_str(&format!("\n// rebuild {}\n", chrono_now()));
@@ -314,7 +359,7 @@ fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
 }
 
 fn run_one(cfg: &BenchConfig, app: &AppSpec, tool_spec: &str, run: usize, iface: &str, log_dir: &Path) -> RunResult {
-    let dir = cfg.repo.join("bench/apps").join(&app.name);
+    let dir = app.root(&cfg.repo);
     run_phase(cfg, app, tool_spec, run, iface, log_dir, Phase::Cold, &dir)
 }
 
@@ -372,38 +417,36 @@ fn run_phase(cfg: &BenchConfig, app: &AppSpec, tool_spec: &str, run: usize, ifac
         let start = Instant::now();
         let status = match tool {
             "docker" => {
-                let dockerfile = cfg.repo.join("bench/dockerfiles").join(format!("{}.Dockerfile", app.name));
-                Command::new("docker")
-                    .args(["buildx", "build", "--builder", BUILDER, "--progress", "plain", "--push", "-t", &reference, "-f"])
-                    .arg(&dockerfile)
-                    .arg(&app_dir)
-                    .stdout(log.try_clone()?)
-                    .stderr(log)
-                    .status()?
+                let dockerfile = app.dockerfile(&cfg.repo, &app_dir);
+                let mut c = Command::new("docker");
+                c.args(["buildx", "build", "--builder", BUILDER, "--progress", "plain", "--push", "-t", &reference, "-f"]).arg(&dockerfile);
+                for (k, v) in &app.build_args {
+                    c.arg("--build-arg").arg(format!("{k}={v}"));
+                }
+                c.arg(&app_dir).stdout(log.try_clone()?).stderr(log).status()?
             }
             "railpack" => {
                 let plan = std::env::temp_dir().join(format!("railpack-plan-{}.json", std::process::id()));
-                let st = Command::new(&cfg.railpack_bin)
-                    .args(["prepare"])
-                    .arg(&app_dir)
-                    .arg("--plan-out")
-                    .arg(&plan)
-                    .stdout(log.try_clone()?)
-                    .stderr(log.try_clone()?)
-                    .status()?;
+                let target = app.target(&app_dir);
+                let mut prep = Command::new(&cfg.railpack_bin);
+                prep.args(["prepare"]).arg(&target).arg("--plan-out").arg(&plan);
+                for (k, v) in &app.build_args {
+                    prep.arg("--env").arg(format!("{k}={v}"));
+                }
+                let st = prep.stdout(log.try_clone()?).stderr(log.try_clone()?).status()?;
                 if !st.success() {
                     st
                 } else {
-                    Command::new("docker")
-                        .args(["buildx", "build", "--builder", BUILDER, "--progress", "plain", "--push", "-t", &reference])
+                    let mut c = Command::new("docker");
+                    c.args(["buildx", "build", "--builder", BUILDER, "--progress", "plain", "--push", "-t", &reference])
                         .arg("--build-arg")
                         .arg(format!("BUILDKIT_SYNTAX={}", cfg.railpack_frontend))
                         .arg("-f")
-                        .arg(&plan)
-                        .arg(&app_dir)
-                        .stdout(log.try_clone()?)
-                        .stderr(log)
-                        .status()?
+                        .arg(&plan);
+                    for (k, v) in &app.build_args {
+                        c.arg("--secret").arg(format!("id={k},env={k}")).env(k, v);
+                    }
+                    c.arg(&target).stdout(log.try_clone()?).stderr(log).status()?
                 }
             }
             "acro" => {
@@ -419,7 +462,10 @@ fn run_phase(cfg: &BenchConfig, app: &AppSpec, tool_spec: &str, run: usize, ifac
                 if cfg.mirror {
                     c.arg("--mirror").arg("docker.io=mirror.gcr.io");
                 }
-                c.arg("build").arg(&app_dir).arg("-t").arg(&reference).arg("--compression").arg(&cfg.compression);
+                c.arg("build").arg(app.target(&app_dir)).arg("-t").arg(&reference).arg("--compression").arg(&cfg.compression);
+                for (k, v) in &app.build_args {
+                    c.arg("-e").arg(format!("{k}={v}"));
+                }
                 c.stdout(log.try_clone()?).stderr(log).status()?
             }
             other => bail!("unknown tool {other}"),
@@ -552,12 +598,13 @@ fn tool_version(cfg: &BenchConfig, tool: &str) -> String {
     }
 }
 
-pub fn fingerprint(cfg: &BenchConfig, app: &str, tool: &str) -> String {
+pub fn fingerprint(cfg: &BenchConfig, app: &AppSpec, tool: &str) -> String {
     let mut h = Vec::new();
-    h.extend_from_slice(format!("{tool}\n{}\n{}\n{:?}\n{}\n{}\n", tool_version(cfg, tool), cfg.cpus, cfg.memory, cfg.mirror, cfg.drop_caches).as_bytes());
-    tree_hash(&cfg.repo.join("bench/apps").join(app), &mut h);
+    h.extend_from_slice(format!("{tool}\n{}\n{}\n{:?}\n{}\n{}\n{:?}\n{:?}\n", tool_version(cfg, tool), cfg.cpus, cfg.memory, cfg.mirror, cfg.drop_caches, app.build_args, app.subdir).as_bytes());
+    let root = app.root(&cfg.repo);
+    tree_hash(&root, &mut h);
     if tool == "docker" {
-        h.extend_from_slice(&fs::read(cfg.repo.join("bench/dockerfiles").join(format!("{app}.Dockerfile"))).unwrap_or_default());
+        h.extend_from_slice(&fs::read(app.dockerfile(&cfg.repo, &root)).unwrap_or_default());
     }
     acro_store::sha256_bytes(&h).hex()[..16].to_string()
 }
@@ -612,7 +659,7 @@ fn measure(cfg: &BenchConfig, app: &AppSpec, tool: &str, run: usize, iface: &str
     let both = cfg.scenario == "both";
     let work = std::env::temp_dir().join(format!("acro-bench-app-{}", std::process::id())).join(&app.name);
     let _ = fs::remove_dir_all(&work);
-    let prepared = fs::create_dir_all(work.parent().unwrap()).map_err(anyhow::Error::from).and_then(|_| copy_dir(&cfg.repo.join("bench/apps").join(&app.name), &work));
+    let prepared = fs::create_dir_all(work.parent().unwrap()).map_err(anyhow::Error::from).and_then(|_| copy_dir(&app.root(&cfg.repo), &work));
     let mut prime = match prepared {
         Ok(()) => run_phase(cfg, app, tool, run, iface, log_dir, Phase::Prime, &work),
         Err(e) => RunResult { app: app.name.clone(), tool: tool.to_string(), run, error: Some(format!("{e:#}")), ..Default::default() },
@@ -622,7 +669,7 @@ fn measure(cfg: &BenchConfig, app: &AppSpec, tool: &str, run: usize, iface: &str
     }
     print_result(&prime);
     let rebuild = if prime.ok {
-        match touch_source(&work) {
+        match touch_source(&app.touch.as_ref().map(|t| work.join(t)).unwrap_or_else(|| work.clone())) {
             Ok(()) => run_phase(cfg, app, tool, run, iface, log_dir, Phase::Rebuild, &work),
             Err(e) => RunResult { scenario: "rebuild".into(), ok: false, error: Some(format!("{e:#}")), ..prime.clone() },
         }
@@ -634,7 +681,7 @@ fn measure(cfg: &BenchConfig, app: &AppSpec, tool: &str, run: usize, iface: &str
 }
 
 pub fn run(cfg: BenchConfig) -> Result<Vec<RunResult>> {
-    let specs: Vec<AppSpec> = serde_json::from_slice(&fs::read(cfg.repo.join("bench/apps.json"))?)?;
+    let specs: Vec<AppSpec> = serde_json::from_slice(&fs::read(cfg.apps_file.clone().unwrap_or_else(|| cfg.repo.join("bench/apps.json")))?)?;
     let iface = default_iface();
     fs::create_dir_all(cfg.out.parent().unwrap_or(Path::new(".")))?;
     let log_dir = cfg.out.with_extension("logs");
@@ -650,7 +697,7 @@ pub fn run(cfg: BenchConfig) -> Result<Vec<RunResult>> {
             let app = specs.iter().find(|s| &s.name == name).with_context(|| format!("unknown app {name}"))?;
             for tool in &cfg.tools {
                 let competitor = matches!(tool.as_str(), "docker" | "railpack");
-                let fp = if competitor { fingerprint(&cfg, &app.name, tool) } else { String::new() };
+                let fp = if competitor { fingerprint(&cfg, app, tool) } else { String::new() };
                 let rows = match competitor.then(|| cached_runs(&cfg, &fp, run, &scenarios)).flatten() {
                     Some(rows) => {
                         eprintln!("[bench] {} {} run {} reused", app.name, tool, run);
@@ -666,7 +713,7 @@ pub fn run(cfg: BenchConfig) -> Result<Vec<RunResult>> {
                             print_result(r);
                         }
                         if competitor {
-                            let fp = fingerprint(&cfg, &app.name, tool);
+                            let fp = fingerprint(&cfg, app, tool);
                             rows.iter_mut().for_each(|r| r.fingerprint = fp.clone());
                             store_cached(&cfg, &rows);
                         }

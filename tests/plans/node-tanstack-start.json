@@ -99,6 +99,17 @@
   },
   {
    "action": {
+    "kind": "toolchain",
+    "parts": [],
+    "spec": "latest",
+    "tool": "bun"
+   },
+   "deps": [],
+   "id": "bun",
+   "name": "bun latest"
+  },
+  {
+   "action": {
     "argv": [
      "/bin/sh",
      "-c",
@@ -112,11 +123,12 @@
      "npm_package_name": "tanstack-start-example-basic"
     },
     "kind": "run",
-    "network": false
+    "network": true
    },
    "deps": [
     "node",
-    "install"
+    "install",
+    "bun"
    ],
    "id": "build",
    "name": "run vite build && tsc --noEmit"
@@ -202,5 +214,7 @@
    "name": "push image"
   }
  ],
- "warnings": []
+ "warnings": [
+  "the build step runs with network access like docker build; set ACRO_HERMETIC_BUILD=1 to run it without network"
+ ]
 }

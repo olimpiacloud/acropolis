@@ -79,7 +79,8 @@
     "kind": "npm-install",
     "manager": "npm",
     "scripts": "",
-    "target": "src"
+    "target": "src",
+    "types_only": true
    },
    "deps": [
     "npm-fetch",

@@ -694,7 +694,7 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                 other => bail!("unsupported toolchain {other}"),
             }
         }
-        Action::NpmFetch { manager, lockfile, dev, .. } => {
+        Action::NpmFetch { manager, lockfile, dev, workspaces, .. } => {
             let opts = InstallOptions { include_dev: *dev, include_optional: true, platform: Default::default() };
             let out_of_sync = manager == "npm" && !lockfile.is_empty() && npm_lock_out_of_sync(&ctx.opts.app_dir, lockfile);
             if out_of_sync && ctx.opts.env.flag("STRICT_LOCKFILE") {
@@ -708,7 +708,7 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                 let ws = acro_npm::yarn::expand_workspaces(&ctx.opts.app_dir, &pj);
                 acro_npm::resolve::plan_without_lockfile(&ctx.fetcher, &pj, &ws, &opts).await?
             } else {
-                install_plan_for(manager, &ctx.opts.app_dir, lockfile, &opts)?
+                install_plan_scoped(manager, &ctx.opts.app_dir, lockfile, &opts, workspaces)?
             };
             for p in &plan.packages {
                 if let acro_npm::Source::Git { url } = &p.source {
@@ -866,11 +866,15 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             if nm_bin.exists() {
                 path.push(nm_bin.to_string_lossy().into_owned());
             }
+            let root_bin = ctx.src.join("node_modules").join(".bin");
+            if cwd_path != ctx.src && cwd_path.starts_with(&ctx.src) && root_bin.exists() {
+                path.push(root_bin.to_string_lossy().into_owned());
+            }
             for t in &tools {
                 path.push(t.bin_dir.to_string_lossy().into_owned());
             }
             path.push("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into());
-            let home = ctx.work.join("home");
+            let home = ctx.cache_path("home");
             let tmp = ctx.work.join("tmp");
             std::fs::create_dir_all(&home)?;
             std::fs::create_dir_all(&tmp)?;
@@ -1026,7 +1030,21 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             Ok(Out::Upper(upper))
         }
         Action::Layer { dest, from } => {
-            let layer = build_layer(ctx, step, dest, from).await?;
+            let key = layer_cache_key(ctx, step, from);
+            let cached = key.as_ref().and_then(|k| load_cached_layer(ctx, k));
+            let reused = cached.is_some();
+            let layer = match cached {
+                Some(l) => l,
+                None => build_layer(ctx, step, dest, from).await?,
+            };
+            if let Some(k) = &key
+                && !reused
+            {
+                save_cached_layer(ctx, k, &layer);
+            }
+            if reused {
+                acro_events::log(&step.id, "reused layer built from the same inputs");
+            }
             acro_events::log(
                 &step.id,
                 format!(
@@ -1087,6 +1105,10 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
 }
 
 pub fn install_plan_for(manager: &str, app_dir: &Path, lockfile: &str, opts: &InstallOptions) -> Result<InstallPlan> {
+    install_plan_scoped(manager, app_dir, lockfile, opts, &[])
+}
+
+pub fn install_plan_scoped(manager: &str, app_dir: &Path, lockfile: &str, opts: &InstallOptions, workspaces: &[String]) -> Result<InstallPlan> {
     let bytes = std::fs::read(app_dir.join(lockfile)).with_context(|| format!("reading {lockfile}"))?;
     match manager {
         "npm" => InstallPlan::from_lock(&PackageLock::parse(&bytes)?, opts),
@@ -1102,7 +1124,7 @@ pub fn install_plan_for(manager: &str, app_dir: &Path, lockfile: &str, opts: &In
         }
         "bun" => {
             let text = String::from_utf8(bytes).context("bun.lock is not UTF-8")?;
-            acro_npm::bun::BunLock::parse(&text)?.install_plan(opts)
+            acro_npm::bun::BunLock::parse(&text)?.install_plan_scoped(opts, workspaces)
         }
         other => bail!("unsupported package manager {other}"),
     }
@@ -1488,6 +1510,54 @@ async fn write_oci_layout(ctx: &Arc<Ctx>, base: Option<&ResolvedImage>, layers: 
 }
 
 const NFT_CACHE_HOOK: &str = include_str!("nft-cache.js");
+
+fn layer_cache_key(ctx: &Arc<Ctx>, step: &Step, from: &LayerFrom) -> Option<String> {
+    if !matches!(from, LayerFrom::Tool { .. } | LayerFrom::ToolTree { .. } | LayerFrom::NodeModules { .. } | LayerFrom::Inline { .. }) {
+        return None;
+    }
+    let mut versions: Vec<String> = ctx.dep_outputs(step).into_iter().filter_map(|o| if let Out::Tool(t) = o { Some(format!("{}={}", t.name, t.version)) } else { None }).collect();
+    versions.sort();
+    let o = ctx.opts.layer;
+    let text = format!("v1 {} {:?} {} {} {}", step.hash, o.compression, o.level, versions.join(","), step.id);
+    Some(acro_store::sha256_bytes(text.as_bytes()).hex())
+}
+
+fn load_cached_layer(ctx: &Arc<Ctx>, key: &str) -> Option<Layer> {
+    let text = std::fs::read_to_string(ctx.opts.home.join("layer-cache").join(format!("{key}.json"))).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let digest = acro_store::Integrity::parse_oci(v["digest"].as_str()?).ok()?;
+    let diff_id = acro_store::Integrity::parse_oci(v["diff_id"].as_str()?).ok()?;
+    let blob = ctx.store.get(&digest)?;
+    crate::gc::touch(&blob.path);
+    Some(Layer {
+        digest,
+        diff_id,
+        size: v["size"].as_u64()?,
+        uncompressed_size: v["uncompressed_size"].as_u64()?,
+        media_type: v["media_type"].as_str()?.to_string(),
+        path: blob.path,
+        comment: v["comment"].as_str().unwrap_or("").to_string(),
+    })
+}
+
+fn save_cached_layer(ctx: &Arc<Ctx>, key: &str, l: &Layer) {
+    let dir = ctx.opts.home.join("layer-cache");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let v = serde_json::json!({
+        "digest": l.digest.to_oci(),
+        "diff_id": l.diff_id.to_oci(),
+        "size": l.size,
+        "uncompressed_size": l.uncompressed_size,
+        "media_type": l.media_type,
+        "comment": l.comment,
+    });
+    let tmp = dir.join(format!("{key}.{}.tmp", std::process::id()));
+    if std::fs::write(&tmp, v.to_string()).is_ok() {
+        let _ = std::fs::rename(&tmp, dir.join(format!("{key}.json")));
+    }
+}
 
 async fn github_latest_tag(repo: &str) -> Result<String> {
     let url = format!("https://github.com/{repo}/releases/latest");

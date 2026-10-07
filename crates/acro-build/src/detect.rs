@@ -79,6 +79,8 @@ pub struct NodeApp {
     pub scripts: BTreeMap<String, String>,
     pub framework: Framework,
     pub has_workspaces: bool,
+    pub root: PathBuf,
+    pub member: Option<String>,
 }
 
 impl NodeApp {
@@ -243,7 +245,79 @@ pub fn read_package_json(dir: &Path) -> Result<Value> {
     serde_yaml::from_str(&text).context("parsing package.yaml")
 }
 
+pub fn workspace_members(root: &Path, pj: &Value) -> Vec<String> {
+    let mut globs: Vec<String> = Vec::new();
+    if let Ok(text) = std::fs::read_to_string(root.join("pnpm-workspace.yaml")) {
+        let mut in_packages = false;
+        for line in text.lines() {
+            if !line.starts_with(' ') && !line.starts_with('-') {
+                in_packages = line.trim_end() == "packages:";
+                continue;
+            }
+            if in_packages && let Some(g) = line.trim().strip_prefix('-') {
+                globs.push(g.trim().trim_matches(['"', '\'']).to_string());
+            }
+        }
+    }
+    let ws = pj.get("workspaces");
+    let arr = ws.and_then(|w| w.as_array()).or_else(|| ws.and_then(|w| w.get("packages")).and_then(|p| p.as_array()));
+    for g in arr.into_iter().flatten().filter_map(|g| g.as_str()) {
+        globs.push(g.to_string());
+    }
+    let mut out = Vec::new();
+    for g in globs {
+        let g = g.trim_start_matches("./").trim_end_matches('/');
+        if g.starts_with('!') {
+            continue;
+        }
+        if let Some(parent) = g.strip_suffix("/*").or_else(|| g.strip_suffix("/**")) {
+            let Ok(rd) = std::fs::read_dir(root.join(parent)) else { continue };
+            for e in rd.flatten() {
+                if e.path().join("package.json").exists() {
+                    out.push(format!("{parent}/{}", e.file_name().to_string_lossy()));
+                }
+            }
+        } else if root.join(g).join("package.json").exists() {
+            out.push(g.to_string());
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+const LOCKFILES: &[(&str, PackageManager)] = &[
+    ("package-lock.json", PackageManager::Npm),
+    ("pnpm-lock.yaml", PackageManager::Pnpm),
+    ("bun.lock", PackageManager::Bun),
+    ("bun.lockb", PackageManager::Bun),
+    ("yarn.lock", PackageManager::Yarn1),
+];
+
+pub fn workspace_root(dir: &Path) -> Option<(PathBuf, String)> {
+    let dir = std::fs::canonicalize(dir).ok()?;
+    if LOCKFILES.iter().any(|(f, _)| dir.join(f).exists()) {
+        return None;
+    }
+    let mut cur = dir.parent();
+    for _ in 0..6 {
+        let root = cur?;
+        if has_package_json(root) || root.join("pnpm-workspace.yaml").exists() {
+            let pj = read_package_json(root).unwrap_or(Value::Null);
+            let rel = dir.strip_prefix(root).ok()?.to_string_lossy().into_owned();
+            if workspace_members(root, &pj).contains(&rel) {
+                return Some((root.to_path_buf(), rel));
+            }
+        }
+        cur = root.parent();
+    }
+    None
+}
+
 pub fn detect_node(dir: &Path, env: &Env) -> Result<NodeApp> {
+    let member = workspace_root(dir);
+    let root = member.as_ref().map(|(r, _)| r.clone()).unwrap_or_else(|| dir.to_path_buf());
+    let root_pj = if member.is_some() { read_package_json(&root)? } else { Value::Null };
     let pj = read_package_json(dir)?;
     let scripts: BTreeMap<String, String> = pj
         .get("scripts")
@@ -256,17 +330,23 @@ pub fn detect_node(dir: &Path, env: &Env) -> Result<NodeApp> {
         let version = first.get("version").and_then(|v| v.as_str()).unwrap_or("");
         Some(if version.is_empty() { name.to_string() } else { format!("{name}@{version}") })
     });
-    let pm_field = pj.get("packageManager").and_then(|p| p.as_str()).map(|s| s.to_string()).or(dev_engine);
+    let root_dev_engine = root_pj.get("devEngines").and_then(|d| d.get("packageManager")).and_then(|p| {
+        let first = if let Some(a) = p.as_array() { a.first()? } else { p };
+        let name = first.get("name")?.as_str()?;
+        let version = first.get("version").and_then(|v| v.as_str()).unwrap_or("");
+        Some(if version.is_empty() { name.to_string() } else { format!("{name}@{version}") })
+    });
+    let pm_field = root_pj
+        .get("packageManager")
+        .and_then(|p| p.as_str())
+        .map(|s| s.to_string())
+        .or(root_dev_engine)
+        .or_else(|| pj.get("packageManager").and_then(|p| p.as_str()).map(|s| s.to_string()))
+        .or(dev_engine);
     let (mut pm, mut lockfile) = (PackageManager::Npm, None);
-    for (file, m) in [
-        ("package-lock.json", PackageManager::Npm),
-        ("pnpm-lock.yaml", PackageManager::Pnpm),
-        ("bun.lock", PackageManager::Bun),
-        ("bun.lockb", PackageManager::Bun),
-        ("yarn.lock", PackageManager::Yarn1),
-    ] {
-        if dir.join(file).exists() {
-            pm = m;
+    for (file, m) in LOCKFILES {
+        if root.join(file).exists() {
+            pm = *m;
             lockfile = Some(file.to_string());
             break;
         }
@@ -300,15 +380,18 @@ pub fn detect_node(dir: &Path, env: &Env) -> Result<NodeApp> {
         }
     }
     if pm == PackageManager::Yarn1 && pm_field.is_none() {
-        if let Ok(text) = std::fs::read_to_string(dir.join("yarn.lock"))
+        if let Ok(text) = std::fs::read_to_string(root.join("yarn.lock"))
             && text.contains("__metadata:")
         {
             pm = PackageManager::YarnBerry;
         }
     }
-    let node = node_version(dir, &pj, env);
+    let mut node = node_version(dir, &pj, env);
+    if member.is_some() && node.source == "default" {
+        node = node_version(&root, &root_pj, env);
+    }
     let framework = detect_framework(&pj, &scripts);
-    let has_workspaces = pj.get("workspaces").is_some() || dir.join("pnpm-workspace.yaml").exists();
+    let has_workspaces = member.is_none() && (pj.get("workspaces").is_some() || dir.join("pnpm-workspace.yaml").exists());
     Ok(NodeApp {
         dir: dir.to_path_buf(),
         package_json: pj,
@@ -319,6 +402,8 @@ pub fn detect_node(dir: &Path, env: &Env) -> Result<NodeApp> {
         scripts,
         framework,
         has_workspaces,
+        root,
+        member: member.map(|(_, rel)| rel),
     })
 }
 

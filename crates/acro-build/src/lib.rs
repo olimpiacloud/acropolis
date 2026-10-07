@@ -270,6 +270,10 @@ pub async fn build(opts: BuildOptions, exec: Arc<dyn acro_exec::Executor>) -> Re
     if let Some(cfg) = config::load(&opts.app_dir, &opts.env)? {
         config::apply(&cfg, &mut opts.env)?;
     }
+    if let Some(c) = &plan.context {
+        opts.app_dir = std::fs::canonicalize(opts.app_dir.join(c))?;
+        acro_events::log("plan", format!("workspace member: building from {}", opts.app_dir.display()));
+    }
     acro_events::emit(acro_events::Event::BuildStarted { app: plan.app.clone() });
     let res = run::execute(plan.clone(), opts, exec).await?;
     Ok((plan, res))

@@ -123,6 +123,13 @@ fn next_standalone(app: &NodeApp) -> bool {
     false
 }
 
+fn nitro_start(start: Option<&str>) -> bool {
+    match start {
+        None => true,
+        Some(s) => matches!(s.trim(), "node .output/server/index.mjs" | "node ./.output/server/index.mjs"),
+    }
+}
+
 fn tanstack_nitro(app: &NodeApp) -> bool {
     app.has_dep("nitro")
         && ["vite.config.ts", "vite.config.js"]
@@ -237,10 +244,10 @@ fn runtime(app: &NodeApp, env: &Env) -> Result<Runtime> {
     }
     match app.framework {
         Framework::Next if next_standalone(app) && has_build && !custom_start => return Ok(Runtime::NextStandalone),
-        Framework::TanstackStart if tanstack_nitro(app) && app.script("start").is_none() && has_build => {
+        Framework::TanstackStart if tanstack_nitro(app) && nitro_start(app.script("start")) && has_build && !custom_start => {
             return Ok(Runtime::Nitro);
         }
-        Framework::Nuxt if app.script("start").is_none() && has_build && !custom_start => return Ok(Runtime::Nitro),
+        Framework::Nuxt if nitro_start(app.script("start")) && has_build && !custom_start => return Ok(Runtime::Nitro),
         _ => {}
     }
     let start = start.or_else(|| match app.framework {
@@ -277,7 +284,7 @@ fn pnpm_allowed_builds(app: &NodeApp) -> Vec<String> {
         .and_then(|o| o.as_array())
         .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
         .unwrap_or_default();
-    if let Ok(text) = std::fs::read_to_string(app.dir.join("pnpm-workspace.yaml"))
+    if let Ok(text) = std::fs::read_to_string(app.root.join("pnpm-workspace.yaml"))
         && let Ok(y) = serde_yaml::from_str::<serde_yaml::Value>(&text)
     {
         if let Some(m) = y.get("allowBuilds").and_then(|m| m.as_mapping()) {
@@ -302,7 +309,7 @@ fn pnpm_lock_lacks_build_info(app: &NodeApp, lockfile: &str) -> bool {
     if lockfile.is_empty() {
         return false;
     }
-    let text = std::fs::read_to_string(app.dir.join(lockfile)).unwrap_or_default();
+    let text = std::fs::read_to_string(app.root.join(lockfile)).unwrap_or_default();
     !text.contains("requiresBuild:")
 }
 
@@ -330,44 +337,7 @@ fn browser_runtime(b: &mut PlanBuilder, app: &NodeApp, env: &Env, image_env: &mu
 }
 
 fn workspace_dirs(app: &NodeApp) -> Vec<String> {
-    let mut globs: Vec<String> = Vec::new();
-    if let Ok(text) = std::fs::read_to_string(app.dir.join("pnpm-workspace.yaml")) {
-        let mut in_packages = false;
-        for line in text.lines() {
-            if !line.starts_with(' ') && !line.starts_with('-') {
-                in_packages = line.trim_end() == "packages:";
-                continue;
-            }
-            if in_packages && let Some(g) = line.trim().strip_prefix('-') {
-                globs.push(g.trim().trim_matches(['"', '\'']).to_string());
-            }
-        }
-    }
-    let ws = app.package_json.get("workspaces");
-    let arr = ws.and_then(|w| w.as_array()).or_else(|| ws.and_then(|w| w.get("packages")).and_then(|p| p.as_array()));
-    for g in arr.into_iter().flatten().filter_map(|g| g.as_str()) {
-        globs.push(g.to_string());
-    }
-    let mut out = Vec::new();
-    for g in globs {
-        let g = g.trim_start_matches("./").trim_end_matches('/');
-        if g.starts_with('!') {
-            continue;
-        }
-        if let Some(parent) = g.strip_suffix("/*").or_else(|| g.strip_suffix("/**")) {
-            let Ok(rd) = std::fs::read_dir(app.dir.join(parent)) else { continue };
-            for e in rd.flatten() {
-                if e.path().join("package.json").exists() {
-                    out.push(format!("{parent}/{}", e.file_name().to_string_lossy()));
-                }
-            }
-        } else if app.dir.join(g).join("package.json").exists() {
-            out.push(g.to_string());
-        }
-    }
-    out.sort();
-    out.dedup();
-    out
+    crate::detect::workspace_members(&app.dir, &app.package_json)
 }
 
 fn nx_next_app(app: &NodeApp, env: &Env) -> Option<(String, String)> {
@@ -394,6 +364,120 @@ fn nx_next_app(app: &NodeApp, env: &Env) -> Option<(String, String)> {
 }
 
 pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
+    let mut p = plan_inner(app, env, name)?;
+    if let Some(rel) = &app.member {
+        apply_member(&mut p, app, rel);
+    }
+    Ok(p)
+}
+
+fn workspace_deps(app: &NodeApp, rel: &str) -> Vec<String> {
+    let root_pj = crate::detect::read_package_json(&app.root).unwrap_or(Value::Null);
+    let members = crate::detect::workspace_members(&app.root, &root_pj);
+    let names: Vec<(String, String)> = members
+        .iter()
+        .filter_map(|m| {
+            let pj = crate::detect::read_package_json(&app.root.join(m)).ok()?;
+            Some((pj.get("name")?.as_str()?.to_string(), m.clone()))
+        })
+        .collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut stack = vec![rel.to_string()];
+    while let Some(dir) = stack.pop() {
+        let Ok(pj) = crate::detect::read_package_json(&app.root.join(&dir)) else { continue };
+        for key in ["dependencies", "optionalDependencies"] {
+            for (dep, spec) in pj.get(key).and_then(|d| d.as_object()).into_iter().flatten() {
+                let local = spec.as_str().map(|s| s.starts_with("workspace:")).unwrap_or(false) || names.iter().any(|(n, _)| n == dep);
+                if !local {
+                    continue;
+                }
+                if let Some((_, m)) = names.iter().find(|(n, _)| n == dep)
+                    && m != rel
+                    && !out.contains(m)
+                {
+                    out.push(m.clone());
+                    stack.push(m.clone());
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+fn apply_member(plan: &mut Plan, app: &NodeApp, rel: &str) {
+    let depth = rel.split('/').filter(|c| !c.is_empty()).count();
+    plan.context = Some(vec![".."; depth].join("/"));
+    plan.facts.insert("workspace-member".into(), rel.to_string());
+    let deps = workspace_deps(app, rel);
+    if !deps.is_empty() {
+        plan.facts.insert("workspace-deps".into(), deps.join(" "));
+    }
+    let mut whole_tree = false;
+    let mut extra_layers: Vec<(String, String)> = Vec::new();
+    for s in plan.steps.iter_mut() {
+        match &mut s.action {
+            Action::NpmFetch { workspaces, .. } => *workspaces = vec![String::new(), rel.to_string()],
+            Action::Layer { dest, from: LayerFrom::WorkDir { path, exclude } } if path == "." && dest == "app" => {
+                whole_tree = true;
+                *path = rel.to_string();
+                *dest = format!("app/{rel}");
+                if !exclude.iter().any(|e| e == "**/node_modules") {
+                    exclude.push("**/node_modules".into());
+                }
+                extra_layers.push((s.id.clone(), s.deps.first().cloned().unwrap_or_default()));
+            }
+            Action::Run { cwd, .. } if cwd == "." => *cwd = rel.to_string(),
+            Action::ImageRun { commands, mount_app: true, .. } => commands.insert(0, format!("cd /app/{rel}")),
+            Action::Layer { from, .. } => match from {
+                LayerFrom::WorkDir { path, .. } if path == "." => whole_tree = true,
+                LayerFrom::WorkDir { path, .. } if !path.starts_with("@work/") => *path = format!("{rel}/{path}"),
+                LayerFrom::AppSubdir { path, .. } => *path = format!("{rel}/{path}"),
+                LayerFrom::AppSource { .. } => whole_tree = true,
+                LayerFrom::Paths { items } => {
+                    for (from, _) in items.iter_mut() {
+                        *from = format!("{rel}/{from}");
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+    for (layer_id, dep) in extra_layers {
+        let mut items: Vec<(String, String)> = vec![("package.json".into(), "package.json".into())];
+        items.extend(deps.iter().map(|d| (d.clone(), d.clone())));
+        let id = format!("{layer_id}-workspace");
+        let idx = plan.steps.iter().position(|s| s.id == layer_id).map(|i| i + 1).unwrap_or(plan.steps.len());
+        plan.steps.insert(
+            idx,
+            crate::plan::Step {
+                id: id.clone(),
+                name: "layer workspace root and local packages".into(),
+                action: Action::Layer { dest: "app".into(), from: LayerFrom::Paths { items } },
+                deps: if dep.is_empty() { vec![] } else { vec![dep] },
+                hash: String::new(),
+            },
+        );
+        if let Some(push) = plan.steps.iter_mut().find(|s| s.id == "push") {
+            push.deps.push(id.clone());
+        }
+        if let Some(pos) = plan.image.layers.iter().position(|l| *l == layer_id) {
+            plan.image.layers.insert(pos, id);
+        }
+    }
+    if whole_tree && plan.image.workdir.as_deref() == Some("/app") {
+        plan.image.workdir = Some(format!("/app/{rel}"));
+    }
+    for (k, v) in plan.image.env.iter_mut() {
+        if k == "PATH" && v.contains("/app/node_modules/.bin") {
+            *v = format!("/app/{rel}/node_modules/.bin:{v}");
+        }
+    }
+    plan.finalize();
+}
+
+fn plan_inner(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
     if app.script("build").is_none()
         && env.config("BUILD_CMD").is_none()
         && let Some((rel, project)) = nx_next_app(app, env)
@@ -428,14 +512,14 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
         b.plan.warnings.push("no lockfile: dependencies are resolved from the npm registry at build time, so the build is not reproducible".into());
         String::new()
     } else {
-        acro_store::sha256_bytes(&std::fs::read(app.dir.join(&lockfile))?).hex()
+        acro_store::sha256_bytes(&std::fs::read(app.root.join(&lockfile))?).hex()
     };
     let rt = runtime(app, env)?;
     let prod_opts = acro_npm::InstallOptions { include_dev: false, include_optional: true, platform: Default::default() };
     let prod_plan = if lockfile.is_empty() {
         acro_npm::InstallPlan::default()
     } else {
-        crate::run::install_plan_for(manager, &app.dir, &lockfile, &prod_opts)?
+        crate::run::install_plan_for(manager, &app.root, &lockfile, &prod_opts)?
     };
     let script_override = env.config("INSTALL_SCRIPTS").map(|(v, _)| v);
     let allowed_builds = if manager == "pnpm" { pnpm_allowed_builds(app) } else { Vec::new() };
@@ -508,7 +592,7 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
             b.step(
                 "npm-fetch",
                 "fetch production packages",
-                Action::NpmFetch { manager: manager.into(), lockfile: lockfile.clone(), lockfile_sha256: lock_sha, dev: false },
+                Action::NpmFetch { manager: manager.into(), lockfile: lockfile.clone(), lockfile_sha256: lock_sha, dev: false, workspaces: vec![] },
                 &[],
             );
             prod_deps_layer(&mut b, app, manager, &policy, prod_needs_scripts, "npm-fetch", false);
@@ -552,7 +636,7 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
             let mut parts = vec![];
             let dev_opts = acro_npm::InstallOptions { include_dev: true, include_optional: true, platform: Default::default() };
             let dev_scripts = unknown_scripts
-                || (!lockfile.is_empty() && !scripted(&crate::run::install_plan_for(manager, &app.dir, &lockfile, &dev_opts)?).is_empty());
+                || (!lockfile.is_empty() && !scripted(&crate::run::install_plan_for(manager, &app.root, &lockfile, &dev_opts)?).is_empty());
             let dev_scripts = dev_scripts && policy != acro_npm::scripts::Policy::None;
             if uses_npm_cli(&build_cmd) || dev_scripts || prod_needs_scripts {
                 parts.push("npm".to_string());
@@ -569,7 +653,7 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
             b.step(
                 "npm-fetch",
                 "fetch packages",
-                Action::NpmFetch { manager: manager.into(), lockfile: lockfile.clone(), lockfile_sha256: lock_sha, dev: true },
+                Action::NpmFetch { manager: manager.into(), lockfile: lockfile.clone(), lockfile_sha256: lock_sha, dev: true, workspaces: vec![] },
                 &[],
             );
             b.step("source", "copy source", Action::CopySource { exclude: vec!["**/node_modules".into()] }, &[]);
@@ -608,13 +692,22 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
                 run_env.insert("ACRO_NFT_CACHE".to_string(), "{src}/.next/cache/acro-nft-analysis.json".to_string());
             }
             let build_cmd = if adapter_auto { format!("{SVELTEKIT_ADAPTER_NODE} && {build_cmd}") } else { build_cmd };
-            let network = matches!(app.framework, Framework::Next) || adapter_auto || env.flag("BUILD_NETWORK");
+            let network = !env.flag("HERMETIC_BUILD") || adapter_auto;
             if network {
-                b.plan.warnings.push("the build step runs with network access (next build may fetch fonts); it is not hermetic".into());
+                b.plan.warnings.push("the build step runs with network access like docker build; set ACRO_HERMETIC_BUILD=1 to run it without network".into());
             }
             if let Some(pkgs) = build_apt_packages(env) {
                 b.fact("build-apt-packages", pkgs);
             }
+            let build_deps: Vec<&str> = if uses_bun(&build_cmd) || app.pm == PackageManager::Bun {
+                let spec = bun_spec(app, env);
+                if b.plan.step("bun").is_none() {
+                    b.step("bun", format!("bun {spec}"), Action::Toolchain { tool: "bun".into(), spec, parts: vec![] }, &[]);
+                }
+                vec!["node", "install", "bun"]
+            } else {
+                vec!["node", "install"]
+            };
             b.step(
                 "build",
                 format!("run {build_cmd}"),
@@ -638,7 +731,7 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
                     }
                     None => Action::Run { argv: vec!["/bin/sh".into(), "-c".into(), build_cmd.clone()], env: run_env, network, cwd: ".".into() },
                 },
-                &["node", "install"],
+                &build_deps,
             );
             match rt {
                 Runtime::NextStandalone => {
@@ -736,7 +829,7 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
                     b.step(
                         "npm-fetch-prod",
                         "select production packages",
-                        Action::NpmFetch { manager: manager.into(), lockfile: lockfile.clone(), lockfile_sha256: String::new(), dev: false },
+                        Action::NpmFetch { manager: manager.into(), lockfile: lockfile.clone(), lockfile_sha256: String::new(), dev: false, workspaces: vec![] },
                         &["npm-fetch"],
                     );
                     prod_deps_layer(&mut b, app, manager, &policy, prod_needs_scripts, "npm-fetch-prod", true);
@@ -767,6 +860,11 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
                         layers.push("layer-prisma".into());
                         push_deps.push("layer-prisma");
                     }
+                    if uses_bun(&start) {
+                        add_bun_layer(&mut b, app, env);
+                        push_deps.push("layer-bun");
+                        layers.insert(0, "layer-bun".into());
+                    }
                     b.step("push", "push image", Action::Push, &push_deps);
                     b.plan.image.layers = layers;
                     b.plan.image.cmd = Some(command_argv(&start));
@@ -789,7 +887,7 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
 }
 
 fn yarn_berry_version(app: &NodeApp) -> (String, Option<String>) {
-    let rc = std::fs::read_to_string(app.dir.join(".yarnrc.yml")).unwrap_or_default();
+    let rc = std::fs::read_to_string(app.root.join(".yarnrc.yml")).unwrap_or_default();
     for line in rc.lines() {
         if let Some(p) = line.trim().strip_prefix("yarnPath:") {
             let p = p.trim().trim_matches('"').trim_matches('\'').to_string();
@@ -800,7 +898,7 @@ fn yarn_berry_version(app: &NodeApp) -> (String, Option<String>) {
     if let Some(v) = &app.pm_version {
         return (v.clone(), None);
     }
-    let lock = std::fs::read_to_string(app.dir.join("yarn.lock")).unwrap_or_default();
+    let lock = std::fs::read_to_string(app.root.join("yarn.lock")).unwrap_or_default();
     let meta: u32 = lock
         .lines()
         .skip_while(|l| !l.starts_with("__metadata:"))
@@ -869,7 +967,7 @@ fn plan_yarn_berry(app: &NodeApp, env: &Env, mut b: PlanBuilder) -> Result<Plan>
         b.step("build", "yarn run build", Action::Run { argv, env: benv, network: false, cwd: ".".into() }, &["install"]);
         last = "build".into();
     }
-    let pnp = !std::fs::read_to_string(app.dir.join(".yarnrc.yml")).unwrap_or_default().contains("nodeLinker: node-modules");
+    let pnp = !std::fs::read_to_string(app.root.join(".yarnrc.yml")).unwrap_or_default().contains("nodeLinker: node-modules");
     let mut image_env = vec![("NODE_ENV".to_string(), "production".to_string())];
     match rt {
         Runtime::Spa { out } => {
@@ -967,6 +1065,9 @@ fn plan_bun_binary_lock(app: &NodeApp, env: &Env, mut b: PlanBuilder) -> Result<
 const SVELTEKIT_ADAPTER_NODE: &str = r#"{ [ -e node_modules/@sveltejs/adapter-node ] || { v=$(node -p "(require('fs').readFileSync('node_modules/@sveltejs/adapter-auto/adapters.js','utf8').match(/adapter-node['\"],\s*version:\s*['\"]([^'\"]+)/)||[0,'latest'])[1]" 2>/dev/null || echo latest) && d="${TMPDIR:-/tmp}/sveltekit-adapter-node" && npm install --prefix "$d" --no-save --no-package-lock --no-audit --no-fund --legacy-peer-deps --loglevel=error "@sveltejs/adapter-node@$v" && mkdir -p node_modules/@sveltejs && ln -sfn "$d/node_modules/@sveltejs/adapter-node" node_modules/@sveltejs/adapter-node; }; }"#;
 
 fn native_bundle_eligible(app: &NodeApp, env: &Env, build_cmd: &str, lockfile: &str) -> Option<Vec<String>> {
+    if app.member.is_some() {
+        return None;
+    }
     if app.framework != Framework::Vite || lockfile.is_empty() {
         return None;
     }
@@ -1027,7 +1128,7 @@ fn plan_native_spa(
         b.step(
             "npm-fetch",
             "fetch packages",
-            Action::NpmFetch { manager: manager.into(), lockfile: lockfile.into(), lockfile_sha256: lock_sha.into(), dev: true },
+            Action::NpmFetch { manager: manager.into(), lockfile: lockfile.into(), lockfile_sha256: lock_sha.into(), dev: true, workspaces: vec![] },
             &[],
         );
         b.step("source", "copy source", Action::CopySource { exclude: vec!["**/node_modules".into()] }, &[]);
@@ -1078,7 +1179,7 @@ fn pnpm_spec(app: &NodeApp) -> String {
     if let Some(v) = app.package_json.get("engines").and_then(|e| e.get("pnpm")).and_then(|v| v.as_str()) {
         return acro_semver::fuzzy_version(v);
     }
-    let lock = std::fs::read_to_string(app.dir.join("pnpm-lock.yaml")).unwrap_or_default();
+    let lock = std::fs::read_to_string(app.root.join("pnpm-lock.yaml")).unwrap_or_default();
     let ver = lock.lines().find_map(|l| l.strip_prefix("lockfileVersion:")).map(|v| v.trim().trim_matches('\'').trim_matches('"').to_string());
     match ver.as_deref() {
         Some(v) if v.starts_with('5') => "7".into(),

@@ -66,7 +66,7 @@ systemd-run --quiet --collect --unit "$UNIT" -p OOMPolicy=continue \
   -p StandardOutput="file:$log" -p StandardError="file:$log" \
   "$bin" bench --apps "${APPS:-express-api,go-api,rust-api,vite-react,vite-mui,tanstack-start,next15}" \
   --tools "$tools" --runs "${RUNS:-2}" --cpus "${CPUS:-0-1}" --mirror "${MIRROR:-off}" --scenario "${SCENARIO:-both}" ${FRESH:+--fresh} \
-  --repo . --railpack "$EXT/tools/railpack" --out "$out" "$@"
+  ${APPS_FILE:+--apps-file "$APPS_FILE"} --repo . --railpack "$EXT/tools/railpack" --out "$out" "$@"
 
 echo "started $UNIT: $out (log $log)"
 if [ "${WAIT:-0}" = 1 ]; then

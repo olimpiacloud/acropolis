@@ -110,7 +110,7 @@
      "npm_package_name": "node-npm"
     },
     "kind": "run",
-    "network": false
+    "network": true
    },
    "deps": [
     "node",
@@ -200,5 +200,7 @@
    "name": "push image"
   }
  ],
- "warnings": []
+ "warnings": [
+  "the build step runs with network access like docker build; set ACRO_HERMETIC_BUILD=1 to run it without network"
+ ]
 }
