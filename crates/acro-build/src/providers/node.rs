@@ -582,6 +582,7 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
                     target: "src".into(),
                     scripts: if dev_scripts { policy.describe() } else { String::new() },
                     manager: manager.into(),
+                    types_only: false,
                 },
                 install_deps,
             );
@@ -989,6 +990,17 @@ fn native_bundle_eligible(app: &NodeApp, env: &Env, build_cmd: &str, lockfile: &
     if saw_vite { Some(checks) } else { None }
 }
 
+fn types_only_check(app: &NodeApp, checks: &[String]) -> bool {
+    if !checks.iter().all(|c| c == "tsc" || c.starts_with("tsc ")) {
+        return false;
+    }
+    let Ok(rd) = std::fs::read_dir(&app.dir) else { return false };
+    !rd.flatten().any(|e| {
+        let n = e.file_name().to_string_lossy().into_owned();
+        n.starts_with("tsconfig") && n.ends_with(".json") && std::fs::read_to_string(e.path()).map(|t| t.contains("maxNodeModuleJsDepth")).unwrap_or(true)
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn plan_native_spa(
     app: &NodeApp,
@@ -1022,7 +1034,7 @@ fn plan_native_spa(
         b.step(
             "install",
             "install node_modules",
-            Action::NpmInstall { dev: true, target: "src".into(), scripts: String::new(), manager: manager.into() },
+            Action::NpmInstall { dev: true, target: "src".into(), scripts: String::new(), manager: manager.into(), types_only: types_only_check(app, &checks) },
             &["npm-fetch", "source"],
         );
         let mut run_env = BTreeMap::new();
@@ -1226,7 +1238,7 @@ fn prod_deps_layer(
     b.step(
         "install-prod",
         "install production node_modules + scripts",
-        Action::NpmInstall { dev: false, target: "prod".into(), scripts: policy.describe(), manager: manager.into() },
+        Action::NpmInstall { dev: false, target: "prod".into(), scripts: policy.describe(), manager: manager.into(), types_only: false },
         &[fetch_step, "node"],
     );
     b.step(

@@ -30,6 +30,8 @@ pub struct BenchConfig {
     pub compression: String,
     pub drop_caches: bool,
     pub scenario: String,
+    pub cache: Option<PathBuf>,
+    pub fresh: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -53,6 +55,10 @@ pub struct RunResult {
     pub started_at: String,
     #[serde(default)]
     pub scenario: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reused_from: Option<String>,
 }
 
 const REGISTRY_NAME: &str = "acro-bench-registry";
@@ -507,6 +513,126 @@ fn chrono_now() -> String {
     out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
 }
 
+fn tree_hash(dir: &Path, h: &mut Vec<u8>) {
+    let mut entries: Vec<PathBuf> = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if e.file_name() != "node_modules" && e.file_name() != "target" {
+                    stack.push(p);
+                }
+            } else {
+                entries.push(p);
+            }
+        }
+    }
+    entries.sort();
+    for p in entries {
+        h.extend_from_slice(p.strip_prefix(dir).unwrap_or(&p).to_string_lossy().as_bytes());
+        h.push(0);
+        h.extend_from_slice(acro_store::sha256_bytes(&fs::read(&p).unwrap_or_default()).hex().as_bytes());
+        h.push(b'\n');
+    }
+}
+
+fn tool_version(cfg: &BenchConfig, tool: &str) -> String {
+    let out = |c: &mut Command| c.output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+    let buildkit = format!(
+        "{} {} {}",
+        out(Command::new("docker").args(["buildx", "version"])),
+        out(Command::new("docker").args(["image", "inspect", "--format", "{{index .RepoDigests 0}}", "moby/buildkit:buildx-stable-1"])),
+        fs::read_to_string(cfg.repo.join(if cfg.mirror { "bench/buildkitd.toml" } else { "bench/buildkitd-nomirror.toml" })).unwrap_or_default()
+    );
+    match tool {
+        "railpack" => format!("{} {} {buildkit}", out(Command::new(&cfg.railpack_bin).arg("--version")), cfg.railpack_frontend),
+        _ => buildkit,
+    }
+}
+
+pub fn fingerprint(cfg: &BenchConfig, app: &str, tool: &str) -> String {
+    let mut h = Vec::new();
+    h.extend_from_slice(format!("{tool}\n{}\n{}\n{:?}\n{}\n{}\n", tool_version(cfg, tool), cfg.cpus, cfg.memory, cfg.mirror, cfg.drop_caches).as_bytes());
+    tree_hash(&cfg.repo.join("bench/apps").join(app), &mut h);
+    if tool == "docker" {
+        h.extend_from_slice(&fs::read(cfg.repo.join("bench/dockerfiles").join(format!("{app}.Dockerfile"))).unwrap_or_default());
+    }
+    acro_store::sha256_bytes(&h).hex()[..16].to_string()
+}
+
+fn cached_runs(cfg: &BenchConfig, fp: &str, run: usize, scenarios: &[&str]) -> Option<Vec<RunResult>> {
+    if cfg.fresh {
+        return None;
+    }
+    let text = fs::read_to_string(cfg.cache.as_ref()?).ok()?;
+    let rows: Vec<RunResult> = text.lines().filter_map(|l| serde_json::from_str::<RunResult>(l).ok()).filter(|r| r.fingerprint == fp && r.run == run && r.ok && r.verified).collect();
+    let mut out = Vec::new();
+    for sc in scenarios {
+        let r = rows.iter().rev().find(|r| r.scenario == *sc)?;
+        out.push(RunResult { reused_from: Some(r.started_at.clone()), ..r.clone() });
+    }
+    Some(out)
+}
+
+fn store_cached(cfg: &BenchConfig, rows: &[RunResult]) {
+    let Some(path) = &cfg.cache else { return };
+    if rows.iter().any(|r| !r.ok || !r.verified) {
+        return;
+    }
+    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(path) {
+        for r in rows {
+            let _ = writeln!(f, "{}", serde_json::to_string(r).unwrap_or_default());
+        }
+    }
+}
+
+fn print_result(r: &RunResult) {
+    eprintln!(
+        "[bench]   {} ok={} verified={} wall={:.1}s cpu={:.1}s mem={:.0}MB net={:.1}MB disk={:.1}MB image={:.1}MB{} {}",
+        r.scenario,
+        r.ok,
+        r.verified,
+        r.wall_s,
+        r.cpu_s,
+        r.peak_mem_mb,
+        r.net_rx_mb,
+        r.disk_write_mb,
+        r.image_mb,
+        r.reused_from.as_deref().map(|d| format!(" (reused from {d})")).unwrap_or_default(),
+        r.error.as_deref().map(|e| e.lines().next().unwrap_or("")).unwrap_or("")
+    );
+}
+
+fn measure(cfg: &BenchConfig, app: &AppSpec, tool: &str, run: usize, iface: &str, log_dir: &Path) -> Vec<RunResult> {
+    if cfg.scenario == "cold" {
+        return vec![run_one(cfg, app, tool, run, iface, log_dir)];
+    }
+    let both = cfg.scenario == "both";
+    let work = std::env::temp_dir().join(format!("acro-bench-app-{}", std::process::id())).join(&app.name);
+    let _ = fs::remove_dir_all(&work);
+    let prepared = fs::create_dir_all(work.parent().unwrap()).map_err(anyhow::Error::from).and_then(|_| copy_dir(&cfg.repo.join("bench/apps").join(&app.name), &work));
+    let mut prime = match prepared {
+        Ok(()) => run_phase(cfg, app, tool, run, iface, log_dir, Phase::Prime, &work),
+        Err(e) => RunResult { app: app.name.clone(), tool: tool.to_string(), run, error: Some(format!("{e:#}")), ..Default::default() },
+    };
+    if both {
+        prime.scenario = "cold".into();
+    }
+    print_result(&prime);
+    let rebuild = if prime.ok {
+        match touch_source(&work) {
+            Ok(()) => run_phase(cfg, app, tool, run, iface, log_dir, Phase::Rebuild, &work),
+            Err(e) => RunResult { scenario: "rebuild".into(), ok: false, error: Some(format!("{e:#}")), ..prime.clone() },
+        }
+    } else {
+        RunResult { scenario: "rebuild".into(), ok: false, error: Some(format!("prime failed: {}", prime.error.clone().unwrap_or_default())), ..prime.clone() }
+    };
+    let _ = fs::remove_dir_all(&work);
+    if both { vec![prime, rebuild] } else { vec![rebuild] }
+}
+
 pub fn run(cfg: BenchConfig) -> Result<Vec<RunResult>> {
     let specs: Vec<AppSpec> = serde_json::from_slice(&fs::read(cfg.repo.join("bench/apps.json"))?)?;
     let iface = default_iface();
@@ -515,46 +641,42 @@ pub fn run(cfg: BenchConfig) -> Result<Vec<RunResult>> {
     fs::create_dir_all(&log_dir)?;
     let mut results = Vec::new();
     let mut out = fs::OpenOptions::new().create(true).append(true).open(&cfg.out)?;
+    let scenarios: Vec<&str> = match cfg.scenario.as_str() {
+        "both" => vec!["cold", "rebuild"],
+        other => vec![other],
+    };
     for run in 1..=cfg.runs {
         for name in &cfg.apps {
             let app = specs.iter().find(|s| &s.name == name).with_context(|| format!("unknown app {name}"))?;
             for tool in &cfg.tools {
-                eprintln!("[bench] {} {} run {} on cpus {}", app.name, tool, run, cfg.cpus);
-                let r = if cfg.scenario == "rebuild" {
-                    let work = std::env::temp_dir().join(format!("acro-bench-app-{}", std::process::id())).join(&app.name);
-                    let prepared = fs::create_dir_all(work.parent().unwrap())
-                        .map_err(anyhow::Error::from)
-                        .and_then(|_| copy_dir(&cfg.repo.join("bench/apps").join(&app.name), &work));
-                    let prime = match prepared {
-                        Ok(()) => run_phase(&cfg, app, tool, run, &iface, &log_dir, Phase::Prime, &work),
-                        Err(e) => RunResult { app: app.name.clone(), tool: tool.clone(), run, error: Some(format!("{e:#}")), ..Default::default() },
-                    };
-                    eprintln!("[bench]   prime ok={} wall={:.1}s", prime.ok, prime.wall_s);
-                    if prime.ok {
-                        match touch_source(&work) {
-                            Ok(()) => run_phase(&cfg, app, tool, run, &iface, &log_dir, Phase::Rebuild, &work),
-                            Err(e) => RunResult { scenario: "rebuild".into(), error: Some(format!("{e:#}")), ..prime },
-                        }
-                    } else {
-                        RunResult { scenario: "rebuild".into(), ok: false, error: Some(format!("prime failed: {}", prime.error.clone().unwrap_or_default())), ..prime }
+                let competitor = matches!(tool.as_str(), "docker" | "railpack");
+                let fp = if competitor { fingerprint(&cfg, &app.name, tool) } else { String::new() };
+                let rows = match competitor.then(|| cached_runs(&cfg, &fp, run, &scenarios)).flatten() {
+                    Some(rows) => {
+                        eprintln!("[bench] {} {} run {} reused", app.name, tool, run);
+                        rows.iter().for_each(print_result);
+                        rows
                     }
-                } else {
-                    run_one(&cfg, app, tool, run, &iface, &log_dir)
+                    None => {
+                        eprintln!("[bench] {} {} run {} on cpus {}", app.name, tool, run, cfg.cpus);
+                        let mut rows = measure(&cfg, app, tool, run, &iface, &log_dir);
+                        if cfg.scenario != "both" {
+                            rows.iter().for_each(print_result);
+                        } else if let Some(r) = rows.last() {
+                            print_result(r);
+                        }
+                        if competitor {
+                            let fp = fingerprint(&cfg, &app.name, tool);
+                            rows.iter_mut().for_each(|r| r.fingerprint = fp.clone());
+                            store_cached(&cfg, &rows);
+                        }
+                        rows
+                    }
                 };
-                eprintln!(
-                    "[bench]   ok={} verified={} wall={:.1}s cpu={:.1}s mem={:.0}MB net={:.1}MB disk={:.1}MB image={:.1}MB {}",
-                    r.ok,
-                    r.verified,
-                    r.wall_s,
-                    r.cpu_s,
-                    r.peak_mem_mb,
-                    r.net_rx_mb,
-                    r.disk_write_mb,
-                    r.image_mb,
-                    r.error.as_deref().map(|e| e.lines().next().unwrap_or("")).unwrap_or("")
-                );
-                writeln!(out, "{}", serde_json::to_string(&r)?)?;
-                results.push(r);
+                for r in rows {
+                    writeln!(out, "{}", serde_json::to_string(&r)?)?;
+                    results.push(r);
+                }
             }
         }
     }
@@ -575,6 +697,23 @@ pub fn backfill(results: &mut [RunResult], log_dir: &Path) {
 }
 
 pub fn summarize(results: &[RunResult]) -> String {
+    let mut scenarios: Vec<String> = Vec::new();
+    for r in results {
+        let sc = if r.scenario.is_empty() { "cold".to_string() } else { r.scenario.clone() };
+        if !scenarios.contains(&sc) {
+            scenarios.push(sc);
+        }
+    }
+    let mut out = String::new();
+    for sc in &scenarios {
+        let rows: Vec<RunResult> = results.iter().filter(|r| (if r.scenario.is_empty() { "cold" } else { r.scenario.as_str() }) == sc).cloned().collect();
+        out.push_str(&format!("\n## {sc}\n"));
+        out.push_str(&summarize_one(&rows));
+    }
+    out
+}
+
+fn summarize_one(results: &[RunResult]) -> String {
     let mut apps: Vec<String> = Vec::new();
     let mut tools: Vec<String> = Vec::new();
     for r in results {
@@ -589,12 +728,15 @@ pub fn summarize(results: &[RunResult]) -> String {
         if vals.is_empty() {
             return "—".into();
         }
-        let lo = vals.iter().cloned().fold(f64::INFINITY, f64::min);
-        let hi = vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let mut v = vals.clone();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let lo = v[0];
+        let hi = v[v.len() - 1];
+        let med = if v.len() % 2 == 1 { v[v.len() / 2] } else { (v[v.len() / 2 - 1] + v[v.len() / 2]) / 2.0 };
         if (hi - lo).abs() < 10f64.powi(-(prec as i32)) {
             format!("{lo:.prec$}")
         } else {
-            format!("{lo:.prec$}–{hi:.prec$}")
+            format!("{med:.prec$} ({lo:.prec$}–{hi:.prec$})")
         }
     };
     let mut s = String::new();

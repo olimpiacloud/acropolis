@@ -92,8 +92,12 @@ enum Command {
         compression: String,
         #[arg(long)]
         no_drop_caches: bool,
-        #[arg(long, default_value = "cold", value_parser = ["cold", "rebuild"])]
+        #[arg(long, default_value = "both", value_parser = ["cold", "rebuild", "both"])]
         scenario: String,
+        #[arg(long)]
+        cache: Option<PathBuf>,
+        #[arg(long)]
+        fresh: bool,
     },
     Report {
         results: Vec<PathBuf>,
@@ -190,8 +194,9 @@ fn default_home() -> PathBuf {
 
 fn main() {
     let cli = Cli::parse();
-    if let Command::Bench { apps, tools, runs, cpus, memory, mirror, out, repo, railpack, railpack_frontend, compression, no_drop_caches, scenario } = &cli.cmd {
+    if let Command::Bench { apps, tools, runs, cpus, memory, mirror, out, repo, railpack, railpack_frontend, compression, no_drop_caches, scenario, cache, fresh } = &cli.cmd {
         let repo = std::fs::canonicalize(repo).expect("repo path");
+        let cache = Some(cache.clone().unwrap_or_else(|| repo.join("bench/results/competitors.jsonl")));
         let out = out.clone().unwrap_or_else(|| repo.join("bench/results").join(format!("run-{}.jsonl", std::process::id())));
         let cfg = bench::BenchConfig {
             repo,
@@ -208,6 +213,8 @@ fn main() {
             compression: compression.clone(),
             drop_caches: !no_drop_caches,
             scenario: scenario.clone(),
+            cache,
+            fresh: *fresh,
         };
         match bench::run(cfg) {
             Ok(results) => {

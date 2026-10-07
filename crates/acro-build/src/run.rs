@@ -731,7 +731,7 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             acro_events::log(&step.id, format!("{:.1} MB", n as f64 / 1e6));
             Ok(Out::None)
         }
-        Action::NpmInstall { target, scripts, manager, .. } => {
+        Action::NpmInstall { target, scripts, manager, types_only, .. } => {
             let state = ctx
                 .dep_outputs(step)
                 .into_iter()
@@ -765,7 +765,8 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             }
             let r2 = root.clone();
             let s2 = state.clone();
-            let n = tokio::task::spawn_blocking(move || acro_npm::install::materialize(&s2.plan, &s2.tarballs, &r2)).await??;
+            let types = *types_only;
+            let n = tokio::task::spawn_blocking(move || acro_npm::install::materialize_with(&s2.plan, &s2.tarballs, &r2, types)).await??;
             acro_events::log(&step.id, format!("{:.1} MB written", n as f64 / 1e6));
             if manager == "pnpm" && !root.join("node_modules/.modules.yaml").exists() {
                 std::fs::create_dir_all(root.join("node_modules"))?;

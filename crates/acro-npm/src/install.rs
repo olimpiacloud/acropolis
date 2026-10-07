@@ -563,13 +563,32 @@ pub fn relative_link(from: &Path, to: &Path) -> String {
 }
 
 pub fn materialize(plan: &InstallPlan, tarballs: &Tarballs, root: &Path) -> Result<u64> {
+    materialize_with(plan, tarballs, root, false)
+}
+
+const TYPE_FILES: &[&str] = &[".d.ts", ".d.mts", ".d.cts", ".ts", ".tsx", ".mts", ".cts", ".json"];
+
+fn type_files_only(entries: &[TarEntry], bins: &[(String, String)]) -> bool {
+    if !bins.is_empty() {
+        return false;
+    }
+    let declared = entries
+        .iter()
+        .find(|e| e.rel == "package.json")
+        .and_then(|e| serde_json::from_slice::<serde_json::Value>(&e.data).ok())
+        .map(|v| v.get("types").is_some() || v.get("typings").is_some())
+        .unwrap_or(false);
+    declared || entries.iter().any(|e| e.rel.ends_with(".d.ts") || e.rel.ends_with(".d.mts") || e.rel.ends_with(".d.cts"))
+}
+
+pub fn materialize_with(plan: &InstallPlan, tarballs: &Tarballs, root: &Path, types_only: bool) -> Result<u64> {
     let pkgs: Vec<&InstallPackage> = plan.packages.iter().collect();
     let written: Vec<Result<(String, u64, Vec<(String, String)>)>> = pkgs
         .par_iter()
         .filter(|p| fetched(p))
         .map(|p| {
             let blob = blob_for(tarballs, p).ok_or_else(|| anyhow!("missing tarball for {}", p.path))?;
-            let (n, bins) = extract_package(p, &blob.path, &root.join(&p.path))?;
+            let (n, bins) = extract_package_with(p, &blob.path, &root.join(&p.path), types_only)?;
             Ok((p.path.clone(), n, bins))
         })
         .collect();
@@ -611,10 +630,17 @@ pub fn materialize(plan: &InstallPlan, tarballs: &Tarballs, root: &Path) -> Resu
 }
 
 pub fn extract_package(p: &InstallPackage, blob: &Path, dest: &Path) -> Result<(u64, Vec<(String, String)>)> {
+    extract_package_with(p, blob, dest, false)
+}
+
+fn extract_package_with(p: &InstallPackage, blob: &Path, dest: &Path, types_only: bool) -> Result<(u64, Vec<(String, String)>)> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
-    let entries = read_tarball(blob).with_context(|| format!("extracting {}", p.path))?;
+    let mut entries = read_tarball(blob).with_context(|| format!("extracting {}", p.path))?;
     let bins = package_bins(p, &entries);
+    if types_only && type_files_only(&entries, &bins) {
+        entries.retain(|e| e.kind == Kind::Dir || e.rel == "package.json" || TYPE_FILES.iter().any(|x| e.rel.ends_with(x)));
+    }
     let execs: HashSet<String> = bins.iter().filter_map(|(_, t)| clean_rel(t)).collect();
     std::fs::create_dir_all(dest)?;
     let mut made: HashSet<std::path::PathBuf> = HashSet::new();

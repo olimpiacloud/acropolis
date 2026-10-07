@@ -25,6 +25,8 @@ pub enum Action {
         scripts: String,
         #[serde(default)]
         manager: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        types_only: bool,
     },
     GoModules { gosum_sha256: String },
     CargoVendor { lockfile_sha256: String },
