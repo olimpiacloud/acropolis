@@ -5,8 +5,9 @@ import re
 import shutil
 import sys
 
-repo = sys.argv[1] if len(sys.argv) > 1 else "/root/personal/acropolis-ext/nixpacks"
-dst = sys.argv[2] if len(sys.argv) > 2 else "/root/personal/acropolis-ext/nixpacks-suite"
+ext = os.environ.get("ACROPOLIS_EXT", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "acropolis-ext"))
+repo = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ext, "nixpacks")
+dst = sys.argv[2] if len(sys.argv) > 2 else os.path.join(ext, "nixpacks-suite")
 src = open(os.path.join(repo, "tests/docker_run_tests.rs")).read()
 cases = collections.defaultdict(list)
 skipped = collections.Counter()

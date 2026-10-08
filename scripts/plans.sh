@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 cd "$(dirname "$0")/.."
-EXAMPLES="${EXAMPLES:-${ACROPOLIS_EXT:-/root/personal/acropolis-ext}/railpack/examples}"
+EXAMPLES="${EXAMPLES:-${ACROPOLIS_EXT:-$PWD/../acropolis-ext}/railpack/examples}"
 BIN="${BIN:-target/fast/acropolis}"
 DIR=tests/plans
 mode="${1:-check}"

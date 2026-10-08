@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-EXT="${ACROPOLIS_EXT:-/root/personal/acropolis-ext}"
+EXT="${ACROPOLIS_EXT:-$PWD/../acropolis-ext}"
 UNIT=acropolis-bench
 
 label() {

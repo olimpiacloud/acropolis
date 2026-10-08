@@ -1,4 +1,5 @@
 /target
-bench/results/*.logs/
+bench/results/
+tests/results/
 **/node_modules
 tests/render/node_modules

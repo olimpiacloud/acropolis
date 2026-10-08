@@ -100,7 +100,7 @@ Cada entrada: qué se probó, qué número dio, qué quedó y qué se descartó.
 - Solo si la versión pedida flota (`N`, `N.x`, `lts`, `latest`, `^N`, `>=N`): distroless publica la última versión de cada major (va un par de minors atrás), así que una versión exacta como `22.2.0` o `^24.15.0` sigue en `node:<v>-bookworm-slim`. Majors permitidos: 22, 24 y 26.
 - Se cae a Debian slim si hay scripts de instalación en producción (salvo Next standalone y Nitro, que no instalan dependencias de producción aparte), start por shell o con npm/pnpm/yarn, puppeteer o playwright, paquetes apt de deploy, pasos custom, herramientas extra de mise o `ACROPOLIS_RUNTIME_BASE=debian`. La resolución se hace en tiempo de build: si el major no tiene imagen distroless se usa `node:<versión>-bookworm-slim` y la capa de symlinks queda vacía.
 - Bun: `distroless/cc-debian12:debug` (9,9 MB) + capa de bun, sin ningún `node` (Railpack lo exige en `node-bun-no-deps`), solo cuando el start es `bun <archivo>` o un `bun run X` que termina en `bun <archivo>`. Un `bun run start` que llama a `node` sigue en Node.
-- Validado por consulta con Opus 5.5 (`docs/audit/2026-10-07-consulta-opus.md`): Prisma necesita el shell (lo ejecuta para detectar OpenSSL) y distroless trae libssl3; sharp trae sus libs; no hay usuario `node` (uid 1000) ni `bash`/`npm` para `docker exec`.
+- Riesgos revisados: Prisma necesita el shell (lo ejecuta para detectar OpenSSL) y distroless trae libssl3; sharp trae sus libs; no hay usuario `node` (uid 1000) ni `bash`/`npm` para `docker exec`.
 
 ## D17. Next sin `output` se construye como standalone
 
@@ -130,5 +130,5 @@ Cada entrada: qué se probó, qué número dio, qué quedó y qué se descartó.
 
 ## D21. `patchedDependencies` (bun y pnpm)
 
-- Encontrado al medir real-app: el instalador propio ignoraba `patchedDependencies`, así que la imagen salía con el paquete sin parchear y sin ningún error. `bun install` y `pnpm install` (lo que corre Railpack) sí aplican el parche.
+- Encontrado al medir una app real: el instalador propio ignoraba `patchedDependencies`, así que la imagen salía con el paquete sin parchear y sin ningún error. `bun install` y `pnpm install` (lo que corre Railpack) sí aplican el parche.
 - Quedó: después de materializar `node_modules` se aplican los parches de `package.json` (`patchedDependencies` y `pnpm.patchedDependencies`) y de `pnpm-workspace.yaml`, con un aplicador de diffs propio (los builders pueden no tener `patch` ni `git`), a cada copia instalada del paquete y versión. El contenido de los parches entra en el hash del paso de instalación, así que cambiar un parche invalida la caché de `node_modules`. Si hay parches, la capa de dependencias de producción se arma desde un árbol instalado y no directo desde los tarballs.
