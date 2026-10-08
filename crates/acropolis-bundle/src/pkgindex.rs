@@ -32,8 +32,16 @@ impl PkgIndex {
             }
             files.insert(e.rel, Arc::new(e.data));
         }
-        let pj = files.get("package.json").and_then(|d| serde_json::from_slice(d).ok()).unwrap_or(Value::Null);
-        PkgIndex { files, dirs, pj, materialized: Mutex::new(HashSet::new()) }
+        let pj = files
+            .get("package.json")
+            .and_then(|d| serde_json::from_slice(d).ok())
+            .unwrap_or(Value::Null);
+        PkgIndex {
+            files,
+            dirs,
+            pj,
+            materialized: Mutex::new(HashSet::new()),
+        }
     }
 
     pub fn materialize(&self, pkg_root: &Path, rel: &str) -> std::io::Result<()> {
@@ -86,20 +94,32 @@ impl PkgIndex {
             return Some(f);
         }
         if self.dirs.contains(&rel) {
-            let pj_rel = if rel.is_empty() { "package.json".to_string() } else { format!("{rel}/package.json") };
+            let pj_rel = if rel.is_empty() {
+                "package.json".to_string()
+            } else {
+                format!("{rel}/package.json")
+            };
             if let Some(data) = self.files.get(&pj_rel)
                 && let Ok(v) = serde_json::from_slice::<Value>(data)
             {
                 for field in ["module", "main"] {
                     if let Some(m) = v.get(field).and_then(|m| m.as_str()) {
-                        let target = if rel.is_empty() { m.to_string() } else { format!("{rel}/{m}") };
+                        let target = if rel.is_empty() {
+                            m.to_string()
+                        } else {
+                            format!("{rel}/{m}")
+                        };
                         if let Some(f) = self.resolve_path(&target) {
                             return Some(f);
                         }
                     }
                 }
             }
-            let idx = if rel.is_empty() { "index".to_string() } else { format!("{rel}/index") };
+            let idx = if rel.is_empty() {
+                "index".to_string()
+            } else {
+                format!("{rel}/index")
+            };
             return self.file(&idx);
         }
         None
@@ -107,7 +127,11 @@ impl PkgIndex {
 
     pub fn resolve_subpath(&self, subpath: &str, conditions: &[&str]) -> Option<String> {
         if let Some(exports) = self.pj.get("exports").filter(|e| !e.is_null()) {
-            let key = if subpath.is_empty() { ".".to_string() } else { format!("./{subpath}") };
+            let key = if subpath.is_empty() {
+                ".".to_string()
+            } else {
+                format!("./{subpath}")
+            };
             let target = resolve_exports(exports, &key, conditions)?;
             return self.resolve_path(target.trim_start_matches("./"));
         }
@@ -139,7 +163,11 @@ impl PkgIndex {
             Value::Array(globs) => {
                 let hit = globs.iter().filter_map(|g| g.as_str()).any(|g| {
                     let g = g.trim_start_matches("./");
-                    let pat = if g.contains('/') { g.to_string() } else { format!("**/{g}") };
+                    let pat = if g.contains('/') {
+                        g.to_string()
+                    } else {
+                        format!("**/{g}")
+                    };
                     glob_path(&pat, rel)
                 });
                 Some(hit)
@@ -208,9 +236,14 @@ fn pick_target(target: &Value, star: Option<&str>, conditions: &[&str]) -> Optio
 }
 
 pub fn resolve_exports(exports: &Value, key: &str, conditions: &[&str]) -> Option<String> {
-    let is_subpath_map = matches!(exports, Value::Object(m) if m.keys().next().map(|k| k.starts_with('.')).unwrap_or(false));
+    let is_subpath_map =
+        matches!(exports, Value::Object(m) if m.keys().next().map(|k| k.starts_with('.')).unwrap_or(false));
     if !is_subpath_map {
-        return if key == "." { pick_target(exports, None, conditions) } else { None };
+        return if key == "." {
+            pick_target(exports, None, conditions)
+        } else {
+            None
+        };
     }
     let map = exports.as_object()?;
     if let Some(t) = map.get(key) {

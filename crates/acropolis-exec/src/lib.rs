@@ -33,7 +33,13 @@ pub struct CommandFailed {
 
 impl std::fmt::Display for CommandFailed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "`{}` failed with {}\n{}", self.command, self.status, self.tail.join("\n"))
+        write!(
+            f,
+            "`{}` failed with {}\n{}",
+            self.command,
+            self.status,
+            self.tail.join("\n")
+        )
     }
 }
 
@@ -42,7 +48,13 @@ impl std::error::Error for CommandFailed {}
 impl CommandFailed {
     pub fn new(argv: &[String], status: std::process::ExitStatus, tail: Vec<String>) -> Self {
         use std::os::unix::process::ExitStatusExt;
-        CommandFailed { command: argv.join(" "), code: status.code(), signal: status.signal(), status: status.to_string(), tail }
+        CommandFailed {
+            command: argv.join(" "),
+            code: status.code(),
+            signal: status.signal(),
+            status: status.to_string(),
+            tail,
+        }
     }
 
     pub fn killed(&self) -> bool {
@@ -53,7 +65,11 @@ impl CommandFailed {
 const MAX_LINE: usize = 64 * 1024;
 const MAX_STEP_LOG: u64 = 32 * 1024 * 1024;
 
-pub async fn collect_output<R: tokio::io::AsyncRead + Unpin>(step: &str, reader: R, tail: Arc<Mutex<VecDeque<String>>>) {
+pub async fn collect_output<R: tokio::io::AsyncRead + Unpin>(
+    step: &str,
+    reader: R,
+    tail: Arc<Mutex<VecDeque<String>>>,
+) {
     use tokio::io::AsyncReadExt;
     let mut reader = BufReader::with_capacity(64 * 1024, reader);
     let mut line: Vec<u8> = Vec::with_capacity(256);
@@ -67,7 +83,10 @@ pub async fn collect_output<R: tokio::io::AsyncRead + Unpin>(step: &str, reader:
             acropolis_events::log(step, text.clone());
         } else if !*truncated {
             *truncated = true;
-            acropolis_events::log(step, format!("[acropolis] log truncated after {} MB", MAX_STEP_LOG >> 20));
+            acropolis_events::log(
+                step,
+                format!("[acropolis] log truncated after {} MB", MAX_STEP_LOG >> 20),
+            );
         }
         let mut t = tail.lock().unwrap_or_else(|e| e.into_inner());
         t.push_back(text);
@@ -98,7 +117,11 @@ pub async fn collect_output<R: tokio::io::AsyncRead + Unpin>(step: &str, reader:
     }
 }
 
-pub async fn wait_with_output(step: &str, child: &mut tokio::process::Child, group: ProcessGroup) -> Result<(std::process::ExitStatus, Vec<String>)> {
+pub async fn wait_with_output(
+    step: &str,
+    child: &mut tokio::process::Child,
+    group: ProcessGroup,
+) -> Result<(std::process::ExitStatus, Vec<String>)> {
     let tail: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
     let mut tasks = Vec::new();
     if let Some(out) = child.stdout.take() {
@@ -113,7 +136,10 @@ pub async fn wait_with_output(step: &str, child: &mut tokio::process::Child, gro
     drop(group);
     for t in tasks {
         let abort = t.abort_handle();
-        if tokio::time::timeout(std::time::Duration::from_secs(2), t).await.is_err() {
+        if tokio::time::timeout(std::time::Duration::from_secs(2), t)
+            .await
+            .is_err()
+        {
             abort.abort();
         }
     }
@@ -141,9 +167,15 @@ pub struct HostExecutor {
 impl HostExecutor {
     pub fn detect() -> Self {
         if probe_netns() {
-            HostExecutor { isolation: Isolation::NetNamespace, readonly: Vec::new() }
+            HostExecutor {
+                isolation: Isolation::NetNamespace,
+                readonly: Vec::new(),
+            }
         } else {
-            HostExecutor { isolation: Isolation::None, readonly: Vec::new() }
+            HostExecutor {
+                isolation: Isolation::None,
+                readonly: Vec::new(),
+            }
         }
     }
 
@@ -153,7 +185,9 @@ impl HostExecutor {
     }
 }
 
-pub(crate) const DROP_CAPS: &[u32] = &[9, 12, 16, 17, 18, 19, 20, 21, 22, 25, 27, 29, 30, 31, 32, 33, 34, 37, 38, 39];
+pub(crate) const DROP_CAPS: &[u32] = &[
+    9, 12, 16, 17, 18, 19, 20, 21, 22, 25, 27, 29, 30, 31, 32, 33, 34, 37, 38, 39,
+];
 
 pub(crate) unsafe fn drop_dangerous_caps() -> std::io::Result<()> {
     #[repr(C)]
@@ -172,9 +206,22 @@ pub(crate) unsafe fn drop_dangerous_caps() -> std::io::Result<()> {
         for &c in DROP_CAPS {
             libc::prctl(libc::PR_CAPBSET_DROP, c as libc::c_ulong, 0, 0, 0);
         }
-        libc::prctl(libc::PR_CAP_AMBIENT, libc::PR_CAP_AMBIENT_CLEAR_ALL as libc::c_ulong, 0, 0, 0);
-        let mut hdr = Header { version: 0x2008_0522, pid: 0 };
-        let mut data = [Data { effective: 0, permitted: 0, inheritable: 0 }; 2];
+        libc::prctl(
+            libc::PR_CAP_AMBIENT,
+            libc::PR_CAP_AMBIENT_CLEAR_ALL as libc::c_ulong,
+            0,
+            0,
+            0,
+        );
+        let mut hdr = Header {
+            version: 0x2008_0522,
+            pid: 0,
+        };
+        let mut data = [Data {
+            effective: 0,
+            permitted: 0,
+            inheritable: 0,
+        }; 2];
         if libc::syscall(libc::SYS_capget, &mut hdr as *mut Header, data.as_mut_ptr()) != 0 {
             return Err(std::io::Error::last_os_error());
         }
@@ -194,7 +241,14 @@ pub(crate) unsafe fn drop_dangerous_caps() -> std::io::Result<()> {
 
 pub(crate) unsafe fn bind_readonly(path: &std::ffi::CStr) -> std::io::Result<()> {
     unsafe {
-        if libc::mount(path.as_ptr(), path.as_ptr(), std::ptr::null(), libc::MS_BIND | libc::MS_REC, std::ptr::null()) != 0 {
+        if libc::mount(
+            path.as_ptr(),
+            path.as_ptr(),
+            std::ptr::null(),
+            libc::MS_BIND | libc::MS_REC,
+            std::ptr::null(),
+        ) != 0
+        {
             return Err(std::io::Error::last_os_error());
         }
         if libc::mount(
@@ -223,7 +277,11 @@ pub(crate) fn offline_resolv_conf() -> Option<std::ffi::CString> {
     std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).ok()
 }
 
-fn enter_hardened(readonly: &[std::ffi::CString], network: bool, resolv: Option<&std::ffi::CStr>) -> std::io::Result<()> {
+fn enter_hardened(
+    readonly: &[std::ffi::CString],
+    network: bool,
+    resolv: Option<&std::ffi::CStr>,
+) -> std::io::Result<()> {
     unsafe {
         let mut flags = libc::CLONE_NEWNS;
         if !network {
@@ -232,11 +290,24 @@ fn enter_hardened(readonly: &[std::ffi::CString], network: bool, resolv: Option<
         if libc::unshare(flags) != 0 {
             return Err(std::io::Error::last_os_error());
         }
-        if libc::mount(std::ptr::null(), c"/".as_ptr(), std::ptr::null(), libc::MS_REC | libc::MS_PRIVATE, std::ptr::null()) != 0 {
+        if libc::mount(
+            std::ptr::null(),
+            c"/".as_ptr(),
+            std::ptr::null(),
+            libc::MS_REC | libc::MS_PRIVATE,
+            std::ptr::null(),
+        ) != 0
+        {
             return Err(std::io::Error::last_os_error());
         }
         if !network && let Some(r) = resolv {
-            libc::mount(r.as_ptr(), c"/etc/resolv.conf".as_ptr(), std::ptr::null(), libc::MS_BIND, std::ptr::null());
+            libc::mount(
+                r.as_ptr(),
+                c"/etc/resolv.conf".as_ptr(),
+                std::ptr::null(),
+                libc::MS_BIND,
+                std::ptr::null(),
+            );
         }
         for p in readonly {
             bind_readonly(p)?;
@@ -407,7 +478,9 @@ impl Executor for HostExecutor {
                     c.pre_exec(|| enter_netns());
                 }
             }
-            let mut child = c.spawn().map_err(|e| anyhow::anyhow!("spawning {}: {e}", cmd.argv[0]))?;
+            let mut child = c
+                .spawn()
+                .map_err(|e| anyhow::anyhow!("spawning {}: {e}", cmd.argv[0]))?;
             let group = ProcessGroup::of(&child);
             let (status, tail) = wait_with_output(&cmd.step, &mut child, group).await?;
             if !status.success() {
@@ -434,7 +507,9 @@ mod tests {
             step: "test".into(),
             argv: vec!["/bin/sh".into(), "-c".into(), script.into()],
             cwd: dir.to_path_buf(),
-            env: [("PATH".to_string(), "/usr/bin:/bin".to_string())].into_iter().collect(),
+            env: [("PATH".to_string(), "/usr/bin:/bin".to_string())]
+                .into_iter()
+                .collect(),
             network: false,
         }
     }
@@ -451,7 +526,11 @@ mod tests {
         let e = HostExecutor::detect().with_readonly(vec![store.clone()]);
         let attempts = [
             format!("echo poisoned > {}/blob", store.display()),
-            format!("mount -o remount,rw {} && echo poisoned > {}/blob", store.display(), store.display()),
+            format!(
+                "mount -o remount,rw {} && echo poisoned > {}/blob",
+                store.display(),
+                store.display()
+            ),
             format!("umount {} && echo poisoned > {}/blob", store.display(), store.display()),
         ];
         for a in &attempts {
@@ -465,7 +544,10 @@ mod tests {
     #[tokio::test]
     async fn background_children_do_not_hang_the_step() {
         let tmp = std::env::temp_dir();
-        let e = HostExecutor { isolation: Isolation::None, readonly: Vec::new() };
+        let e = HostExecutor {
+            isolation: Isolation::None,
+            readonly: Vec::new(),
+        };
         let started = std::time::Instant::now();
         let mut c = sh("sleep 600 & echo ok", &tmp);
         c.network = true;
@@ -477,7 +559,10 @@ mod tests {
     #[tokio::test]
     async fn huge_lines_are_split_and_failures_are_typed() {
         let tmp = std::env::temp_dir();
-        let e = HostExecutor { isolation: Isolation::None, readonly: Vec::new() };
+        let e = HostExecutor {
+            isolation: Isolation::None,
+            readonly: Vec::new(),
+        };
         let mut c = sh("head -c 1000000 /dev/zero | tr '\\0' x; echo; exit 3", &tmp);
         c.network = true;
         let err = e.run(c).await.unwrap_err();
@@ -492,14 +577,23 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("acropolis-exec-pg-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
         let marker = format!("acropolis-pg-test-{}", std::process::id());
-        let e = HostExecutor { isolation: Isolation::None, readonly: Vec::new() };
+        let e = HostExecutor {
+            isolation: Isolation::None,
+            readonly: Vec::new(),
+        };
         let mut cmd = sh(&format!("sh -c 'sleep 300; echo {marker}' & sleep 300"), &tmp);
         cmd.network = true;
         let fut = e.run(cmd);
         let _ = tokio::time::timeout(std::time::Duration::from_millis(500), fut).await;
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        let ps = std::process::Command::new("pgrep").args(["-f", &marker]).output().unwrap();
-        assert!(String::from_utf8_lossy(&ps.stdout).trim().is_empty(), "orphaned processes survived");
+        let ps = std::process::Command::new("pgrep")
+            .args(["-f", &marker])
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&ps.stdout).trim().is_empty(),
+            "orphaned processes survived"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

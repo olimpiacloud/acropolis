@@ -26,13 +26,24 @@ pub async fn resolve(fetcher: &Fetcher, spec: &str) -> Result<UvRelease> {
     } else {
         format!("https://pypi.org/pypi/uv/{spec}/json")
     };
-    let v: serde_json::Value = fetcher.json(&url).await.context("fetching uv release metadata from PyPI")?;
-    let version = v["info"]["version"].as_str().ok_or_else(|| anyhow!("no uv version"))?.to_string();
+    let v: serde_json::Value = fetcher
+        .json(&url)
+        .await
+        .context("fetching uv release metadata from PyPI")?;
+    let version = v["info"]["version"]
+        .as_str()
+        .ok_or_else(|| anyhow!("no uv version"))?
+        .to_string();
     let files = v["urls"].as_array().cloned().unwrap_or_default();
     let tag = wheel_tag();
     let f = files
         .iter()
-        .find(|f| f["filename"].as_str().map(|n| n.contains(tag) && n.ends_with(".whl")).unwrap_or(false))
+        .find(|f| {
+            f["filename"]
+                .as_str()
+                .map(|n| n.contains(tag) && n.ends_with(".whl"))
+                .unwrap_or(false)
+        })
         .ok_or_else(|| anyhow!("uv {version} has no {tag} wheel"))?;
     Ok(UvRelease {
         version,
@@ -42,7 +53,9 @@ pub async fn resolve(fetcher: &Fetcher, spec: &str) -> Result<UvRelease> {
 }
 
 pub async fn install(fetcher: &Fetcher, release: &UvRelease, dest: &Path) -> Result<Installed> {
-    let blob = fetcher.blob("uv wheel", &release.url, Some(release.sha256.clone())).await?;
+    let blob = fetcher
+        .blob("uv wheel", &release.url, Some(release.sha256.clone()))
+        .await?;
     let data = std::fs::read(&blob.path)?;
     let entries = acropolis_gomod::zip::entries(&data)?;
     let bin = dest.join("bin");
@@ -52,7 +65,12 @@ pub async fn install(fetcher: &Fetcher, release: &UvRelease, dest: &Path) -> Res
         let name = e.name.rsplit('/').next().unwrap_or("");
         if e.name.contains(".data/scripts/") && (name == "uv" || name == "uvx") {
             let bytes = e.read_all()?;
-            let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o755).open(bin.join(name))?;
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o755)
+                .open(bin.join(name))?;
             f.write_all(&bytes)?;
             found += 1;
         }
@@ -60,5 +78,11 @@ pub async fn install(fetcher: &Fetcher, release: &UvRelease, dest: &Path) -> Res
     if found == 0 {
         bail!("uv wheel has no binaries");
     }
-    Ok(Installed { name: "uv".into(), version: release.version.clone(), root: dest.to_path_buf(), bin_dir: bin, archive: Some(blob) })
+    Ok(Installed {
+        name: "uv".into(),
+        version: release.version.clone(),
+        root: dest.to_path_buf(),
+        bin_dir: bin,
+        archive: Some(blob),
+    })
 }

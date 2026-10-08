@@ -65,7 +65,11 @@ pub struct Config {
 }
 
 pub fn load(dir: &Path, env: &Env) -> Result<Option<Config>> {
-    let explicit = env.vars.get("ACROPOLIS_CONFIG_FILE").cloned().or_else(|| env.config("CONFIG_FILE").map(|(v, _)| v));
+    let explicit = env
+        .vars
+        .get("ACROPOLIS_CONFIG_FILE")
+        .cloned()
+        .or_else(|| env.config("CONFIG_FILE").map(|(v, _)| v));
     let path = match &explicit {
         Some(p) => {
             let rel = Path::new(p);
@@ -81,7 +85,10 @@ pub fn load(dir: &Path, env: &Env) -> Result<Option<Config>> {
             path
         }
         None => {
-            let found = ["acropolis.json", "railpack.json"].iter().map(|f| dir.join(f)).find(|p| p.exists());
+            let found = ["acropolis.json", "railpack.json"]
+                .iter()
+                .map(|f| dir.join(f))
+                .find(|p| p.exists());
             match found {
                 Some(p) => p,
                 None => return Ok(None),
@@ -90,7 +97,8 @@ pub fn load(dir: &Path, env: &Env) -> Result<Option<Config>> {
     };
     let text = std::fs::read_to_string(&path).with_context(|| format!("reading config {}", path.display()))?;
     let value: Value = json5::from_str(&text).with_context(|| format!("{} is not valid JSON", path.display()))?;
-    let cfg: Config = serde_json::from_value(value).with_context(|| format!("{} does not match the config schema", path.display()))?;
+    let cfg: Config = serde_json::from_value(value)
+        .with_context(|| format!("{} does not match the config schema", path.display()))?;
     Ok(Some(cfg))
 }
 
@@ -108,14 +116,23 @@ const INSTALL_COMMANDS: &[&str] = &[
 ];
 
 fn command_strings(step: &StepConfig) -> Vec<String> {
-    step.commands.iter().filter_map(|c| c.as_str().map(|s| s.to_string())).collect()
+    step.commands
+        .iter()
+        .filter_map(|c| c.as_str().map(|s| s.to_string()))
+        .collect()
 }
 
 pub fn apply(cfg: &Config, env: &mut Env) -> Result<()> {
     let mut unsupported = Vec::new();
-    let build_apt: Vec<String> = cfg.build_apt_packages.iter().filter(|p| p.as_str() != "...").cloned().collect();
+    let build_apt: Vec<String> = cfg
+        .build_apt_packages
+        .iter()
+        .filter(|p| p.as_str() != "...")
+        .cloned()
+        .collect();
     if !build_apt.is_empty() {
-        env.vars.insert("ACROPOLIS_BUILD_APT_PACKAGES".into(), build_apt.join(" "));
+        env.vars
+            .insert("ACROPOLIS_BUILD_APT_PACKAGES".into(), build_apt.join(" "));
     }
     let mut other_packages = Vec::new();
     for (k, v) in &cfg.packages {
@@ -124,7 +141,9 @@ pub fn apply(cfg: &Config, env: &mut Env) -> Result<()> {
                 env.vars.insert("ACROPOLIS_JAVA_PACKAGE".into(), v.clone());
             }
             "node" | "go" | "python" | "ruby" | "bun" | "deno" | "rust" => {
-                env.vars.entry(format!("ACROPOLIS_{}_VERSION", k.to_ascii_uppercase())).or_insert_with(|| v.clone());
+                env.vars
+                    .entry(format!("ACROPOLIS_{}_VERSION", k.to_ascii_uppercase()))
+                    .or_insert_with(|| v.clone());
             }
             other => other_packages.push(other.to_string()),
         }
@@ -134,7 +153,13 @@ pub fn apply(cfg: &Config, env: &mut Env) -> Result<()> {
             .packages
             .iter()
             .filter(|(k, _)| other_packages.contains(k))
-            .map(|(k, v)| if v.is_empty() { format!("{k}@latest") } else { format!("{k}@{v}") })
+            .map(|(k, v)| {
+                if v.is_empty() {
+                    format!("{k}@latest")
+                } else {
+                    format!("{k}@{v}")
+                }
+            })
             .collect();
         env.vars.insert("ACROPOLIS_MISE_PACKAGES".into(), specs.join(" "));
     }
@@ -148,11 +173,7 @@ pub fn apply(cfg: &Config, env: &mut Env) -> Result<()> {
                 }
             }
             "build" => {
-                let parts: Vec<String> = cmds
-                    .iter()
-                    .filter(|c| *c != "...")
-                    .cloned()
-                    .collect();
+                let parts: Vec<String> = cmds.iter().filter(|c| *c != "...").cloned().collect();
                 if !parts.is_empty() {
                     let mut chain = Vec::new();
                     if cmds.iter().any(|c| c == "...")
@@ -188,7 +209,8 @@ pub fn apply(cfg: &Config, env: &mut Env) -> Result<()> {
         }
         let inputs: Vec<&Value> = d.inputs.iter().filter(|i| i.is_object()).collect();
         if !inputs.is_empty() {
-            env.vars.insert("ACROPOLIS_DEPLOY_INPUTS".into(), serde_json::to_string(&inputs)?);
+            env.vars
+                .insert("ACROPOLIS_DEPLOY_INPUTS".into(), serde_json::to_string(&inputs)?);
         }
         if !d.paths.is_empty() {
             env.vars.insert("ACROPOLIS_DEPLOY_PATHS".into(), d.paths.join(":"));
@@ -198,7 +220,8 @@ pub fn apply(cfg: &Config, env: &mut Env) -> Result<()> {
         }
     }
     if !custom_steps.is_empty() {
-        env.vars.insert("ACROPOLIS_CUSTOM_STEPS".into(), serde_json::to_string(&custom_steps)?);
+        env.vars
+            .insert("ACROPOLIS_CUSTOM_STEPS".into(), serde_json::to_string(&custom_steps)?);
     }
     if let Some(p) = &cfg.provider {
         env.vars.insert("ACROPOLIS_PROVIDER".into(), p.clone());
@@ -207,7 +230,10 @@ pub fn apply(cfg: &Config, env: &mut Env) -> Result<()> {
         env.vars.insert("ACROPOLIS_EXCLUDE".into(), cfg.exclude.join("\n"));
     }
     if !unsupported.is_empty() {
-        bail!("config uses features that are not supported yet: {}", unsupported.join(", "));
+        bail!(
+            "config uses features that are not supported yet: {}",
+            unsupported.join(", ")
+        );
     }
     Ok(())
 }

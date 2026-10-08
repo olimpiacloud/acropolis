@@ -123,7 +123,10 @@ fn flatten_v1(prefix: &str, deps: &BTreeMap<String, V1Dep>, out: &mut BTreeMap<S
 }
 
 pub fn package_name_from_path(path: &str) -> &str {
-    let idx = path.rfind("node_modules/").map(|i| i + "node_modules/".len()).unwrap_or(0);
+    let idx = path
+        .rfind("node_modules/")
+        .map(|i| i + "node_modules/".len())
+        .unwrap_or(0);
     &path[idx..]
 }
 
@@ -135,7 +138,10 @@ pub fn bins_of(name: &str, bin: &Option<Value>) -> Vec<(String, String)> {
         }
         Some(Value::Object(m)) => m
             .iter()
-            .filter_map(|(k, v)| v.as_str().map(|s| (k.rsplit('/').next().unwrap_or(k).to_string(), s.to_string())))
+            .filter_map(|(k, v)| {
+                v.as_str()
+                    .map(|s| (k.rsplit('/').next().unwrap_or(k).to_string(), s.to_string()))
+            })
             .collect(),
         _ => Vec::new(),
     }
@@ -155,6 +161,9 @@ mod tests {
         let l = PackageLock::parse(v1).unwrap();
         assert!(l.packages.contains_key("node_modules/a/node_modules/b"));
         assert!(l.packages["node_modules/loc"].link);
-        assert_eq!(bins_of("@s/tool", &Some(Value::String("x.js".into()))), vec![("tool".to_string(), "x.js".to_string())]);
+        assert_eq!(
+            bins_of("@s/tool", &Some(Value::String("x.js".into()))),
+            vec![("tool".to_string(), "x.js".to_string())]
+        );
     }
 }

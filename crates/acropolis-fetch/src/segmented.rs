@@ -42,11 +42,22 @@ impl std::fmt::Display for NoRanges {
 
 impl std::error::Error for NoRanges {}
 
-async fn fetch_range(client: &Client, url: &str, headers: &HeaderMap, start: u64, end: u64, stall: Duration) -> Result<Bytes> {
+async fn fetch_range(
+    client: &Client,
+    url: &str,
+    headers: &HeaderMap,
+    start: u64,
+    end: u64,
+    stall: Duration,
+) -> Result<Bytes> {
     acropolis_events::add_request();
     let resp = tokio::time::timeout(
         stall * 3,
-        client.get(url).headers(headers.clone()).header(RANGE, format!("bytes={start}-{end}")).send(),
+        client
+            .get(url)
+            .headers(headers.clone())
+            .header(RANGE, format!("bytes={start}-{end}"))
+            .send(),
     )
     .await
     .map_err(|_| anyhow!("timed out waiting for response"))??;
@@ -75,8 +86,23 @@ async fn fetch_range(client: &Client, url: &str, headers: &HeaderMap, start: u64
     Ok(buf.freeze())
 }
 
-pub async fn download<S: AsyncSink>(client: &Client, url: &str, headers: &HeaderMap, size: u64, policy: Policy, sink: S) -> Result<u64> {
-    download_sources(client, (url.to_string(), headers.clone()), async { None }, size, policy, sink).await
+pub async fn download<S: AsyncSink>(
+    client: &Client,
+    url: &str,
+    headers: &HeaderMap,
+    size: u64,
+    policy: Policy,
+    sink: S,
+) -> Result<u64> {
+    download_sources(
+        client,
+        (url.to_string(), headers.clone()),
+        async { None },
+        size,
+        policy,
+        sink,
+    )
+    .await
 }
 
 pub async fn download_sources<S: AsyncSink, A: std::future::Future<Output = Option<(String, HeaderMap)>>>(

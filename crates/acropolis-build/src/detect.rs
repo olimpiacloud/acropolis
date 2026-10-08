@@ -24,7 +24,9 @@ pub const OPERATOR_KEYS: &[&str] = &[
 ];
 
 pub fn operator_key(key: &str) -> bool {
-    ["ACROPOLIS_", "RAILPACK_"].iter().any(|p| key.strip_prefix(p).is_some_and(|rest| OPERATOR_KEYS.contains(&rest)))
+    ["ACROPOLIS_", "RAILPACK_"]
+        .iter()
+        .any(|p| key.strip_prefix(p).is_some_and(|rest| OPERATOR_KEYS.contains(&rest)))
 }
 
 impl Env {
@@ -48,7 +50,9 @@ impl Env {
     }
 
     pub fn flag(&self, name: &str) -> bool {
-        self.config(name).map(|(v, _)| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false)
+        self.config(name)
+            .map(|(v, _)| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
     }
 }
 
@@ -113,7 +117,10 @@ pub struct NodeApp {
 
 impl NodeApp {
     pub fn script(&self, name: &str) -> Option<&str> {
-        self.scripts.get(name).map(|s| s.as_str()).filter(|s| !s.trim().is_empty())
+        self.scripts
+            .get(name)
+            .map(|s| s.as_str())
+            .filter(|s| !s.trim().is_empty())
     }
 
     pub fn has_dep(&self, name: &str) -> bool {
@@ -123,11 +130,17 @@ impl NodeApp {
     }
 
     pub fn has_prod_dep(&self, name: &str) -> bool {
-        self.package_json.get("dependencies").and_then(|d| d.get(name)).is_some()
+        self.package_json
+            .get("dependencies")
+            .and_then(|d| d.get(name))
+            .is_some()
     }
 
     pub fn main(&self) -> Option<String> {
-        self.package_json.get("main").and_then(|m| m.as_str()).map(|s| s.to_string())
+        self.package_json
+            .get("main")
+            .and_then(|m| m.as_str())
+            .map(|s| s.to_string())
     }
 }
 
@@ -167,7 +180,10 @@ pub fn read_json_lenient(path: &Path) -> Result<Value> {
 }
 
 fn read_trim(path: &Path) -> Option<String> {
-    std::fs::read_to_string(path).ok().map(|s| s.lines().next().unwrap_or("").trim().to_string()).filter(|s| !s.is_empty())
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.lines().next().unwrap_or("").trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 fn mise_locked(dir: &Path, tool: &str) -> Option<String> {
@@ -208,7 +224,11 @@ pub fn tool_version(dir: &Path, tool: &str) -> Option<VersionSpec> {
                     if k == tool {
                         let v = v.trim();
                         let v = if v.starts_with('{') {
-                            v.split("version").nth(1).and_then(|r| r.split('"').nth(1)).unwrap_or("").to_string()
+                            v.split("version")
+                                .nth(1)
+                                .and_then(|r| r.split('"').nth(1))
+                                .unwrap_or("")
+                                .to_string()
                         } else if v.starts_with('[') {
                             v.split('"').nth(1).unwrap_or("").to_string()
                         } else {
@@ -217,10 +237,16 @@ pub fn tool_version(dir: &Path, tool: &str) -> Option<VersionSpec> {
                         if v == "latest"
                             && let Some(locked) = mise_locked(dir, tool)
                         {
-                            return Some(VersionSpec { spec: locked, source: "mise.lock".into() });
+                            return Some(VersionSpec {
+                                spec: locked,
+                                source: "mise.lock".into(),
+                            });
                         }
                         if !v.is_empty() {
-                            return Some(VersionSpec { spec: v, source: file.to_string() });
+                            return Some(VersionSpec {
+                                spec: v,
+                                source: file.to_string(),
+                            });
                         }
                     }
                 }
@@ -238,7 +264,10 @@ pub fn tool_version(dir: &Path, tool: &str) -> Option<VersionSpec> {
             if let (Some(k), Some(v)) = (it.next(), it.next())
                 && names.contains(&k)
             {
-                return Some(VersionSpec { spec: v.to_string(), source: ".tool-versions".into() });
+                return Some(VersionSpec {
+                    spec: v.to_string(),
+                    source: ".tool-versions".into(),
+                });
             }
         }
     }
@@ -255,7 +284,10 @@ pub fn detect(dir: &Path, env: &Env) -> Result<App> {
     if dir.join("Cargo.toml").exists() {
         return Ok(App::Rust(crate::providers::rust::detect(dir, env)?));
     }
-    bail!("could not detect how to build {}: no package.json or go.mod", dir.display())
+    bail!(
+        "could not detect how to build {}: no package.json or go.mod",
+        dir.display()
+    )
 }
 
 pub fn has_package_json(dir: &Path) -> bool {
@@ -288,7 +320,9 @@ pub fn workspace_members(root: &Path, pj: &Value) -> Vec<String> {
         }
     }
     let ws = pj.get("workspaces");
-    let arr = ws.and_then(|w| w.as_array()).or_else(|| ws.and_then(|w| w.get("packages")).and_then(|p| p.as_array()));
+    let arr = ws
+        .and_then(|w| w.as_array())
+        .or_else(|| ws.and_then(|w| w.get("packages")).and_then(|p| p.as_array()));
     for g in arr.into_iter().flatten().filter_map(|g| g.as_str()) {
         globs.push(g.to_string());
     }
@@ -299,7 +333,9 @@ pub fn workspace_members(root: &Path, pj: &Value) -> Vec<String> {
             continue;
         }
         if let Some(parent) = g.strip_suffix("/*").or_else(|| g.strip_suffix("/**")) {
-            let Ok(rd) = std::fs::read_dir(root.join(parent)) else { continue };
+            let Ok(rd) = std::fs::read_dir(root.join(parent)) else {
+                continue;
+            };
             for e in rd.flatten() {
                 if e.path().join("package.json").exists() {
                     out.push(format!("{parent}/{}", e.file_name().to_string_lossy()));
@@ -344,26 +380,51 @@ pub fn workspace_root(dir: &Path) -> Option<(PathBuf, String)> {
 
 pub fn detect_node(dir: &Path, env: &Env) -> Result<NodeApp> {
     let member = workspace_root(dir);
-    let root = member.as_ref().map(|(r, _)| r.clone()).unwrap_or_else(|| dir.to_path_buf());
-    let root_pj = if member.is_some() { read_package_json(&root)? } else { Value::Null };
+    let root = member
+        .as_ref()
+        .map(|(r, _)| r.clone())
+        .unwrap_or_else(|| dir.to_path_buf());
+    let root_pj = if member.is_some() {
+        read_package_json(&root)?
+    } else {
+        Value::Null
+    };
     let pj = read_package_json(dir)?;
     let scripts: BTreeMap<String, String> = pj
         .get("scripts")
         .and_then(|s| s.as_object())
-        .map(|m| m.iter().filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string()))).collect())
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
         .unwrap_or_default();
-    let dev_engine = pj.get("devEngines").and_then(|d| d.get("packageManager")).and_then(|p| {
-        let first = if let Some(a) = p.as_array() { a.first()? } else { p };
-        let name = first.get("name")?.as_str()?;
-        let version = first.get("version").and_then(|v| v.as_str()).unwrap_or("");
-        Some(if version.is_empty() { name.to_string() } else { format!("{name}@{version}") })
-    });
-    let root_dev_engine = root_pj.get("devEngines").and_then(|d| d.get("packageManager")).and_then(|p| {
-        let first = if let Some(a) = p.as_array() { a.first()? } else { p };
-        let name = first.get("name")?.as_str()?;
-        let version = first.get("version").and_then(|v| v.as_str()).unwrap_or("");
-        Some(if version.is_empty() { name.to_string() } else { format!("{name}@{version}") })
-    });
+    let dev_engine = pj
+        .get("devEngines")
+        .and_then(|d| d.get("packageManager"))
+        .and_then(|p| {
+            let first = if let Some(a) = p.as_array() { a.first()? } else { p };
+            let name = first.get("name")?.as_str()?;
+            let version = first.get("version").and_then(|v| v.as_str()).unwrap_or("");
+            Some(if version.is_empty() {
+                name.to_string()
+            } else {
+                format!("{name}@{version}")
+            })
+        });
+    let root_dev_engine = root_pj
+        .get("devEngines")
+        .and_then(|d| d.get("packageManager"))
+        .and_then(|p| {
+            let first = if let Some(a) = p.as_array() { a.first()? } else { p };
+            let name = first.get("name")?.as_str()?;
+            let version = first.get("version").and_then(|v| v.as_str()).unwrap_or("");
+            Some(if version.is_empty() {
+                name.to_string()
+            } else {
+                format!("{name}@{version}")
+            })
+        });
     let pm_field = root_pj
         .get("packageManager")
         .and_then(|p| p.as_str())
@@ -380,8 +441,17 @@ pub fn detect_node(dir: &Path, env: &Env) -> Result<NodeApp> {
         }
     }
     if lockfile.is_none() && pm_field.is_none() {
-        let eng = |k: &str| pj.get("engines").and_then(|e| e.get(k)).and_then(|v| v.as_str()).map(|s| s.to_string());
-        if eng("pnpm").is_some() || dir.join("pnpm-workspace.yaml").exists() || dir.join("package.json5").exists() || dir.join("package.yaml").exists() {
+        let eng = |k: &str| {
+            pj.get("engines")
+                .and_then(|e| e.get(k))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        };
+        if eng("pnpm").is_some()
+            || dir.join("pnpm-workspace.yaml").exists()
+            || dir.join("package.json5").exists()
+            || dir.join("package.yaml").exists()
+        {
             pm = PackageManager::Pnpm;
         } else if eng("bun").is_some() {
             pm = PackageManager::Bun;
@@ -419,7 +489,8 @@ pub fn detect_node(dir: &Path, env: &Env) -> Result<NodeApp> {
         node = node_version(&root, &root_pj, env);
     }
     let framework = detect_framework(&pj, &scripts);
-    let has_workspaces = member.is_none() && (pj.get("workspaces").is_some() || dir.join("pnpm-workspace.yaml").exists());
+    let has_workspaces =
+        member.is_none() && (pj.get("workspaces").is_some() || dir.join("pnpm-workspace.yaml").exists());
     Ok(NodeApp {
         dir: dir.to_path_buf(),
         package_json: pj,
@@ -441,33 +512,51 @@ fn node_version(dir: &Path, pj: &Value, env: &Env) -> VersionSpec {
     }
     for f in [".nvmrc", ".node-version"] {
         if let Some(v) = read_trim(&dir.join(f)) {
-            return VersionSpec { spec: v.trim_start_matches('v').to_string(), source: f.into() };
+            return VersionSpec {
+                spec: v.trim_start_matches('v').to_string(),
+                source: f.into(),
+            };
         }
     }
     if let Some((v, k)) = env.config("NODE_VERSION") {
         return VersionSpec { spec: v, source: k };
     }
     if let Some(rt) = pj.get("devEngines").and_then(|d| d.get("runtime")) {
-        let items: Vec<&Value> = if let Some(a) = rt.as_array() { a.iter().collect() } else { vec![rt] };
+        let items: Vec<&Value> = if let Some(a) = rt.as_array() {
+            a.iter().collect()
+        } else {
+            vec![rt]
+        };
         for it in items {
             if it.get("name").and_then(|n| n.as_str()) == Some("node")
                 && let Some(v) = it.get("version").and_then(|v| v.as_str())
             {
-                return VersionSpec { spec: v.to_string(), source: "package.json devEngines.runtime".into() };
+                return VersionSpec {
+                    spec: v.to_string(),
+                    source: "package.json devEngines.runtime".into(),
+                };
             }
         }
     }
     if let Some(e) = pj.get("engines").and_then(|e| e.get("node")).and_then(|v| v.as_str())
         && !e.trim().is_empty()
     {
-        return VersionSpec { spec: e.trim().to_string(), source: "package.json engines.node".into() };
+        return VersionSpec {
+            spec: e.trim().to_string(),
+            source: "package.json engines.node".into(),
+        };
     }
-    VersionSpec { spec: "lts".into(), source: "default".into() }
+    VersionSpec {
+        spec: "lts".into(),
+        source: "default".into(),
+    }
 }
 
 fn detect_framework(pj: &Value, scripts: &BTreeMap<String, String>) -> Framework {
     let has = |name: &str| {
-        ["dependencies", "devDependencies"].iter().any(|k| pj.get(k).and_then(|d| d.get(name)).is_some())
+        ["dependencies", "devDependencies"]
+            .iter()
+            .any(|k| pj.get(k).and_then(|d| d.get(name)).is_some())
     };
     let prod = |name: &str| pj.get("dependencies").and_then(|d| d.get(name)).is_some();
     let build = scripts.get("build").map(|s| s.as_str()).unwrap_or("");
@@ -505,22 +594,38 @@ fn detect_framework(pj: &Value, scripts: &BTreeMap<String, String>) -> Framework
 }
 
 pub fn detect_go(dir: &Path, env: &Env) -> Result<GoApp> {
-    let gomod = if dir.join("go.mod").exists() { Some(acropolis_gomod::read_go_mod(dir)?) } else { None };
+    let gomod = if dir.join("go.mod").exists() {
+        Some(acropolis_gomod::read_go_mod(dir)?)
+    } else {
+        None
+    };
     let go = if let Some((v, k)) = env.config("GO_VERSION") {
         VersionSpec { spec: v, source: k }
     } else if let Some(v) = tool_version(dir, "go") {
         v
     } else if let Some(t) = gomod.as_ref().and_then(|m| m.toolchain.clone()) {
-        VersionSpec { spec: t, source: "go.mod toolchain".into() }
+        VersionSpec {
+            spec: t,
+            source: "go.mod toolchain".into(),
+        }
     } else if let Some(g) = gomod.as_ref().and_then(|m| m.go.clone()) {
-        VersionSpec { spec: g, source: "go.mod go".into() }
-    } else if let Some(g) = std::fs::read_to_string(dir.join("go.work"))
-        .ok()
-        .and_then(|t| t.lines().find_map(|l| l.trim().strip_prefix("go ").map(|v| v.trim().to_string())))
-    {
-        VersionSpec { spec: g, source: "go.work".into() }
+        VersionSpec {
+            spec: g,
+            source: "go.mod go".into(),
+        }
+    } else if let Some(g) = std::fs::read_to_string(dir.join("go.work")).ok().and_then(|t| {
+        t.lines()
+            .find_map(|l| l.trim().strip_prefix("go ").map(|v| v.trim().to_string()))
+    }) {
+        VersionSpec {
+            spec: g,
+            source: "go.work".into(),
+        }
     } else {
-        VersionSpec { spec: acropolis_toolchain::go::DEFAULT_GO.into(), source: "default".into() }
+        VersionSpec {
+            spec: acropolis_toolchain::go::DEFAULT_GO.into(),
+            source: "default".into(),
+        }
     };
     let package = if let Some((p, _)) = env.config("GO_BIN") {
         format!("./cmd/{p}")
@@ -573,7 +678,9 @@ fn workspace_main(dir: &Path) -> Option<String> {
             .map(|rd| {
                 rd.flatten().any(|e| {
                     e.file_name().to_string_lossy().ends_with(".go")
-                        && std::fs::read_to_string(e.path()).map(|t| t.contains("package main")).unwrap_or(false)
+                        && std::fs::read_to_string(e.path())
+                            .map(|t| t.contains("package main"))
+                            .unwrap_or(false)
                 })
             })
             .unwrap_or(false)
@@ -582,7 +689,10 @@ fn workspace_main(dir: &Path) -> Option<String> {
 
 fn has_go_files(dir: &Path) -> bool {
     std::fs::read_dir(dir)
-        .map(|rd| rd.filter_map(|e| e.ok()).any(|e| e.file_name().to_string_lossy().ends_with(".go")))
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .any(|e| e.file_name().to_string_lossy().ends_with(".go"))
+        })
         .unwrap_or(false)
 }
 
@@ -621,7 +731,8 @@ mod tests {
     #[test]
     fn repo_config_cannot_escape_the_app_dir() {
         let mut env = Env::default();
-        env.vars.insert("ACROPOLIS_CONFIG_FILE".into(), "../../etc/passwd".into());
+        env.vars
+            .insert("ACROPOLIS_CONFIG_FILE".into(), "../../etc/passwd".into());
         assert!(crate::config::load(Path::new("/tmp"), &env).is_err());
         env.vars.insert("ACROPOLIS_CONFIG_FILE".into(), "/etc/passwd".into());
         assert!(crate::config::load(Path::new("/tmp"), &env).is_err());

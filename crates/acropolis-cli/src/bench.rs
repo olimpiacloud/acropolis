@@ -28,7 +28,9 @@ pub struct AppSpec {
 
 impl AppSpec {
     fn root(&self, repo: &Path) -> PathBuf {
-        self.source.clone().unwrap_or_else(|| repo.join("bench/apps").join(&self.name))
+        self.source
+            .clone()
+            .unwrap_or_else(|| repo.join("bench/apps").join(&self.name))
     }
 
     fn target(&self, root: &Path) -> PathBuf {
@@ -101,13 +103,23 @@ const REGISTRY_PORT: u16 = 5555;
 const BUILDER: &str = "acropolis-bench";
 
 fn sh(cmd: &mut Command) -> Result<String> {
-    let out = cmd.stdin(Stdio::null()).output().with_context(|| format!("running {cmd:?}"))?;
+    let out = cmd
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| format!("running {cmd:?}"))?;
     if !out.status.success() {
         bail!(
             "{:?} failed: {}\n{}",
             cmd,
             out.status,
-            String::from_utf8_lossy(&out.stderr).chars().rev().take(3000).collect::<String>().chars().rev().collect::<String>()
+            String::from_utf8_lossy(&out.stderr)
+                .chars()
+                .rev()
+                .take(3000)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect::<String>()
         );
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
@@ -123,7 +135,11 @@ fn default_iface() -> String {
         .and_then(|t| {
             t.lines().skip(1).find_map(|l| {
                 let p: Vec<&str> = l.split_whitespace().collect();
-                if p.len() > 1 && p[1] == "00000000" { Some(p[0].to_string()) } else { None }
+                if p.len() > 1 && p[1] == "00000000" {
+                    Some(p[0].to_string())
+                } else {
+                    None
+                }
             })
         })
         .unwrap_or_else(|| "eth0".into())
@@ -145,16 +161,25 @@ struct CgStats {
 fn anon_bytes(dir: &Path) -> u64 {
     fs::read_to_string(dir.join("memory.stat"))
         .ok()
-        .and_then(|t| t.lines().find_map(|l| l.strip_prefix("anon ").and_then(|v| v.trim().parse().ok())))
+        .and_then(|t| {
+            t.lines()
+                .find_map(|l| l.strip_prefix("anon ").and_then(|v| v.trim().parse().ok()))
+        })
         .unwrap_or(0)
 }
 
 fn cg_stats(dir: &Path) -> CgStats {
     let cpu_usec = fs::read_to_string(dir.join("cpu.stat"))
         .ok()
-        .and_then(|t| t.lines().find_map(|l| l.strip_prefix("usage_usec ").and_then(|v| v.trim().parse().ok())))
+        .and_then(|t| {
+            t.lines()
+                .find_map(|l| l.strip_prefix("usage_usec ").and_then(|v| v.trim().parse().ok()))
+        })
         .unwrap_or(0);
-    let peak = fs::read_to_string(dir.join("memory.peak")).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+    let peak = fs::read_to_string(dir.join("memory.peak"))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
     let wbytes = fs::read_to_string(dir.join("io.stat"))
         .ok()
         .map(|t| {
@@ -171,7 +196,10 @@ fn children_cpu() -> f64 {
     unsafe {
         let mut ru: libc::rusage = std::mem::zeroed();
         libc::getrusage(libc::RUSAGE_CHILDREN, &mut ru);
-        ru.ru_utime.tv_sec as f64 + ru.ru_utime.tv_usec as f64 / 1e6 + ru.ru_stime.tv_sec as f64 + ru.ru_stime.tv_usec as f64 / 1e6
+        ru.ru_utime.tv_sec as f64
+            + ru.ru_utime.tv_usec as f64 / 1e6
+            + ru.ru_stime.tv_sec as f64
+            + ru.ru_stime.tv_usec as f64 / 1e6
     }
 }
 
@@ -210,9 +238,16 @@ fn reset_registry() -> Result<()> {
 
 fn reset_builder(cfg: &BenchConfig) -> Result<PathBuf> {
     let _ = docker(&["buildx", "rm", "-f", BUILDER]);
-    let config = if cfg.mirror { cfg.repo.join("bench/buildkitd.toml") } else { cfg.repo.join("bench/buildkitd-nomirror.toml") };
+    let config = if cfg.mirror {
+        cfg.repo.join("bench/buildkitd.toml")
+    } else {
+        cfg.repo.join("bench/buildkitd-nomirror.toml")
+    };
     if !cfg.mirror && !config.exists() {
-        fs::write(&config, "[registry.\"localhost:5555\"]\n  http = true\n  insecure = true\n")?;
+        fs::write(
+            &config,
+            "[registry.\"localhost:5555\"]\n  http = true\n  insecure = true\n",
+        )?;
     }
     let mut args: Vec<String> = vec![
         "buildx".into(),
@@ -254,7 +289,10 @@ fn builder_cgroup() -> Result<PathBuf> {
 }
 
 fn image_size(reference: &str) -> Result<(f64, String)> {
-    image_size_at(&format!("127.0.0.1:{REGISTRY_PORT}"), reference.trim_start_matches(&format!("localhost:{REGISTRY_PORT}/")))
+    image_size_at(
+        &format!("127.0.0.1:{REGISTRY_PORT}"),
+        reference.trim_start_matches(&format!("localhost:{REGISTRY_PORT}/")),
+    )
 }
 
 pub fn image_size_at(registry: &str, repo_tag: &str) -> Result<(f64, String)> {
@@ -280,9 +318,17 @@ pub fn image_size_at(registry: &str, repo_tag: &str) -> Result<(f64, String)> {
             .context("no amd64 manifest")?;
         let d = m["digest"].as_str().unwrap_or("");
         let url = format!("http://{registry}/v2/{repo}/manifests/{d}");
-        v = serde_json::from_str(&sh(Command::new("curl").args(["-sf", "-H", &format!("Accept: {accept}"), &url]))?)?;
+        v = serde_json::from_str(&sh(Command::new("curl").args([
+            "-sf",
+            "-H",
+            &format!("Accept: {accept}"),
+            &url,
+        ]))?)?;
     }
-    let size: u64 = v["layers"].as_array().map(|l| l.iter().filter_map(|x| x["size"].as_u64()).sum()).unwrap_or(0)
+    let size: u64 = v["layers"]
+        .as_array()
+        .map(|l| l.iter().filter_map(|x| x["size"].as_u64()).sum())
+        .unwrap_or(0)
         + v["config"]["size"].as_u64().unwrap_or(0);
     Ok((size as f64 / 1e6, digest))
 }
@@ -292,7 +338,14 @@ fn verify(app: &AppSpec, reference: &str) -> Result<()> {
     let _ = docker(&["rm", "-f", &name]);
     docker(&["pull", "-q", reference])?;
     let host_port = 39000 + (std::process::id() % 1000) as u16;
-    let mut args: Vec<String> = vec!["run".into(), "-d".into(), "--name".into(), name.clone(), "-p".into(), format!("127.0.0.1:{host_port}:{}", app.port)];
+    let mut args: Vec<String> = vec![
+        "run".into(),
+        "-d".into(),
+        "--name".into(),
+        name.clone(),
+        "-p".into(),
+        format!("127.0.0.1:{host_port}:{}", app.port),
+    ];
     for (k, v) in &app.env {
         args.push("-e".into());
         args.push(format!("{k}={v}"));
@@ -342,8 +395,17 @@ enum Phase {
     Rebuild,
 }
 
-const TOUCH_CANDIDATES: &[&str] =
-    &["src/app/page.tsx", "src/routes/index.tsx", "src/App.tsx", "src/main.rs", "main.go", "index.js", "server.js", "app.py", "main.py"];
+const TOUCH_CANDIDATES: &[&str] = &[
+    "src/app/page.tsx",
+    "src/routes/index.tsx",
+    "src/App.tsx",
+    "src/main.rs",
+    "main.go",
+    "index.js",
+    "server.js",
+    "app.py",
+    "main.py",
+];
 
 fn touch_source(dir: &Path) -> Result<()> {
     if dir.is_file() {
@@ -352,7 +414,11 @@ fn touch_source(dir: &Path) -> Result<()> {
         fs::write(dir, text)?;
         return Ok(());
     }
-    let f = TOUCH_CANDIDATES.iter().map(|c| dir.join(c)).find(|p| p.exists()).ok_or_else(|| anyhow!("no source file to modify in {}", dir.display()))?;
+    let f = TOUCH_CANDIDATES
+        .iter()
+        .map(|c| dir.join(c))
+        .find(|p| p.exists())
+        .ok_or_else(|| anyhow!("no source file to modify in {}", dir.display()))?;
     let mut text = fs::read_to_string(&f)?;
     text.push_str(&format!("\n// rebuild {}\n", chrono_now()));
     fs::write(&f, text)?;
@@ -374,10 +440,31 @@ fn run_one(cfg: &BenchConfig, app: &AppSpec, tool_spec: &str, run: usize, iface:
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_phase(cfg: &BenchConfig, app: &AppSpec, tool_spec: &str, run: usize, iface: &str, log_dir: &Path, phase: Phase, app_dir: &Path) -> RunResult {
+fn run_phase(
+    cfg: &BenchConfig,
+    app: &AppSpec,
+    tool_spec: &str,
+    run: usize,
+    iface: &str,
+    log_dir: &Path,
+    phase: Phase,
+    app_dir: &Path,
+) -> RunResult {
     let acropolis = acropolis_variant(cfg, tool_spec);
-    let tool_label = acropolis.as_ref().map(|(l, _)| l.clone()).unwrap_or_else(|| tool_spec.to_string());
-    let tool_slug: String = tool_label.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '.' { c } else { '-' }).collect();
+    let tool_label = acropolis
+        .as_ref()
+        .map(|(l, _)| l.clone())
+        .unwrap_or_else(|| tool_spec.to_string());
+    let tool_slug: String = tool_label
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '.' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
     let tool = if acropolis.is_some() { "acropolis" } else { tool_spec };
     let mut r = RunResult {
         app: app.name.clone(),
@@ -395,7 +482,11 @@ fn run_phase(cfg: &BenchConfig, app: &AppSpec, tool_spec: &str, run: usize, ifac
     }
     .to_string();
     let reference = format!("localhost:{REGISTRY_PORT}/bench/{}:{tool_slug}-{run}", app.name);
-    let suffix = if phase == Phase::Cold { String::new() } else { format!("-{}", r.scenario) };
+    let suffix = if phase == Phase::Cold {
+        String::new()
+    } else {
+        format!("-{}", r.scenario)
+    };
     let log_path = log_dir.join(format!("{}-{tool_slug}-{run}{suffix}.log", app.name));
     let res = (|| -> Result<()> {
         if phase != Phase::Rebuild {
@@ -415,7 +506,11 @@ fn run_phase(cfg: &BenchConfig, app: &AppSpec, tool_spec: &str, run: usize, ifac
                 fs::write(cg.join("memory.max"), parse_mem(m).to_string())?;
             }
         } else {
-            builder_cg = Some(if phase == Phase::Rebuild { builder_cgroup()? } else { reset_builder(cfg)? });
+            builder_cg = Some(if phase == Phase::Rebuild {
+                builder_cgroup()?
+            } else {
+                reset_builder(cfg)?
+            });
         }
         if cfg.drop_caches && phase != Phase::Rebuild {
             drop_caches();
@@ -425,7 +520,11 @@ fn run_phase(cfg: &BenchConfig, app: &AppSpec, tool_spec: &str, run: usize, ifac
         let cpu0 = children_cpu();
         let log = fs::File::create(&log_path)?;
         let start = Instant::now();
-        let sampled_cg = if tool.starts_with("acropolis") { Some(cg.clone()) } else { builder_cg.clone() };
+        let sampled_cg = if tool.starts_with("acropolis") {
+            Some(cg.clone())
+        } else {
+            builder_cg.clone()
+        };
         let sampling = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let sampler = sampled_cg.map(|dir| {
             let run = sampling.clone();
@@ -442,7 +541,19 @@ fn run_phase(cfg: &BenchConfig, app: &AppSpec, tool_spec: &str, run: usize, ifac
             "docker" => {
                 let dockerfile = app.dockerfile(&cfg.repo, &app_dir);
                 let mut c = Command::new("docker");
-                c.args(["buildx", "build", "--builder", BUILDER, "--progress", "plain", "--push", "-t", &reference, "-f"]).arg(&dockerfile);
+                c.args([
+                    "buildx",
+                    "build",
+                    "--builder",
+                    BUILDER,
+                    "--progress",
+                    "plain",
+                    "--push",
+                    "-t",
+                    &reference,
+                    "-f",
+                ])
+                .arg(&dockerfile);
                 for (k, v) in &app.build_args {
                     c.arg("--build-arg").arg(format!("{k}={v}"));
                 }
@@ -461,11 +572,21 @@ fn run_phase(cfg: &BenchConfig, app: &AppSpec, tool_spec: &str, run: usize, ifac
                     st
                 } else {
                     let mut c = Command::new("docker");
-                    c.args(["buildx", "build", "--builder", BUILDER, "--progress", "plain", "--push", "-t", &reference])
-                        .arg("--build-arg")
-                        .arg(format!("BUILDKIT_SYNTAX={}", cfg.railpack_frontend))
-                        .arg("-f")
-                        .arg(&plan);
+                    c.args([
+                        "buildx",
+                        "build",
+                        "--builder",
+                        BUILDER,
+                        "--progress",
+                        "plain",
+                        "--push",
+                        "-t",
+                        &reference,
+                    ])
+                    .arg("--build-arg")
+                    .arg(format!("BUILDKIT_SYNTAX={}", cfg.railpack_frontend))
+                    .arg("-f")
+                    .arg(&plan);
                     for (k, v) in &app.build_args {
                         c.arg("--secret").arg(format!("id={k},env={k}")).env(k, v);
                     }
@@ -477,7 +598,12 @@ fn run_phase(cfg: &BenchConfig, app: &AppSpec, tool_spec: &str, run: usize, ifac
                 c.arg("-c")
                     .arg(format!("echo $$ > {}/cgroup.procs && exec \"$@\"", cg.display()))
                     .arg("sh")
-                    .arg(acropolis.as_ref().map(|(_, b)| b.clone()).unwrap_or_else(|| cfg.acropolis_bin.clone()))
+                    .arg(
+                        acropolis
+                            .as_ref()
+                            .map(|(_, b)| b.clone())
+                            .unwrap_or_else(|| cfg.acropolis_bin.clone()),
+                    )
                     .arg("--home")
                     .arg(&acropolis_home)
                     .arg("--events")
@@ -485,7 +611,12 @@ fn run_phase(cfg: &BenchConfig, app: &AppSpec, tool_spec: &str, run: usize, ifac
                 if cfg.mirror {
                     c.arg("--mirror").arg("docker.io=mirror.gcr.io");
                 }
-                c.arg("build").arg(app.target(&app_dir)).arg("-t").arg(&reference).arg("--compression").arg(&cfg.compression);
+                c.arg("build")
+                    .arg(app.target(&app_dir))
+                    .arg("-t")
+                    .arg(&reference)
+                    .arg("--compression")
+                    .arg(&cfg.compression);
                 for (k, v) in &app.build_args {
                     c.arg("-e").arg(format!("{k}={v}"));
                 }
@@ -521,7 +652,15 @@ fn run_phase(cfg: &BenchConfig, app: &AppSpec, tool_spec: &str, run: usize, ifac
         }
         if !status.success() {
             let tail = fs::read_to_string(&log_path).unwrap_or_default();
-            let tail: String = tail.lines().rev().take(25).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+            let tail: String = tail
+                .lines()
+                .rev()
+                .take(25)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n");
             bail!("build failed ({status}):\n{tail}");
         }
         r.ok = true;
@@ -556,17 +695,26 @@ pub fn image_pull_seconds(log: &str, tool: &str) -> f64 {
     let mut done: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
     for line in log.lines() {
         let Some(rest) = line.strip_prefix('#') else { continue };
-        let Some((id, text)) = rest.split_once(' ') else { continue };
+        let Some((id, text)) = rest.split_once(' ') else {
+            continue;
+        };
         if text.starts_with("docker-image://") || text.contains("] FROM ") {
             names.insert(id.to_string(), text.to_string());
-        } else if let Some(t) = text.strip_prefix("DONE ").and_then(|t| t.trim_end_matches('s').parse::<f64>().ok()) {
+        } else if let Some(t) = text
+            .strip_prefix("DONE ")
+            .and_then(|t| t.trim_end_matches('s').parse::<f64>().ok())
+        {
             let e = done.entry(id.to_string()).or_insert(0.0);
             if t > *e {
                 *e = t;
             }
         }
     }
-    names.iter().filter_map(|(id, _)| done.get(id)).cloned().fold(0.0, f64::max)
+    names
+        .iter()
+        .filter_map(|(id, _)| done.get(id))
+        .cloned()
+        .fold(0.0, f64::max)
 }
 
 fn parse_mem(s: &str) -> u64 {
@@ -583,7 +731,8 @@ fn parse_mem(s: &str) -> u64 {
 
 fn chrono_now() -> String {
     let out = Command::new("date").arg("-u").arg("+%Y-%m-%dT%H:%M:%SZ").output();
-    out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
+    out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
 }
 
 fn tree_hash(dir: &Path, h: &mut Vec<u8>) {
@@ -606,28 +755,63 @@ fn tree_hash(dir: &Path, h: &mut Vec<u8>) {
     for p in entries {
         h.extend_from_slice(p.strip_prefix(dir).unwrap_or(&p).to_string_lossy().as_bytes());
         h.push(0);
-        h.extend_from_slice(acropolis_store::sha256_bytes(&fs::read(&p).unwrap_or_default()).hex().as_bytes());
+        h.extend_from_slice(
+            acropolis_store::sha256_bytes(&fs::read(&p).unwrap_or_default())
+                .hex()
+                .as_bytes(),
+        );
         h.push(b'\n');
     }
 }
 
 fn tool_version(cfg: &BenchConfig, tool: &str) -> String {
-    let out = |c: &mut Command| c.output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+    let out = |c: &mut Command| {
+        c.output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default()
+    };
     let buildkit = format!(
         "{} {} {}",
         out(Command::new("docker").args(["buildx", "version"])),
-        out(Command::new("docker").args(["image", "inspect", "--format", "{{index .RepoDigests 0}}", "moby/buildkit:buildx-stable-1"])),
-        fs::read_to_string(cfg.repo.join(if cfg.mirror { "bench/buildkitd.toml" } else { "bench/buildkitd-nomirror.toml" })).unwrap_or_default()
+        out(Command::new("docker").args([
+            "image",
+            "inspect",
+            "--format",
+            "{{index .RepoDigests 0}}",
+            "moby/buildkit:buildx-stable-1"
+        ])),
+        fs::read_to_string(cfg.repo.join(if cfg.mirror {
+            "bench/buildkitd.toml"
+        } else {
+            "bench/buildkitd-nomirror.toml"
+        }))
+        .unwrap_or_default()
     );
     match tool {
-        "railpack" => format!("{} {} {buildkit}", out(Command::new(&cfg.railpack_bin).arg("--version")), cfg.railpack_frontend),
+        "railpack" => format!(
+            "{} {} {buildkit}",
+            out(Command::new(&cfg.railpack_bin).arg("--version")),
+            cfg.railpack_frontend
+        ),
         _ => buildkit,
     }
 }
 
 pub fn fingerprint(cfg: &BenchConfig, app: &AppSpec, tool: &str) -> String {
     let mut h = Vec::new();
-    h.extend_from_slice(format!("{tool}\n{}\n{}\n{:?}\n{}\n{}\n{:?}\n{:?}\n", tool_version(cfg, tool), cfg.cpus, cfg.memory, cfg.mirror, cfg.drop_caches, app.build_args, app.subdir).as_bytes());
+    h.extend_from_slice(
+        format!(
+            "{tool}\n{}\n{}\n{:?}\n{}\n{}\n{:?}\n{:?}\n",
+            tool_version(cfg, tool),
+            cfg.cpus,
+            cfg.memory,
+            cfg.mirror,
+            cfg.drop_caches,
+            app.build_args,
+            app.subdir
+        )
+        .as_bytes(),
+    );
     let root = app.root(&cfg.repo);
     tree_hash(&root, &mut h);
     if tool == "docker" {
@@ -641,11 +825,18 @@ fn cached_runs(cfg: &BenchConfig, fp: &str, run: usize, scenarios: &[&str]) -> O
         return None;
     }
     let text = fs::read_to_string(cfg.cache.as_ref()?).ok()?;
-    let rows: Vec<RunResult> = text.lines().filter_map(|l| serde_json::from_str::<RunResult>(l).ok()).filter(|r| r.fingerprint == fp && r.run == run && r.ok && r.verified).collect();
+    let rows: Vec<RunResult> = text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<RunResult>(l).ok())
+        .filter(|r| r.fingerprint == fp && r.run == run && r.ok && r.verified)
+        .collect();
     let mut out = Vec::new();
     for sc in scenarios {
         let r = rows.iter().rev().find(|r| r.scenario == *sc)?;
-        out.push(RunResult { reused_from: Some(r.started_at.clone()), ..r.clone() });
+        out.push(RunResult {
+            reused_from: Some(r.started_at.clone()),
+            ..r.clone()
+        });
     }
     Some(out)
 }
@@ -674,7 +865,10 @@ fn print_result(r: &RunResult) {
         r.net_rx_mb,
         r.disk_write_mb,
         r.image_mb,
-        r.reused_from.as_deref().map(|d| format!(" (reused from {d})")).unwrap_or_default(),
+        r.reused_from
+            .as_deref()
+            .map(|d| format!(" (reused from {d})"))
+            .unwrap_or_default(),
         r.error.as_deref().map(|e| e.lines().next().unwrap_or("")).unwrap_or("")
     );
 }
@@ -684,12 +878,22 @@ fn measure(cfg: &BenchConfig, app: &AppSpec, tool: &str, run: usize, iface: &str
         return vec![run_one(cfg, app, tool, run, iface, log_dir)];
     }
     let both = cfg.scenario == "both";
-    let work = std::env::temp_dir().join(format!("acropolis-bench-app-{}", std::process::id())).join(&app.name);
+    let work = std::env::temp_dir()
+        .join(format!("acropolis-bench-app-{}", std::process::id()))
+        .join(&app.name);
     let _ = fs::remove_dir_all(&work);
-    let prepared = fs::create_dir_all(work.parent().unwrap()).map_err(anyhow::Error::from).and_then(|_| copy_dir(&app.root(&cfg.repo), &work));
+    let prepared = fs::create_dir_all(work.parent().unwrap())
+        .map_err(anyhow::Error::from)
+        .and_then(|_| copy_dir(&app.root(&cfg.repo), &work));
     let mut prime = match prepared {
         Ok(()) => run_phase(cfg, app, tool, run, iface, log_dir, Phase::Prime, &work),
-        Err(e) => RunResult { app: app.name.clone(), tool: tool.to_string(), run, error: Some(format!("{e:#}")), ..Default::default() },
+        Err(e) => RunResult {
+            app: app.name.clone(),
+            tool: tool.to_string(),
+            run,
+            error: Some(format!("{e:#}")),
+            ..Default::default()
+        },
     };
     if both {
         prime.scenario = "cold".into();
@@ -698,17 +902,31 @@ fn measure(cfg: &BenchConfig, app: &AppSpec, tool: &str, run: usize, iface: &str
     let rebuild = if prime.ok {
         match touch_source(&app.touch.as_ref().map(|t| work.join(t)).unwrap_or_else(|| work.clone())) {
             Ok(()) => run_phase(cfg, app, tool, run, iface, log_dir, Phase::Rebuild, &work),
-            Err(e) => RunResult { scenario: "rebuild".into(), ok: false, error: Some(format!("{e:#}")), ..prime.clone() },
+            Err(e) => RunResult {
+                scenario: "rebuild".into(),
+                ok: false,
+                error: Some(format!("{e:#}")),
+                ..prime.clone()
+            },
         }
     } else {
-        RunResult { scenario: "rebuild".into(), ok: false, error: Some(format!("prime failed: {}", prime.error.clone().unwrap_or_default())), ..prime.clone() }
+        RunResult {
+            scenario: "rebuild".into(),
+            ok: false,
+            error: Some(format!("prime failed: {}", prime.error.clone().unwrap_or_default())),
+            ..prime.clone()
+        }
     };
     let _ = fs::remove_dir_all(&work);
     if both { vec![prime, rebuild] } else { vec![rebuild] }
 }
 
 pub fn run(cfg: BenchConfig) -> Result<Vec<RunResult>> {
-    let specs: Vec<AppSpec> = serde_json::from_slice(&fs::read(cfg.apps_file.clone().unwrap_or_else(|| cfg.repo.join("bench/apps.json")))?)?;
+    let specs: Vec<AppSpec> = serde_json::from_slice(&fs::read(
+        cfg.apps_file
+            .clone()
+            .unwrap_or_else(|| cfg.repo.join("bench/apps.json")),
+    )?)?;
     let iface = default_iface();
     fs::create_dir_all(cfg.out.parent().unwrap_or(Path::new(".")))?;
     let log_dir = cfg.out.with_extension("logs");
@@ -721,10 +939,17 @@ pub fn run(cfg: BenchConfig) -> Result<Vec<RunResult>> {
     };
     for run in 1..=cfg.runs {
         for name in &cfg.apps {
-            let app = specs.iter().find(|s| &s.name == name).with_context(|| format!("unknown app {name}"))?;
+            let app = specs
+                .iter()
+                .find(|s| &s.name == name)
+                .with_context(|| format!("unknown app {name}"))?;
             for tool in &cfg.tools {
                 let competitor = matches!(tool.as_str(), "docker" | "railpack");
-                let fp = if competitor { fingerprint(&cfg, app, tool) } else { String::new() };
+                let fp = if competitor {
+                    fingerprint(&cfg, app, tool)
+                } else {
+                    String::new()
+                };
                 let rows = match competitor.then(|| cached_runs(&cfg, &fp, run, &scenarios)).flatten() {
                     Some(rows) => {
                         eprintln!("[bench] {} {} run {} reused", app.name, tool, run);
@@ -773,14 +998,28 @@ pub fn backfill(results: &mut [RunResult], log_dir: &Path) {
 pub fn summarize(results: &[RunResult]) -> String {
     let mut scenarios: Vec<String> = Vec::new();
     for r in results {
-        let sc = if r.scenario.is_empty() { "cold".to_string() } else { r.scenario.clone() };
+        let sc = if r.scenario.is_empty() {
+            "cold".to_string()
+        } else {
+            r.scenario.clone()
+        };
         if !scenarios.contains(&sc) {
             scenarios.push(sc);
         }
     }
     let mut out = String::new();
     for sc in &scenarios {
-        let rows: Vec<RunResult> = results.iter().filter(|r| (if r.scenario.is_empty() { "cold" } else { r.scenario.as_str() }) == sc).cloned().collect();
+        let rows: Vec<RunResult> = results
+            .iter()
+            .filter(|r| {
+                (if r.scenario.is_empty() {
+                    "cold"
+                } else {
+                    r.scenario.as_str()
+                }) == sc
+            })
+            .cloned()
+            .collect();
         out.push_str(&format!("\n## {sc}\n"));
         out.push_str(&summarize_one(&rows));
     }
@@ -806,7 +1045,11 @@ fn summarize_one(results: &[RunResult]) -> String {
         v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let lo = v[0];
         let hi = v[v.len() - 1];
-        let med = if v.len() % 2 == 1 { v[v.len() / 2] } else { (v[v.len() / 2 - 1] + v[v.len() / 2]) / 2.0 };
+        let med = if v.len() % 2 == 1 {
+            v[v.len() / 2]
+        } else {
+            (v[v.len() / 2 - 1] + v[v.len() / 2]) / 2.0
+        };
         if (hi - lo).abs() < 10f64.powi(-(prec as i32)) {
             format!("{lo:.prec$}")
         } else {
@@ -825,7 +1068,11 @@ fn summarize_one(results: &[RunResult]) -> String {
         ("base/builder image pull (s)", |r| r.image_pull_s, 1),
     ];
     for (title, f, prec) in metrics {
-        s.push_str(&format!("\n### {title}\n\n| app | {} |\n|---|{}\n", tools.join(" | "), "---|".repeat(tools.len())));
+        s.push_str(&format!(
+            "\n### {title}\n\n| app | {} |\n|---|{}\n",
+            tools.join(" | "),
+            "---|".repeat(tools.len())
+        ));
         for a in &apps {
             let mut row = format!("| {a} |");
             for t in &tools {

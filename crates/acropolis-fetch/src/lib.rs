@@ -109,7 +109,11 @@ impl Fetcher {
             }
         }
         let n = self.stream_chunks(url, headers, Collect(&mut out)).await?;
-        acropolis_events::emit(acropolis_events::Event::Downloaded { what: url.to_string(), bytes: n, ms: start.elapsed().as_millis() as u64 });
+        acropolis_events::emit(acropolis_events::Event::Downloaded {
+            what: url.to_string(),
+            bytes: n,
+            ms: start.elapsed().as_millis() as u64,
+        });
         Ok(out.freeze())
     }
 
@@ -139,13 +143,24 @@ impl Fetcher {
             }
             let body = String::from_utf8_lossy(&raw).into_owned();
             let err = anyhow!("GET {url}: {status} {}", body.chars().take(300).collect::<String>());
-            return Err(if retry { err.context(Retryable) } else { err.context(Fatal) });
+            return Err(if retry {
+                err.context(Retryable)
+            } else {
+                err.context(Fatal)
+            });
         }
         let len = r.content_length().unwrap_or(0);
-        let ranges = r.headers().get(reqwest::header::ACCEPT_RANGES).map(|v| v.as_bytes() == b"bytes").unwrap_or(false);
+        let ranges = r
+            .headers()
+            .get(reqwest::header::ACCEPT_RANGES)
+            .map(|v| v.as_bytes() == b"bytes")
+            .unwrap_or(false);
         if len >= segmented::MIN_SEGMENTED {
             if ranges {
-                return Ok(Probe::Large { len, url: r.url().to_string() });
+                return Ok(Probe::Large {
+                    len,
+                    url: r.url().to_string(),
+                });
             }
             return Ok(Probe::Stream(r));
         }
@@ -160,7 +175,11 @@ impl Fetcher {
             acropolis_events::add_downloaded(chunk.len() as u64);
             buf.extend_from_slice(&chunk);
             if buf.len() as u64 > MAX_BUFFERED {
-                return Err(anyhow!("GET {url}: response without a length grew past {} MB", MAX_BUFFERED >> 20).context(Fatal));
+                return Err(anyhow!(
+                    "GET {url}: response without a length grew past {} MB",
+                    MAX_BUFFERED >> 20
+                )
+                .context(Fatal));
             }
         }
         if len > 0 && buf.len() as u64 != len {
@@ -232,17 +251,30 @@ impl Fetcher {
                     return Ok(n);
                 }
                 Probe::Large { len, url: final_url } => {
-                    let seg_headers = if final_url == url { headers.clone() } else { HeaderMap::new() };
-                    return segmented::download(&self.seg_client, &final_url, &seg_headers, len, segmented::Policy::default(), &mut sink)
-                        .await
-                        .with_context(|| format!("GET {url}"));
+                    let seg_headers = if final_url == url {
+                        headers.clone()
+                    } else {
+                        HeaderMap::new()
+                    };
+                    return segmented::download(
+                        &self.seg_client,
+                        &final_url,
+                        &seg_headers,
+                        len,
+                        segmented::Policy::default(),
+                        &mut sink,
+                    )
+                    .await
+                    .with_context(|| format!("GET {url}"));
                 }
                 Probe::Stream(mut r) => {
                     let mut offset = 0u64;
                     loop {
                         let chunk = match tokio::time::timeout(STALL * 3, r.chunk()).await {
                             Ok(c) => c.with_context(|| format!("GET {url}"))?,
-                            Err(_) => bail!("GET {url}: stalled after {offset} bytes and the server does not support ranges"),
+                            Err(_) => {
+                                bail!("GET {url}: stalled after {offset} bytes and the server does not support ranges")
+                            }
                         };
                         let Some(chunk) = chunk else { break };
                         acropolis_events::add_downloaded(chunk.len() as u64);
@@ -348,7 +380,10 @@ impl Fetcher {
                 Ok(())
             }
         }
-        let mut sink = TeeSink { file: &mut w, tx: Some(tx) };
+        let mut sink = TeeSink {
+            file: &mut w,
+            tx: Some(tx),
+        };
         let res = self.stream_chunks(url, headers, &mut sink).await;
         drop(sink);
         let n = match res {

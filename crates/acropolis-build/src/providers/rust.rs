@@ -27,22 +27,42 @@ pub fn detect(dir: &Path, env: &Env) -> Result<RustApp> {
     let rust = if let Some(v) = crate::detect::tool_version(dir, "rust") {
         v
     } else if let Some(c) = acropolis_cargo::toolchain_file(dir) {
-        VersionSpec { spec: c, source: "rust-toolchain".into() }
+        VersionSpec {
+            spec: c,
+            source: "rust-toolchain".into(),
+        }
     } else if let Some(v) = project.rust_version.clone() {
-        VersionSpec { spec: v, source: "Cargo.toml rust-version".into() }
-    } else if let Some(v) = ["rust-version.txt", ".rust-version"]
-        .iter()
-        .find_map(|f| std::fs::read_to_string(dir.join(f)).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty()))
-    {
-        VersionSpec { spec: v, source: ".rust-version".into() }
+        VersionSpec {
+            spec: v,
+            source: "Cargo.toml rust-version".into(),
+        }
+    } else if let Some(v) = ["rust-version.txt", ".rust-version"].iter().find_map(|f| {
+        std::fs::read_to_string(dir.join(f))
+            .ok()
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+    }) {
+        VersionSpec {
+            spec: v,
+            source: ".rust-version".into(),
+        }
     } else if let Some((v, k)) = env.config("RUST_VERSION") {
         VersionSpec { spec: v, source: k }
     } else if let Some(v) = edition_default {
-        VersionSpec { spec: v.into(), source: "Cargo.toml edition".into() }
+        VersionSpec {
+            spec: v.into(),
+            source: "Cargo.toml edition".into(),
+        }
     } else {
-        VersionSpec { spec: DEFAULT_RUST.into(), source: "default".into() }
+        VersionSpec {
+            spec: DEFAULT_RUST.into(),
+            source: "default".into(),
+        }
     };
-    let rust = VersionSpec { spec: normalize_channel(&rust.spec), source: rust.source };
+    let rust = VersionSpec {
+        spec: normalize_channel(&rust.spec),
+        source: rust.source,
+    };
     let (bin, package) = if let Some((b, _)) = env.config("CARGO_BIN") {
         (b, None)
     } else if let Some(d) = &project.default_run {
@@ -60,7 +80,12 @@ pub fn detect(dir: &Path, env: &Env) -> Result<RustApp> {
         for m in &project.workspace_members {
             if let Some(base) = m.strip_suffix("/*") {
                 let mut v: Vec<String> = std::fs::read_dir(dir.join(base))
-                    .map(|rd| rd.flatten().filter(|e| e.path().join("Cargo.toml").exists()).map(|e| format!("{base}/{}", e.file_name().to_string_lossy())).collect())
+                    .map(|rd| {
+                        rd.flatten()
+                            .filter(|e| e.path().join("Cargo.toml").exists())
+                            .map(|e| format!("{base}/{}", e.file_name().to_string_lossy()))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 v.sort();
                 members.extend(v);
@@ -85,7 +110,13 @@ pub fn detect(dir: &Path, env: &Env) -> Result<RustApp> {
     } else {
         bail!("Cargo.toml has no [package] or [workspace]");
     };
-    Ok(RustApp { rust, project, bin, package, has_lock: dir.join("Cargo.lock").exists() })
+    Ok(RustApp {
+        rust,
+        project,
+        bin,
+        package,
+        has_lock: dir.join("Cargo.lock").exists(),
+    })
 }
 
 fn normalize_channel(spec: &str) -> String {
@@ -97,12 +128,26 @@ fn normalize_channel(spec: &str) -> String {
     s.to_string()
 }
 
-const SYSTEM_SYS_CRATES: &[&str] = &["openssl-sys", "libpq-sys", "pq-sys", "mysqlclient-sys", "libsqlite3-sys", "curl-sys", "libgit2-sys", "libssh2-sys", "zstd-sys", "rdkafka-sys", "librocksdb-sys"];
+const SYSTEM_SYS_CRATES: &[&str] = &[
+    "openssl-sys",
+    "libpq-sys",
+    "pq-sys",
+    "mysqlclient-sys",
+    "libsqlite3-sys",
+    "curl-sys",
+    "libgit2-sys",
+    "libssh2-sys",
+    "zstd-sys",
+    "rdkafka-sys",
+    "librocksdb-sys",
+];
 
 fn needs_system_libs(dir: &Path) -> bool {
     let lock = std::fs::read_to_string(dir.join("Cargo.lock")).unwrap_or_default();
     let toml = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap_or_default();
-    SYSTEM_SYS_CRATES.iter().any(|c| lock.contains(&format!("name = \"{c}\"")) || toml.contains(c))
+    SYSTEM_SYS_CRATES
+        .iter()
+        .any(|c| lock.contains(&format!("name = \"{c}\"")) || toml.contains(c))
         && !toml.contains("vendored")
 }
 
@@ -110,16 +155,31 @@ fn plan_in_image(app: &RustApp, env: &Env, dir: &Path, name: &str) -> Result<Pla
     let mut b = PlanBuilder::new(name, "rust");
     b.fact("rust", format!("{} ({})", app.rust.spec, app.rust.source));
     b.fact("binary", app.bin.clone());
-    b.fact("build", "inside rust image (system libraries needed by -sys crates)".to_string());
+    b.fact(
+        "build",
+        "inside rust image (system libraries needed by -sys crates)".to_string(),
+    );
     let tag = match app.rust.spec.as_str() {
         "stable" | "latest" | "" => "1".to_string(),
         v => acropolis_semver::fuzzy_version(v),
     };
     let image = format!("rust:{tag}-bookworm");
     let base = "gcr.io/distroless/cc-debian12";
-    b.step("base", format!("resolve {base}"), Action::ResolveBase { image: base.into() }, &[]);
+    b.step(
+        "base",
+        format!("resolve {base}"),
+        Action::ResolveBase { image: base.into() },
+        &[],
+    );
     b.step("copy-base", "copy base layers", Action::CopyBase, &["base"]);
-    b.step("source", "copy source", Action::CopySource { exclude: vec!["target".into()] }, &[]);
+    b.step(
+        "source",
+        "copy source",
+        Action::CopySource {
+            exclude: vec!["target".into()],
+        },
+        &[],
+    );
     let mut cmd = "cargo build --release".to_string();
     if dir.join("Cargo.lock").exists() {
         cmd.push_str(" --locked");
@@ -138,17 +198,33 @@ fn plan_in_image(app: &RustApp, env: &Env, dir: &Path, name: &str) -> Result<Pla
     b.step(
         "build",
         format!("{cmd} (in {image})"),
-        Action::ImageRun { image, commands: vec![cmd], env: run_env, network: true, mount_app: true, after: None, tools: vec![], lowers: vec![] },
+        Action::ImageRun {
+            image,
+            commands: vec![cmd],
+            env: run_env,
+            network: true,
+            mount_app: true,
+            after: None,
+            tools: vec![],
+            lowers: vec![],
+        },
         &["source"],
     );
     b.step(
         "layer-bin",
         "layer binary",
-        Action::Layer { dest: "app".into(), from: LayerFrom::Paths { items: vec![(format!("target/release/{}", app.bin), format!("bin/{}", app.bin))] } },
+        Action::Layer {
+            dest: "app".into(),
+            from: LayerFrom::Paths {
+                items: vec![(format!("target/release/{}", app.bin), format!("bin/{}", app.bin))],
+            },
+        },
         &["build"],
     );
     b.step("push", "push image", Action::Push, &["base", "copy-base", "layer-bin"]);
-    b.plan.warnings.push("crates with system libraries are built inside the rust image with network access".into());
+    b.plan
+        .warnings
+        .push("crates with system libraries are built inside the rust image with network access".into());
     b.plan.image.layers = vec!["layer-bin".into()];
     b.plan.image.workdir = Some("/app".into());
     b.plan.image.cmd = Some(vec![format!("/app/bin/{}", app.bin)]);
@@ -169,12 +245,21 @@ pub fn plan(app: &RustApp, env: &Env, dir: &Path, name: &str) -> Result<Plan> {
     if let Some((a, c)) = glibc {
         b.fact("host-glibc", format!("{a}.{c}"));
     }
-    b.step("base", format!("resolve {base}"), Action::ResolveBase { image: base.into() }, &[]);
+    b.step(
+        "base",
+        format!("resolve {base}"),
+        Action::ResolveBase { image: base.into() },
+        &[],
+    );
     b.step("copy-base", "copy base layers", Action::CopyBase, &["base"]);
     b.step(
         "rust",
         format!("rust {}", app.rust.spec),
-        Action::Toolchain { tool: "rust".into(), spec: app.rust.spec.clone(), parts: vec![] },
+        Action::Toolchain {
+            tool: "rust".into(),
+            spec: app.rust.spec.clone(),
+            parts: vec![],
+        },
         &[],
     );
     let mut deps = vec!["rust"];
@@ -189,12 +274,16 @@ pub fn plan(app: &RustApp, env: &Env, dir: &Path, name: &str) -> Result<Plan> {
         b.step(
             "crates",
             "fetch crates",
-            Action::CargoVendor { lockfile_sha256: acropolis_store::sha256_bytes(&lock).hex() },
+            Action::CargoVendor {
+                lockfile_sha256: acropolis_store::sha256_bytes(&lock).hex(),
+            },
             &[],
         );
         deps.push("crates");
     } else {
-        b.plan.warnings.push("no Cargo.lock: dependencies are resolved by cargo with network access".into());
+        b.plan
+            .warnings
+            .push("no Cargo.lock: dependencies are resolved by cargo with network access".into());
         b.step(
             "crates",
             "cargo fetch (no lockfile)",
@@ -223,13 +312,26 @@ pub fn plan(app: &RustApp, env: &Env, dir: &Path, name: &str) -> Result<Plan> {
             argv.push(app.bin.clone());
         }
     }
-    b.step("build", format!("cargo build --release ({})", app.bin), Action::Run { argv, env: run_env, network: false, cwd: "@app".into() }, &deps);
+    b.step(
+        "build",
+        format!("cargo build --release ({})", app.bin),
+        Action::Run {
+            argv,
+            env: run_env,
+            network: false,
+            cwd: "@app".into(),
+        },
+        &deps,
+    );
     b.step(
         "layer-bin",
         "layer binary",
         Action::Layer {
             dest: format!("app/bin/{}", app.bin),
-            from: LayerFrom::WorkFile { path: format!("{{cargo_target}}/release/{}", app.bin), mode: 0o755 },
+            from: LayerFrom::WorkFile {
+                path: format!("{{cargo_target}}/release/{}", app.bin),
+                mode: 0o755,
+            },
         },
         &["build"],
     );

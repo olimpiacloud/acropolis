@@ -1,6 +1,6 @@
-use crate::lockfile::{PackageLock, bins_of, package_name_from_path};
 #[cfg(test)]
 use crate::lockfile::LockEntry;
+use crate::lockfile::{PackageLock, bins_of, package_name_from_path};
 use acropolis_fetch::Fetcher;
 use acropolis_oci::tar::{Kind, TarReader, TarWriter, normalize_mode};
 use acropolis_store::{Integrity, StoredBlob};
@@ -26,7 +26,11 @@ impl Default for Platform {
             "aarch64" => "arm64",
             other => other,
         };
-        Platform { os: "linux".into(), cpu: cpu.into(), libc: "glibc".into() }
+        Platform {
+            os: "linux".into(),
+            cpu: cpu.into(),
+            libc: "glibc".into(),
+        }
     }
 }
 
@@ -91,7 +95,12 @@ fn matches_list(list: &Option<Vec<String>>, value: &str) -> bool {
     pos.is_empty() || pos.iter().any(|s| s.as_str() == value || s.as_str() == "any")
 }
 
-pub fn platform_matches(os: &Option<Vec<String>>, cpu: &Option<Vec<String>>, libc: &Option<Vec<String>>, p: &Platform) -> bool {
+pub fn platform_matches(
+    os: &Option<Vec<String>>,
+    cpu: &Option<Vec<String>>,
+    libc: &Option<Vec<String>>,
+    p: &Platform,
+) -> bool {
     matches_list(os, &p.os) && matches_list(cpu, &p.cpu) && matches_list(libc, &p.libc)
 }
 
@@ -123,17 +132,40 @@ const NAME_OS: &[(&str, &str)] = &[
     ("linuxmusl", "linux"),
     ("webcontainers", "webcontainers"),
 ];
-const NAME_CPU: &[&str] = &["x64", "arm64", "arm", "ia32", "ppc64", "ppc64le", "s390x", "riscv64", "loong64", "mips64el", "wasm32", "universal"];
+const NAME_CPU: &[&str] = &[
+    "x64",
+    "arm64",
+    "arm",
+    "ia32",
+    "ppc64",
+    "ppc64le",
+    "s390x",
+    "riscv64",
+    "loong64",
+    "mips64el",
+    "wasm32",
+    "universal",
+];
 
 pub fn inferred_os_cpu(name: &str) -> (Option<Vec<String>>, Option<Vec<String>>) {
     let short = name.rsplit('/').next().unwrap_or(name);
     let parts: Vec<&str> = short.split('-').collect();
     for (i, w) in parts.iter().enumerate() {
-        let Some(&(_, os)) = NAME_OS.iter().find(|(token, _)| token == w) else { continue };
+        let Some(&(_, os)) = NAME_OS.iter().find(|(token, _)| token == w) else {
+            continue;
+        };
         let cpu = parts.get(i + 1).filter(|c| NAME_CPU.contains(c));
         if let Some(cpu) = cpu {
-            let cpu = if *cpu == "universal" { "x64".to_string() } else { cpu.to_string() };
-            let cpus = if short.contains("universal") { vec!["x64".to_string(), "arm64".to_string()] } else { vec![cpu] };
+            let cpu = if *cpu == "universal" {
+                "x64".to_string()
+            } else {
+                cpu.to_string()
+            };
+            let cpus = if short.contains("universal") {
+                vec!["x64".to_string(), "arm64".to_string()]
+            } else {
+                vec![cpu]
+            };
             return (Some(vec![os.to_string()]), Some(cpus));
         }
     }
@@ -143,9 +175,24 @@ pub fn inferred_os_cpu(name: &str) -> (Option<Vec<String>>, Option<Vec<String>>)
     (None, None)
 }
 
-pub fn platform_matches_named(name: &str, os: &Option<Vec<String>>, cpu: &Option<Vec<String>>, libc: &Option<Vec<String>>, p: &Platform) -> bool {
-    let (ios, icpu) = if os.is_none() && cpu.is_none() { inferred_os_cpu(name) } else { (None, None) };
-    platform_matches(&os.clone().or(ios), &cpu.clone().or(icpu), &inferred_libc(name, libc), p)
+pub fn platform_matches_named(
+    name: &str,
+    os: &Option<Vec<String>>,
+    cpu: &Option<Vec<String>>,
+    libc: &Option<Vec<String>>,
+    p: &Platform,
+) -> bool {
+    let (ios, icpu) = if os.is_none() && cpu.is_none() {
+        inferred_os_cpu(name)
+    } else {
+        (None, None)
+    };
+    platform_matches(
+        &os.clone().or(ios),
+        &cpu.clone().or(icpu),
+        &inferred_libc(name, libc),
+        p,
+    )
 }
 
 #[cfg(test)]
@@ -156,7 +203,10 @@ fn platform_ok(e: &LockEntry, p: &Platform) -> bool {
 
 pub fn parent_node_modules(path: &str) -> Option<(&str, &str)> {
     let idx = path.rfind("node_modules/")?;
-    Some((&path[..idx + "node_modules".len()], &path[idx + "node_modules/".len()..]))
+    Some((
+        &path[..idx + "node_modules".len()],
+        &path[idx + "node_modules/".len()..],
+    ))
 }
 
 impl InstallPlan {
@@ -186,25 +236,37 @@ impl InstallPlan {
                 skipped.push(path.clone());
                 continue;
             }
-            let pname = e.name.clone().unwrap_or_else(|| package_name_from_path(path).to_string());
+            let pname = e
+                .name
+                .clone()
+                .unwrap_or_else(|| package_name_from_path(path).to_string());
             if !platform_matches_named(&pname, &e.os, &e.cpu, &e.libc, &opts.platform) {
                 skipped.push(path.clone());
                 out.skipped_platform.push(path.clone());
                 continue;
             }
-            let name = e.name.clone().unwrap_or_else(|| package_name_from_path(path).to_string());
+            let name = e
+                .name
+                .clone()
+                .unwrap_or_else(|| package_name_from_path(path).to_string());
             if let Some((nm, _)) = parent_node_modules(path) {
                 bin_dirs.entry(nm.to_string()).or_default().push(path.clone());
             }
             if e.link {
-                let target = e.resolved.clone().ok_or_else(|| anyhow!("link {path} without resolved"))?;
+                let target = e
+                    .resolved
+                    .clone()
+                    .ok_or_else(|| anyhow!("link {path} without resolved"))?;
                 if let Some(t) = lock.packages.get(&target) {
                     let bins = bins_of(&name, &t.bin);
                     if !bins.is_empty() {
                         out.known_bins.insert(path.clone(), bins);
                     }
                 }
-                out.links.push(Link { path: path.clone(), target: relative_link(Path::new(path), Path::new(&target)) });
+                out.links.push(Link {
+                    path: path.clone(),
+                    target: relative_link(Path::new(path), Path::new(&target)),
+                });
                 continue;
             }
             let source = if e.in_bundle {
@@ -218,9 +280,15 @@ impl InstallPlan {
                         Some(i) => Some(Integrity::parse_sri(i).with_context(|| format!("integrity of {path}"))?),
                         None => None,
                     };
-                    Source::Registry { url: resolved, integrity }
+                    Source::Registry {
+                        url: resolved,
+                        integrity,
+                    }
                 } else if let Some(target) = resolved.strip_prefix("file:") {
-                    out.links.push(Link { path: path.clone(), target: relative_link(Path::new(path), Path::new(target)) });
+                    out.links.push(Link {
+                        path: path.clone(),
+                        target: relative_link(Path::new(path), Path::new(target)),
+                    });
                     continue;
                 } else if resolved.is_empty() {
                     let version = e.version.clone().unwrap_or_default();
@@ -231,7 +299,10 @@ impl InstallPlan {
                         Some(i) => Some(Integrity::parse_sri(i)?),
                         None => None,
                     };
-                    Source::Registry { url: default_registry_url(&name, &version), integrity }
+                    Source::Registry {
+                        url: default_registry_url(&name, &version),
+                        integrity,
+                    }
                 } else {
                     bail!("unsupported resolved URL for {path}: {resolved}");
                 }
@@ -247,12 +318,17 @@ impl InstallPlan {
                 dev: e.dev,
             });
         }
-        out.bin_dirs = bin_dirs.into_iter().map(|(dir, packages)| BinDir { dir, packages }).collect();
+        out.bin_dirs = bin_dirs
+            .into_iter()
+            .map(|(dir, packages)| BinDir { dir, packages })
+            .collect();
         Ok(out)
     }
 
     pub fn registry_packages(&self) -> impl Iterator<Item = &InstallPackage> {
-        self.packages.iter().filter(|p| matches!(p.source, Source::Registry { .. }))
+        self.packages
+            .iter()
+            .filter(|p| matches!(p.source, Source::Registry { .. }))
     }
 
     pub fn with_install_scripts(&self) -> Vec<&InstallPackage> {
@@ -281,7 +357,10 @@ pub fn git_tarball_url(url: &str) -> Option<String> {
         .trim_start_matches("git@");
     let path = if let Some(rest) = repo.strip_prefix("github:") {
         rest.to_string()
-    } else if let Some(rest) = repo.strip_prefix("github.com/").or_else(|| repo.strip_prefix("github.com:")) {
+    } else if let Some(rest) = repo
+        .strip_prefix("github.com/")
+        .or_else(|| repo.strip_prefix("github.com:"))
+    {
         rest.to_string()
     } else if !repo.contains(':') && !repo.contains('.') && repo.matches('/').count() == 1 {
         repo.to_string()
@@ -300,7 +379,12 @@ pub async fn fetch_all(fetcher: &Fetcher, plan: &InstallPlan) -> Result<Tarballs
                 unique.entry(url.clone()).or_insert_with(|| integrity.clone());
             }
             Source::Git { url } => {
-                let t = git_tarball_url(url).ok_or_else(|| anyhow!("git dependency {} ({url}) is only supported for GitHub repositories pinned to a commit", p.path))?;
+                let t = git_tarball_url(url).ok_or_else(|| {
+                    anyhow!(
+                        "git dependency {} ({url}) is only supported for GitHub repositories pinned to a commit",
+                        p.path
+                    )
+                })?;
                 unique.entry(t).or_insert(None);
             }
             _ => {}
@@ -369,19 +453,35 @@ pub fn read_tarball(blob: &Path) -> Result<Vec<TarEntry>> {
             None => continue,
         };
         let Some(rel) = clean_rel(rel) else { continue };
-        let data = if e.kind == Kind::File { tr.read_data()? } else { Vec::new() };
+        let data = if e.kind == Kind::File {
+            tr.read_data()?
+        } else {
+            Vec::new()
+        };
         if let Some(&i) = seen.get(&rel) {
-            out[i] = TarEntry { rel, kind: e.kind, mode: e.mode, data };
+            out[i] = TarEntry {
+                rel,
+                kind: e.kind,
+                mode: e.mode,
+                data,
+            };
             continue;
         }
         seen.insert(rel.clone(), out.len());
-        out.push(TarEntry { rel, kind: e.kind, mode: e.mode, data });
+        out.push(TarEntry {
+            rel,
+            kind: e.kind,
+            mode: e.mode,
+            data,
+        });
     }
     Ok(out)
 }
 
 pub fn bins_from_package_json(name: &str, data: &[u8], files: &[TarEntry]) -> Vec<(String, String)> {
-    let Ok(v) = serde_json::from_slice::<serde_json::Value>(data) else { return Vec::new() };
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(data) else {
+        return Vec::new();
+    };
     let bins = bins_of(name, &v.get("bin").cloned());
     if !bins.is_empty() {
         return bins;
@@ -417,12 +517,20 @@ fn package_fragment(prefix: &str, p: &InstallPackage, blob: &Path) -> Result<(Ve
     let cap: usize = entries.iter().map(|e| e.data.len() + 1024).sum();
     let mut tw = TarWriter::new(Vec::with_capacity(cap));
     let mut dirs: HashSet<String> = HashSet::new();
-    let root = if prefix.is_empty() { p.path.clone() } else { format!("{prefix}/{}", p.path) };
+    let root = if prefix.is_empty() {
+        p.path.clone()
+    } else {
+        format!("{prefix}/{}", p.path)
+    };
     tw.dir(&root, 0o755)?;
     dirs.insert(root.clone());
     for e in &entries {
         let parts: Vec<&str> = e.rel.split('/').collect();
-        let upto = if e.kind == Kind::Dir { parts.len() } else { parts.len() - 1 };
+        let upto = if e.kind == Kind::Dir {
+            parts.len()
+        } else {
+            parts.len() - 1
+        };
         let mut acc = root.clone();
         for part in &parts[..upto] {
             acc.push('/');
@@ -432,7 +540,11 @@ fn package_fragment(prefix: &str, p: &InstallPackage, blob: &Path) -> Result<(Ve
             }
         }
         if e.kind == Kind::File {
-            let mode = if execs.contains(&e.rel) { 0o755 } else { normalize_mode(e.mode, Kind::File) };
+            let mode = if execs.contains(&e.rel) {
+                0o755
+            } else {
+                normalize_mode(e.mode, Kind::File)
+            };
             tw.file_bytes(&format!("{root}/{}", e.rel), mode, &e.data)?;
         }
     }
@@ -443,9 +555,16 @@ fn take(mut tw: TarWriter<Vec<u8>>) -> Vec<u8> {
     std::mem::take(tw.get_mut())
 }
 
-fn bin_links(plan: &InstallPlan, bins: &HashMap<String, Vec<(String, String)>>) -> BTreeMap<String, BTreeMap<String, String>> {
+fn bin_links(
+    plan: &InstallPlan,
+    bins: &HashMap<String, Vec<(String, String)>>,
+) -> BTreeMap<String, BTreeMap<String, String>> {
     let mut out: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
-    let link_targets: HashMap<&str, &str> = plan.links.iter().map(|l| (l.path.as_str(), l.target.as_str())).collect();
+    let link_targets: HashMap<&str, &str> = plan
+        .links
+        .iter()
+        .map(|l| (l.path.as_str(), l.target.as_str()))
+        .collect();
     for bd in &plan.bin_dirs {
         for pkg in &bd.packages {
             let list = bins.get(pkg).or_else(|| plan.known_bins.get(pkg));
@@ -472,7 +591,10 @@ fn bin_links(plan: &InstallPlan, bins: &HashMap<String, Vec<(String, String)>>) 
 }
 
 fn normalize_join(base: &Path, rel: &str) -> String {
-    let mut parts: Vec<String> = base.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+    let mut parts: Vec<String> = base
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
     for c in rel.split('/') {
         match c {
             "" | "." => {}
@@ -527,7 +649,11 @@ pub fn stream_node_modules(
         acc.push_str(c);
         head_dirs.insert(acc.clone());
     }
-    let base = if prefix.is_empty() { String::new() } else { format!("{prefix}/") };
+    let base = if prefix.is_empty() {
+        String::new()
+    } else {
+        format!("{prefix}/")
+    };
     let mut ancestors = |path: &str| {
         let parts: Vec<&str> = path.split('/').collect();
         let mut acc = prefix.to_string();
@@ -619,7 +745,10 @@ fn type_files_only(entries: &[TarEntry], bins: &[(String, String)]) -> bool {
         .and_then(|e| serde_json::from_slice::<serde_json::Value>(&e.data).ok())
         .map(|v| v.get("types").is_some() || v.get("typings").is_some())
         .unwrap_or(false);
-    declared || entries.iter().any(|e| e.rel.ends_with(".d.ts") || e.rel.ends_with(".d.mts") || e.rel.ends_with(".d.cts"))
+    declared
+        || entries
+            .iter()
+            .any(|e| e.rel.ends_with(".d.ts") || e.rel.ends_with(".d.mts") || e.rel.ends_with(".d.cts"))
 }
 
 pub fn safe_rel_path(path: &str) -> Result<()> {
@@ -640,7 +769,10 @@ struct Inside {
 impl Inside {
     fn new(root: &Path) -> Result<Self> {
         std::fs::create_dir_all(root)?;
-        Ok(Inside { root: std::fs::canonicalize(root)?, ok: std::sync::Mutex::new(HashSet::new()) })
+        Ok(Inside {
+            root: std::fs::canonicalize(root)?,
+            ok: std::sync::Mutex::new(HashSet::new()),
+        })
     }
 
     fn dir(&self, dir: &Path) -> Result<()> {
@@ -649,18 +781,31 @@ impl Inside {
         }
         let mut existing = dir;
         while std::fs::symlink_metadata(existing).is_err() {
-            existing = existing.parent().ok_or_else(|| anyhow!("no existing ancestor for {}", dir.display()))?;
+            existing = existing
+                .parent()
+                .ok_or_else(|| anyhow!("no existing ancestor for {}", dir.display()))?;
         }
         let real = std::fs::canonicalize(existing)?;
         if !real.starts_with(&self.root) {
-            bail!("refusing to write outside the install root: {} resolves to {}", dir.display(), real.display());
+            bail!(
+                "refusing to write outside the install root: {} resolves to {}",
+                dir.display(),
+                real.display()
+            );
         }
         std::fs::create_dir_all(dir)?;
         let real = std::fs::canonicalize(dir)?;
         if !real.starts_with(&self.root) {
-            bail!("refusing to write outside the install root: {} resolves to {}", dir.display(), real.display());
+            bail!(
+                "refusing to write outside the install root: {} resolves to {}",
+                dir.display(),
+                real.display()
+            );
         }
-        self.ok.lock().unwrap_or_else(|e| e.into_inner()).insert(dir.to_path_buf());
+        self.ok
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(dir.to_path_buf());
         Ok(())
     }
 }
@@ -739,11 +884,20 @@ fn open_tarball(blob: &Path) -> Result<TarReader<BufReader<Box<dyn Read>>>> {
     let mut magic = [0u8; 2];
     let n = raw.read(&mut magic)?;
     let chained = std::io::Cursor::new(magic[..n].to_vec()).chain(raw);
-    let reader: Box<dyn Read> = if n == 2 && magic == [0x1f, 0x8b] { Box::new(GzDecoder::new(chained)) } else { Box::new(chained) };
+    let reader: Box<dyn Read> = if n == 2 && magic == [0x1f, 0x8b] {
+        Box::new(GzDecoder::new(chained))
+    } else {
+        Box::new(chained)
+    };
     Ok(TarReader::new(BufReader::with_capacity(128 * 1024, reader)))
 }
 
-fn extract_package_streaming(p: &InstallPackage, blob: &Path, dest: &Path, inside: &Inside) -> Result<(u64, Vec<(String, String)>)> {
+fn extract_package_streaming(
+    p: &InstallPackage,
+    blob: &Path,
+    dest: &Path,
+    inside: &Inside,
+) -> Result<(u64, Vec<(String, String)>)> {
     use std::os::unix::fs::OpenOptionsExt;
     let mut tr = open_tarball(blob).with_context(|| format!("extracting {}", p.path))?;
     inside.dir(dest)?;
@@ -756,7 +910,9 @@ fn extract_package_streaming(p: &InstallPackage, blob: &Path, dest: &Path, insid
         if !matches!(e.kind, Kind::File | Kind::Dir) {
             continue;
         }
-        let Some((_, rest)) = e.path.split_once('/') else { continue };
+        let Some((_, rest)) = e.path.split_once('/') else {
+            continue;
+        };
         let Some(rel) = clean_rel(rest) else { continue };
         let path = dest.join(&rel);
         if e.kind == Kind::Dir {
@@ -787,11 +943,19 @@ fn extract_package_streaming(p: &InstallPackage, blob: &Path, dest: &Path, insid
         } else {
             total += std::io::copy(&mut tr.data(), &mut f)?;
         }
-        files.push(TarEntry { rel, kind: Kind::File, mode, data: Vec::new() });
+        files.push(TarEntry {
+            rel,
+            kind: Kind::File,
+            mode,
+            data: Vec::new(),
+        });
     }
     let bins = match &p.bins {
         Some(b) => b.clone(),
-        None => package_json.as_deref().map(|d| bins_from_package_json(&p.name, d, &files)).unwrap_or_default(),
+        None => package_json
+            .as_deref()
+            .map(|d| bins_from_package_json(&p.name, d, &files))
+            .unwrap_or_default(),
     };
     for (_, t) in &bins {
         if let Some(t) = clean_rel(t) {
@@ -807,13 +971,21 @@ fn extract_package_streaming(p: &InstallPackage, blob: &Path, dest: &Path, insid
     Ok((total, bins))
 }
 
-fn extract_package_with(p: &InstallPackage, blob: &Path, dest: &Path, types_only: bool, inside: &Inside) -> Result<(u64, Vec<(String, String)>)> {
+fn extract_package_with(
+    p: &InstallPackage,
+    blob: &Path,
+    dest: &Path,
+    types_only: bool,
+    inside: &Inside,
+) -> Result<(u64, Vec<(String, String)>)> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     let mut entries = read_tarball(blob).with_context(|| format!("extracting {}", p.path))?;
     let bins = package_bins(p, &entries);
     if types_only && type_files_only(&entries, &bins) {
-        entries.retain(|e| e.kind == Kind::Dir || e.rel == "package.json" || TYPE_FILES.iter().any(|x| e.rel.ends_with(x)));
+        entries.retain(|e| {
+            e.kind == Kind::Dir || e.rel == "package.json" || TYPE_FILES.iter().any(|x| e.rel.ends_with(x))
+        });
     }
     let execs: HashSet<String> = bins.iter().filter_map(|(_, t)| clean_rel(t)).collect();
     inside.dir(dest)?;
@@ -833,9 +1005,18 @@ fn extract_package_with(p: &InstallPackage, blob: &Path, dest: &Path, types_only
         {
             inside.dir(parent)?;
         }
-        let mode = if execs.contains(&e.rel) { 0o755 } else { normalize_mode(e.mode, Kind::File) };
+        let mode = if execs.contains(&e.rel) {
+            0o755
+        } else {
+            normalize_mode(e.mode, Kind::File)
+        };
         let _ = std::fs::remove_file(&path);
-        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).custom_flags(libc::O_NOFOLLOW).mode(mode).open(&path)?;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .mode(mode)
+            .open(&path)?;
         f.write_all(&e.data)?;
         total += e.data.len() as u64;
     }
@@ -848,10 +1029,19 @@ mod tests {
 
     #[test]
     fn rel_links() {
-        assert_eq!(relative_link(Path::new("node_modules/a"), Path::new("packages/a")), "../packages/a");
-        assert_eq!(relative_link(Path::new("node_modules/@s/a"), Path::new("packages/a")), "../../packages/a");
         assert_eq!(
-            relative_link(Path::new("node_modules/.bin/vite"), Path::new("node_modules/vite/bin/vite.js")),
+            relative_link(Path::new("node_modules/a"), Path::new("packages/a")),
+            "../packages/a"
+        );
+        assert_eq!(
+            relative_link(Path::new("node_modules/@s/a"), Path::new("packages/a")),
+            "../../packages/a"
+        );
+        assert_eq!(
+            relative_link(
+                Path::new("node_modules/.bin/vite"),
+                Path::new("node_modules/vite/bin/vite.js")
+            ),
             "../vite/bin/vite.js"
         );
     }
@@ -859,7 +1049,10 @@ mod tests {
     #[test]
     fn platform_filters() {
         let p = Platform::default();
-        let mut e = LockEntry { os: Some(vec!["darwin".into()]), ..Default::default() };
+        let mut e = LockEntry {
+            os: Some(vec!["darwin".into()]),
+            ..Default::default()
+        };
         assert!(!platform_ok(&e, &p));
         e.os = Some(vec!["!win32".into()]);
         assert!(platform_ok(&e, &p));
@@ -868,21 +1061,51 @@ mod tests {
     #[test]
     fn git_urls() {
         assert_eq!(
-            git_tarball_url("git+ssh://git@github.com/iloveitaly/rehype-remove-images.git#6307a5d2b29f4b96f08fb4f62f6c2badf012cef2").unwrap(),
+            git_tarball_url(
+                "git+ssh://git@github.com/iloveitaly/rehype-remove-images.git#6307a5d2b29f4b96f08fb4f62f6c2badf012cef2"
+            )
+            .unwrap(),
             "https://codeload.github.com/iloveitaly/rehype-remove-images/tar.gz/6307a5d2b29f4b96f08fb4f62f6c2badf012cef2"
         );
-        assert_eq!(git_tarball_url("github:a/b#abcdef1").unwrap(), "https://codeload.github.com/a/b/tar.gz/abcdef1");
+        assert_eq!(
+            git_tarball_url("github:a/b#abcdef1").unwrap(),
+            "https://codeload.github.com/a/b/tar.gz/abcdef1"
+        );
         assert!(git_tarball_url("git+https://gitlab.com/a/b.git#abcdef1").is_none());
     }
 
     #[test]
     fn platform_from_names() {
-        let p = Platform { os: "linux".into(), cpu: "x64".into(), libc: "glibc".into() };
+        let p = Platform {
+            os: "linux".into(),
+            cpu: "x64".into(),
+            libc: "glibc".into(),
+        };
         let ok = |n: &str| platform_matches_named(n, &None, &None, &None, &p);
-        for n in ["@img/sharp-linux-x64", "@img/sharp-libvips-linux-x64", "@esbuild/linux-x64", "@next/swc-linux-x64-gnu", "lightningcss-linux-x64-gnu", "sharp", "react", "linux-utils", "@rollup/rollup-linux-x64-gnu"] {
+        for n in [
+            "@img/sharp-linux-x64",
+            "@img/sharp-libvips-linux-x64",
+            "@esbuild/linux-x64",
+            "@next/swc-linux-x64-gnu",
+            "lightningcss-linux-x64-gnu",
+            "sharp",
+            "react",
+            "linux-utils",
+            "@rollup/rollup-linux-x64-gnu",
+        ] {
             assert!(ok(n), "{n}");
         }
-        for n in ["@img/sharp-darwin-arm64", "@img/sharp-libvips-linuxmusl-x64", "@img/sharp-win32-ia32", "@img/sharp-wasm32", "@img/sharp-webcontainers-wasm32", "@img/sharp-freebsd-wasm32", "@esbuild/linux-arm64", "@next/swc-linux-x64-musl", "@esbuild/android-arm"] {
+        for n in [
+            "@img/sharp-darwin-arm64",
+            "@img/sharp-libvips-linuxmusl-x64",
+            "@img/sharp-win32-ia32",
+            "@img/sharp-wasm32",
+            "@img/sharp-webcontainers-wasm32",
+            "@img/sharp-freebsd-wasm32",
+            "@esbuild/linux-arm64",
+            "@next/swc-linux-x64-musl",
+            "@esbuild/android-arm",
+        ] {
             assert!(!ok(n), "{n}");
         }
     }

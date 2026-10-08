@@ -53,9 +53,16 @@ pub async fn resolve(fetcher: &Fetcher, spec: &str) -> Result<BunRelease> {
     }
     .ok_or_else(|| anyhow!("no Bun version matches {spec:?}"))?;
     let dist = &v["versions"][&version]["dist"];
-    let tarball = dist["tarball"].as_str().ok_or_else(|| anyhow!("bun {version} has no tarball"))?.to_string();
+    let tarball = dist["tarball"]
+        .as_str()
+        .ok_or_else(|| anyhow!("bun {version} has no tarball"))?
+        .to_string();
     let integrity = dist["integrity"].as_str().map(Integrity::parse_sri).transpose()?;
-    Ok(BunRelease { version, tarball, integrity })
+    Ok(BunRelease {
+        version,
+        tarball,
+        integrity,
+    })
 }
 
 pub async fn install(fetcher: &Fetcher, release: &BunRelease, dest: &Path) -> Result<Installed> {
@@ -70,7 +77,12 @@ pub async fn install(fetcher: &Fetcher, release: &BunRelease, dest: &Path) -> Re
             let mut found = false;
             while let Some(e) = tr.next_entry()? {
                 if e.kind == Kind::File && e.path.ends_with("bin/bun") {
-                    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o755).open(bin.join("bun"))?;
+                    let mut f = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .mode(0o755)
+                        .open(bin.join("bun"))?;
                     let mut buf = vec![0u8; 256 * 1024];
                     let mut data = tr.data();
                     loop {

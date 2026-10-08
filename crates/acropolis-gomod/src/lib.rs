@@ -41,9 +41,14 @@ pub fn parse_go_sum(text: &str) -> Result<GoSum> {
         }
     }
     let conv = |m: BTreeMap<(String, String), String>| {
-        m.into_iter().map(|((module, version), h1)| SumEntry { module, version, h1 }).collect()
+        m.into_iter()
+            .map(|((module, version), h1)| SumEntry { module, version, h1 })
+            .collect()
     };
-    Ok(GoSum { zips: conv(zips), mods: conv(mods) })
+    Ok(GoSum {
+        zips: conv(zips),
+        mods: conv(mods),
+    })
 }
 
 pub fn escape(path: &str) -> String {
@@ -66,7 +71,10 @@ pub fn hash1(files: &mut [(String, Vec<u8>)]) -> String {
         let h = Sha256::digest(data);
         summary.update(format!("{}  {}\n", hex::encode(h), name).as_bytes());
     }
-    format!("h1:{}", base64::engine::general_purpose::STANDARD.encode(summary.finalize()))
+    format!(
+        "h1:{}",
+        base64::engine::general_purpose::STANDARD.encode(summary.finalize())
+    )
 }
 
 pub fn hash1_gomod(data: &[u8]) -> String {
@@ -109,7 +117,13 @@ fn extract_verified(cache: &ModCache, e: &SumEntry, zip_bytes: &[u8]) -> Result<
     }
     let got = hash1(&mut files);
     if got != e.h1 {
-        bail!("integrity mismatch for {}@{}: go.sum has {}, downloaded zip hashes to {}", e.module, e.version, e.h1, got);
+        bail!(
+            "integrity mismatch for {}@{}: go.sum has {}, downloaded zip hashes to {}",
+            e.module,
+            e.version,
+            e.h1,
+            got
+        );
     }
     let dir = cache.module_dir(&e.module, &e.version);
     let mut total = 0u64;
@@ -153,7 +167,9 @@ pub async fn download_all(fetcher: &Fetcher, sum: &GoSum, cache: &ModCache, prox
         Ok::<u64, anyhow::Error>(n)
     });
     let mods = sum.mods.iter().map(|e| async move {
-        let dest = cache.download_dir(&e.module).join(format!("{}.mod", escape(&e.version)));
+        let dest = cache
+            .download_dir(&e.module)
+            .join(format!("{}.mod", escape(&e.version)));
         if dest.exists() {
             return Ok::<u64, anyhow::Error>(0);
         }
@@ -177,7 +193,11 @@ pub async fn download_all(fetcher: &Fetcher, sum: &GoSum, cache: &ModCache, prox
     let (a, b) = tokio::join!(try_join_all(zips), try_join_all(mods));
     let a = a?;
     let b = b?;
-    Ok(Stats { modules: a.len(), gomods: b.len(), bytes: a.iter().sum::<u64>() + b.iter().sum::<u64>() })
+    Ok(Stats {
+        modules: a.len(),
+        gomods: b.len(),
+        bytes: a.iter().sum::<u64>() + b.iter().sum::<u64>(),
+    })
 }
 
 #[derive(Clone, Debug, Default)]
@@ -267,7 +287,9 @@ mod tests {
         let s = parse_go_sum("a v1.0.0 h1:x=\na v1.0.0/go.mod h1:y=\n").unwrap();
         assert_eq!(s.zips.len(), 1);
         assert_eq!(s.mods.len(), 1);
-        let m = parse_go_mod("module x\n\ngo 1.25.3\ntoolchain go1.25.4\nrequire (\n\ta v1 // indirect\n)\nreplace b => ./b\n");
+        let m = parse_go_mod(
+            "module x\n\ngo 1.25.3\ntoolchain go1.25.4\nrequire (\n\ta v1 // indirect\n)\nreplace b => ./b\n",
+        );
         assert_eq!(m.module, "x");
         assert_eq!(m.go.as_deref(), Some("1.25.3"));
         assert_eq!(m.toolchain.as_deref(), Some("1.25.4"));

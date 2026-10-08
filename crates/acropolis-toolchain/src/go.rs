@@ -44,9 +44,16 @@ pub async fn resolve(fetcher: &Fetcher, spec: &str) -> Result<String> {
         return Ok(spec.to_string());
     }
     let pick = |rels: &[Release]| -> Option<Version> {
-        let vs: Vec<Version> =
-            rels.iter().filter(|r| r.stable).filter_map(|r| go_version_to_semver(&r.version)).collect();
-        let req = if spec.split('.').count() == 2 { format!("~{spec}") } else { spec.to_string() };
+        let vs: Vec<Version> = rels
+            .iter()
+            .filter(|r| r.stable)
+            .filter_map(|r| go_version_to_semver(&r.version))
+            .collect();
+        let req = if spec.split('.').count() == 2 {
+            format!("~{spec}")
+        } else {
+            spec.to_string()
+        };
         best_match(&req, vs.iter())
     };
     let recent: Vec<Release> = fetcher.json("https://go.dev/dl/?mode=json").await?;
@@ -54,7 +61,9 @@ pub async fn resolve(fetcher: &Fetcher, spec: &str) -> Result<String> {
         return Ok(format_go(&v));
     }
     let all: Vec<Release> = fetcher.json("https://go.dev/dl/?mode=json&include=all").await?;
-    pick(&all).map(|v| format_go(&v)).ok_or_else(|| anyhow!("no Go release matches {spec}"))
+    pick(&all)
+        .map(|v| format_go(&v))
+        .ok_or_else(|| anyhow!("no Go release matches {spec}"))
 }
 
 fn format_go(v: &Version) -> String {

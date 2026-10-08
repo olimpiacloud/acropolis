@@ -1,5 +1,8 @@
 use crate::hoist::{Graph, PkgId, hoist};
-use crate::install::{BinDir, InstallOptions, InstallPackage, InstallPlan, Link, Source, parent_node_modules, platform_matches_named, relative_link};
+use crate::install::{
+    BinDir, InstallOptions, InstallPackage, InstallPlan, Link, Source, parent_node_modules, platform_matches_named,
+    relative_link,
+};
 use acropolis_store::{Algo, Integrity};
 use anyhow::{Context, Result, anyhow, bail};
 use std::collections::{BTreeMap, HashMap};
@@ -111,12 +114,21 @@ impl YarnLock {
         self.entries.get_key_value(&format!("{name}@{range}"))
     }
 
-    pub fn install_plan(&self, root_pj: &serde_json::Value, workspaces: &[(String, serde_json::Value)], opts: &InstallOptions) -> Result<InstallPlan> {
+    pub fn install_plan(
+        &self,
+        root_pj: &serde_json::Value,
+        workspaces: &[(String, serde_json::Value)],
+        opts: &InstallOptions,
+    ) -> Result<InstallPlan> {
         let mut graph = Graph::default();
         let mut by_id: HashMap<PkgId, (String, YarnEntry)> = HashMap::new();
         let ws_names: HashMap<String, String> = workspaces
             .iter()
-            .filter_map(|(dir, pj)| pj.get("name").and_then(|n| n.as_str()).map(|n| (n.to_string(), dir.clone())))
+            .filter_map(|(dir, pj)| {
+                pj.get("name")
+                    .and_then(|n| n.as_str())
+                    .map(|n| (n.to_string(), dir.clone()))
+            })
             .collect();
         let mut root_specs: Vec<(String, String)> = Vec::new();
         let collect = |pj: &serde_json::Value, out: &mut Vec<(String, String)>| {
@@ -166,7 +178,9 @@ impl YarnLock {
                 all.extend(entry.optional_dependencies.iter());
             }
             for (dn, dr) in all {
-                if entry.optional_dependencies.contains_key(dn) && !platform_matches_named(dn, &None, &None, &None, &opts.platform) {
+                if entry.optional_dependencies.contains_key(dn)
+                    && !platform_matches_named(dn, &None, &None, &None, &opts.platform)
+                {
                     plan_skipped.push(format!("{dn}@{dr}"));
                     continue;
                 }
@@ -186,14 +200,20 @@ impl YarnLock {
             graph.deps.insert(id, deps);
         }
         let layout = hoist(&graph);
-        let mut plan = InstallPlan { skipped_platform: plan_skipped, ..Default::default() };
+        let mut plan = InstallPlan {
+            skipped_platform: plan_skipped,
+            ..Default::default()
+        };
         let mut bin_dirs: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for (path, id) in &layout {
             let (name, e) = &by_id[id];
             if let Some((nm, _)) = parent_node_modules(path) {
                 bin_dirs.entry(nm.to_string()).or_default().push(path.clone());
             }
-            let resolved = e.resolved.clone().ok_or_else(|| anyhow!("{id:?} has no resolved URL"))?;
+            let resolved = e
+                .resolved
+                .clone()
+                .ok_or_else(|| anyhow!("{id:?} has no resolved URL"))?;
             let (url, frag) = match resolved.split_once('#') {
                 Some((u, f)) => (u.to_string(), Some(f.to_string())),
                 None => (resolved.clone(), None),
@@ -223,9 +243,15 @@ impl YarnLock {
         }
         for (name, dir) in &ws_names {
             let path = format!("node_modules/{name}");
-            plan.links.push(Link { path: path.clone(), target: relative_link(Path::new(&path), Path::new(dir)) });
+            plan.links.push(Link {
+                path: path.clone(),
+                target: relative_link(Path::new(&path), Path::new(dir)),
+            });
         }
-        plan.bin_dirs = bin_dirs.into_iter().map(|(dir, packages)| BinDir { dir, packages }).collect();
+        plan.bin_dirs = bin_dirs
+            .into_iter()
+            .map(|(dir, packages)| BinDir { dir, packages })
+            .collect();
         Ok(plan)
     }
 }
@@ -289,7 +315,15 @@ mod tests {
         assert_eq!(e.dependencies["undici-types"], "~6.21.0");
         let pj = serde_json::json!({"devDependencies": {"@types/node": "^22.13.9"}});
         let plan = lock
-            .install_plan(&pj, &[], &InstallOptions { include_dev: true, include_optional: true, platform: Default::default() })
+            .install_plan(
+                &pj,
+                &[],
+                &InstallOptions {
+                    include_dev: true,
+                    include_optional: true,
+                    platform: Default::default(),
+                },
+            )
             .unwrap();
         let paths: Vec<&str> = plan.packages.iter().map(|p| p.path.as_str()).collect();
         assert_eq!(paths, vec!["node_modules/@types/node", "node_modules/undici-types"]);

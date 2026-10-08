@@ -22,5 +22,10 @@ fn main() {
     let mut gz = flate2::read::GzDecoder::new(std::io::BufReader::with_capacity(1 << 20, f));
     let dest = std::path::Path::new(&args[2]);
     let s = acropolis_toolchain::extract_tar_filtered(&mut gz, dest, 2, &|_| true).unwrap();
-    println!("decode+extract: {} files {} MB in {:?}", s.files, s.bytes / 1_000_000, t.elapsed());
+    println!(
+        "decode+extract: {} files {} MB in {:?}",
+        s.files,
+        s.bytes / 1_000_000,
+        t.elapsed()
+    );
 }

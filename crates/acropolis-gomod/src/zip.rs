@@ -33,7 +33,9 @@ pub fn entries(buf: &[u8]) -> Result<Vec<ZipEntry<'_>>> {
         }
         i -= 1;
     }
-    let Some(e) = eocd else { bail!("zip end of central directory not found") };
+    let Some(e) = eocd else {
+        bail!("zip end of central directory not found")
+    };
     let count = u16le(buf, e + 10) as usize;
     let cd_off = u32le(buf, e + 16) as usize;
     if cd_off == 0xffffffff || count == 0xffff {
@@ -63,7 +65,12 @@ pub fn entries(buf: &[u8]) -> Result<Vec<ZipEntry<'_>>> {
         if data_start + csize > buf.len() {
             bail!("truncated zip entry {name}");
         }
-        out.push(ZipEntry { name, method, data: &buf[data_start..data_start + csize], size: usize_ });
+        out.push(ZipEntry {
+            name,
+            method,
+            data: &buf[data_start..data_start + csize],
+            size: usize_,
+        });
     }
     Ok(out)
 }

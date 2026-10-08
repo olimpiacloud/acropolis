@@ -16,7 +16,12 @@ pub struct HomeLock {
 
 fn lock_file(home: &Path) -> Option<File> {
     std::fs::create_dir_all(home).ok()?;
-    File::options().create(true).truncate(false).write(true).open(home.join(".gc.lock")).ok()
+    File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(home.join(".gc.lock"))
+        .ok()
 }
 
 pub fn shared(home: &Path) -> Option<HomeLock> {
@@ -66,11 +71,15 @@ pub fn dir_size(path: &Path) -> u64 {
 }
 
 fn mtime(p: &Path) -> SystemTime {
-    std::fs::metadata(p).and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH)
+    std::fs::metadata(p)
+        .and_then(|m| m.modified())
+        .unwrap_or(SystemTime::UNIX_EPOCH)
 }
 
 fn entries(dir: &Path) -> Vec<PathBuf> {
-    std::fs::read_dir(dir).map(|rd| rd.flatten().map(|e| e.path()).collect()).unwrap_or_default()
+    std::fs::read_dir(dir)
+        .map(|rd| rd.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default()
 }
 
 fn units(home: &Path, rootfs: &Path) -> Vec<Unit> {
@@ -82,31 +91,60 @@ fn units(home: &Path, rootfs: &Path) -> Vec<Unit> {
                     continue;
                 }
                 let size = std::fs::metadata(&blob).map(|m| m.len()).unwrap_or(0);
-                out.push(Unit { last_use: mtime(&blob), path: blob, size, lock: None, marker: None });
+                out.push(Unit {
+                    last_use: mtime(&blob),
+                    path: blob,
+                    size,
+                    lock: None,
+                    marker: None,
+                });
             }
         }
     }
     for t in entries(&home.join("toolchains")) {
         let marker = t.join(".acropolis-complete");
-        out.push(Unit { size: dir_size(&t), last_use: mtime(&marker), path: t, lock: None, marker: Some(marker) });
+        out.push(Unit {
+            size: dir_size(&t),
+            last_use: mtime(&marker),
+            path: t,
+            lock: None,
+            marker: Some(marker),
+        });
     }
     for r in entries(rootfs) {
-        let name = r.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = r
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         if name.ends_with(".complete") || name.starts_with('.') || !r.is_dir() {
             continue;
         }
         let marker = rootfs.join(format!("{name}.complete"));
-        out.push(Unit { size: dir_size(&r), last_use: mtime(&marker), path: r, lock: None, marker: Some(marker) });
+        out.push(Unit {
+            size: dir_size(&r),
+            last_use: mtime(&marker),
+            path: r,
+            lock: None,
+            marker: Some(marker),
+        });
     }
     for a in entries(&home.join("cache").join("apps")) {
         let lock = a.join(".lock");
-        out.push(Unit { size: dir_size(&a), last_use: mtime(&lock), path: a, lock: Some(lock), marker: None });
+        out.push(Unit {
+            size: dir_size(&a),
+            last_use: mtime(&lock),
+            path: a,
+            lock: Some(lock),
+            marker: None,
+        });
     }
     out
 }
 
 fn locked(lock: &Path) -> bool {
-    let Ok(f) = File::options().write(true).open(lock) else { return false };
+    let Ok(f) = File::options().write(true).open(lock) else {
+        return false;
+    };
     let rc = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     rc != 0
 }
@@ -123,14 +161,20 @@ fn remove(path: &Path) {
 fn sweep_leftovers(home: &Path, older_than: Duration) {
     let now = SystemTime::now();
     let old = |p: &Path| now.duration_since(mtime(p)).map(|d| d > older_than).unwrap_or(false);
-    for p in entries(&home.join("work")).into_iter().chain(entries(&home.join("store").join("tmp"))) {
+    for p in entries(&home.join("work"))
+        .into_iter()
+        .chain(entries(&home.join("store").join("tmp")))
+    {
         if old(&p) {
             remove(&p);
         }
     }
     for dir in [home.join("toolchains"), home.join("cache").join("apps")] {
         for p in entries(&dir) {
-            let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let name = p
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
             if (name.starts_with('.') && (name.contains(".staging-") || name.ends_with(".stale"))) && old(&p) {
                 remove(&p);
             }
@@ -138,7 +182,10 @@ fn sweep_leftovers(home: &Path, older_than: Duration) {
     }
     for app in entries(&home.join("cache").join("apps")) {
         for p in entries(&app) {
-            if p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".src-old-")) && old(&p) {
+            if p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with(".src-old-"))
+                && old(&p)
+            {
                 remove(&p);
             }
         }
@@ -148,8 +195,19 @@ fn sweep_leftovers(home: &Path, older_than: Duration) {
 pub fn collect(home: &Path, rootfs: &Path, max_size: u64) -> Result<GcReport> {
     let lock = exclusive(home);
     let exclusive = lock.is_some();
-    let grace = if exclusive { Duration::from_secs(0) } else { Duration::from_secs(3600) };
-    sweep_leftovers(home, if exclusive { Duration::from_secs(600) } else { Duration::from_secs(6 * 3600) });
+    let grace = if exclusive {
+        Duration::from_secs(0)
+    } else {
+        Duration::from_secs(3600)
+    };
+    sweep_leftovers(
+        home,
+        if exclusive {
+            Duration::from_secs(600)
+        } else {
+            Duration::from_secs(6 * 3600)
+        },
+    );
     let mut all = units(home, rootfs);
     let before: u64 = all.iter().map(|u| u.size).sum();
     let mut total = before;
@@ -174,7 +232,12 @@ pub fn collect(home: &Path, rootfs: &Path, max_size: u64) -> Result<GcReport> {
         removed += 1;
     }
     drop(lock);
-    Ok(GcReport { before, after: total, removed, exclusive })
+    Ok(GcReport {
+        before,
+        after: total,
+        removed,
+        exclusive,
+    })
 }
 
 pub fn parse_size(s: &str) -> Option<u64> {
@@ -211,7 +274,12 @@ mod tests {
         let new = shard.join("ab02");
         std::fs::write(&old, vec![0u8; 4096]).unwrap();
         std::fs::write(&new, vec![0u8; 4096]).unwrap();
-        File::options().write(true).open(&old).unwrap().set_modified(SystemTime::now() - Duration::from_secs(7200)).unwrap();
+        File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(7200))
+            .unwrap();
         let r = collect(&home, &home.join("rootfs"), 5000).unwrap();
         assert_eq!(r.removed, 1);
         assert!(!old.exists());

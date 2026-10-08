@@ -39,7 +39,12 @@ pub fn extract_tar_filtered(
     let mut buf = vec![0u8; 256 * 1024];
     let mut links: Vec<(PathBuf, String)> = Vec::new();
     while let Some(e) = tr.next_entry()? {
-        let rel: Vec<&str> = e.path.split('/').filter(|c| !c.is_empty() && *c != ".").skip(strip).collect();
+        let rel: Vec<&str> = e
+            .path
+            .split('/')
+            .filter(|c| !c.is_empty() && *c != ".")
+            .skip(strip)
+            .collect();
         if rel.is_empty() || rel.contains(&"..") {
             continue;
         }
@@ -114,7 +119,10 @@ pub fn parse_shasums(text: &str, file: &str) -> Result<acropolis_store::Integrit
         if let (Some(hash), Some(name)) = (it.next(), it.next())
             && name.trim_start_matches('*') == file
         {
-            return Ok(acropolis_store::Integrity::parse_hex(acropolis_store::Algo::Sha256, hash)?);
+            return Ok(acropolis_store::Integrity::parse_hex(
+                acropolis_store::Algo::Sha256,
+                hash,
+            )?);
         }
     }
     bail!("{file} not listed in checksums")

@@ -44,11 +44,18 @@ impl Ignore {
             Some(p) => (true, p.trim()),
             None => (false, line),
         };
-        let pat = pat.trim_start_matches("./").trim_start_matches('/').trim_end_matches('/');
+        let pat = pat
+            .trim_start_matches("./")
+            .trim_start_matches('/')
+            .trim_end_matches('/');
         if pat.is_empty() {
             return;
         }
-        let segments: Vec<String> = pat.split('/').filter(|s| !s.is_empty() && *s != ".").map(|s| s.to_string()).collect();
+        let segments: Vec<String> = pat
+            .split('/')
+            .filter(|s| !s.is_empty() && *s != ".")
+            .map(|s| s.to_string())
+            .collect();
         if segments.is_empty() {
             return;
         }

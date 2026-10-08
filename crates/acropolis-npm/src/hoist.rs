@@ -48,7 +48,11 @@ pub fn hoist(graph: &Graph) -> BTreeMap<String, PkgId> {
                 Some(_) => continue,
                 None => {
                     let idx = nodes.len();
-                    nodes.push(Node { id: Some(id.clone()), parent: Some(n), children: BTreeMap::new() });
+                    nodes.push(Node {
+                        id: Some(id.clone()),
+                        parent: Some(n),
+                        children: BTreeMap::new(),
+                    });
                     nodes[n].children.insert(name.clone(), idx);
                     placed = Some((idx, true));
                     break;
@@ -59,7 +63,11 @@ pub fn hoist(graph: &Graph) -> BTreeMap<String, PkgId> {
             Some(p) => p,
             None => {
                 let idx = nodes.len();
-                nodes.push(Node { id: Some(id.clone()), parent: Some(requester), children: BTreeMap::new() });
+                nodes.push(Node {
+                    id: Some(id.clone()),
+                    parent: Some(requester),
+                    children: BTreeMap::new(),
+                });
                 nodes[requester].children.insert(name.clone(), idx);
                 (idx, true)
             }
@@ -102,7 +110,10 @@ mod tests {
         g.roots.insert("a".into(), id("a@1"));
         g.roots.insert("b".into(), id("b@1"));
         g.deps.insert(id("a@1"), [("c".to_string(), id("c@1"))].into());
-        g.deps.insert(id("b@1"), [("c".to_string(), id("c@2")), ("d".to_string(), id("d@1"))].into());
+        g.deps.insert(
+            id("b@1"),
+            [("c".to_string(), id("c@2")), ("d".to_string(), id("d@1"))].into(),
+        );
         g.deps.insert(id("d@1"), [("c".to_string(), id("c@1"))].into());
         let layout = hoist(&g);
         assert_eq!(layout["node_modules/a"], id("a@1"));
