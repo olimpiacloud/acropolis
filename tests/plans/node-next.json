@@ -146,6 +146,9 @@
   {
    "action": {
     "dev": false,
+    "keep": [
+     "typescript"
+    ],
     "kind": "npm-fetch",
     "lockfile": "package-lock.json",
     "lockfile_sha256": "",
@@ -174,10 +177,12 @@
   },
   {
    "action": {
-    "dest": "app/node_modules",
+    "dest": "app",
     "from": {
-     "exclude": [],
-     "path": "@work/prod/node_modules",
+     "exclude": [
+      "package.json"
+     ],
+     "path": "@work/prod",
      "type": "work-dir"
     },
     "kind": "layer"

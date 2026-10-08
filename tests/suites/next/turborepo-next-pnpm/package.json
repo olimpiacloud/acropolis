@@ -1,0 +1,12 @@
+{
+  "name": "turborepo-next-pnpm",
+  "private": true,
+  "packageManager": "pnpm@10.18.0",
+  "scripts": {
+    "build": "turbo run build",
+    "start": "pnpm --filter web start"
+  },
+  "devDependencies": {
+    "turbo": "2.11.7"
+  }
+}

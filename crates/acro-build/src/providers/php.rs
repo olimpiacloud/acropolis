@@ -123,7 +123,7 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
             b.step(
                 "npm-fetch",
                 "fetch packages",
-                Action::NpmFetch { manager: "npm".into(), lockfile: "package-lock.json".into(), lockfile_sha256: acro_store::sha256_bytes(&lock).hex(), dev: true, workspaces: vec![] },
+                Action::NpmFetch { manager: "npm".into(), lockfile: "package-lock.json".into(), lockfile_sha256: acro_store::sha256_bytes(&lock).hex(), dev: true, workspaces: vec![], keep: vec![] },
                 &[],
             );
             b.step("install", "install node_modules", Action::NpmInstall { dev: true, target: "src".into(), scripts: String::new(), manager: "npm".into(), types_only: false }, &["npm-fetch", "source"]);

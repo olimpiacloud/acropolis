@@ -245,12 +245,13 @@ fn builder_cgroup() -> Result<PathBuf> {
 }
 
 fn image_size(reference: &str) -> Result<(f64, String)> {
-    let (repo, tag) = reference
-        .trim_start_matches(&format!("localhost:{REGISTRY_PORT}/"))
-        .rsplit_once(':')
-        .context("bad reference")?;
+    image_size_at(&format!("127.0.0.1:{REGISTRY_PORT}"), reference.trim_start_matches(&format!("localhost:{REGISTRY_PORT}/")))
+}
+
+pub fn image_size_at(registry: &str, repo_tag: &str) -> Result<(f64, String)> {
+    let (repo, tag) = repo_tag.rsplit_once(':').context("bad reference")?;
     let accept = "application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json";
-    let url = format!("http://127.0.0.1:{REGISTRY_PORT}/v2/{repo}/manifests/{tag}");
+    let url = format!("http://{registry}/v2/{repo}/manifests/{tag}");
     let body = sh(Command::new("curl").args(["-sf", "-H", &format!("Accept: {accept}"), &url]))?;
     let mut v: serde_json::Value = serde_json::from_str(&body)?;
     let digest = sh(Command::new("curl").args(["-sfI", "-H", &format!("Accept: {accept}"), &url]))?
@@ -263,13 +264,13 @@ fn image_size(reference: &str) -> Result<(f64, String)> {
     if v.get("manifests").is_some() {
         let m = v["manifests"]
             .as_array()
-            .unwrap()
+            .context("manifests is not an array")?
             .iter()
             .find(|m| m["platform"]["architecture"] == "amd64")
             .cloned()
             .context("no amd64 manifest")?;
         let d = m["digest"].as_str().unwrap_or("");
-        let url = format!("http://127.0.0.1:{REGISTRY_PORT}/v2/{repo}/manifests/{d}");
+        let url = format!("http://{registry}/v2/{repo}/manifests/{d}");
         v = serde_json::from_str(&sh(Command::new("curl").args(["-sf", "-H", &format!("Accept: {accept}"), &url]))?)?;
     }
     let size: u64 = v["layers"].as_array().map(|l| l.iter().filter_map(|x| x["size"].as_u64()).sum()).unwrap_or(0)

@@ -592,7 +592,7 @@ fn plan_inner(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
             b.step(
                 "npm-fetch",
                 "fetch production packages",
-                Action::NpmFetch { manager: manager.into(), lockfile: lockfile.clone(), lockfile_sha256: lock_sha, dev: false, workspaces: vec![] },
+                Action::NpmFetch { manager: manager.into(), lockfile: lockfile.clone(), lockfile_sha256: lock_sha, dev: false, workspaces: vec![], keep: vec![] },
                 &[],
             );
             prod_deps_layer(&mut b, app, manager, &policy, prod_needs_scripts, "npm-fetch", false);
@@ -653,7 +653,7 @@ fn plan_inner(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
             b.step(
                 "npm-fetch",
                 "fetch packages",
-                Action::NpmFetch { manager: manager.into(), lockfile: lockfile.clone(), lockfile_sha256: lock_sha, dev: true, workspaces: vec![] },
+                Action::NpmFetch { manager: manager.into(), lockfile: lockfile.clone(), lockfile_sha256: lock_sha, dev: true, workspaces: vec![], keep: vec![] },
                 &[],
             );
             b.step("source", "copy source", Action::CopySource { exclude: vec!["**/node_modules".into()] }, &[]);
@@ -829,7 +829,7 @@ fn plan_inner(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
                     b.step(
                         "npm-fetch-prod",
                         "select production packages",
-                        Action::NpmFetch { manager: manager.into(), lockfile: lockfile.clone(), lockfile_sha256: String::new(), dev: false, workspaces: vec![] },
+                        Action::NpmFetch { manager: manager.into(), lockfile: lockfile.clone(), lockfile_sha256: String::new(), dev: false, workspaces: vec![], keep: runtime_dev_packages(app) },
                         &["npm-fetch"],
                     );
                     prod_deps_layer(&mut b, app, manager, &policy, prod_needs_scripts, "npm-fetch-prod", true);
@@ -1128,7 +1128,7 @@ fn plan_native_spa(
         b.step(
             "npm-fetch",
             "fetch packages",
-            Action::NpmFetch { manager: manager.into(), lockfile: lockfile.into(), lockfile_sha256: lock_sha.into(), dev: true, workspaces: vec![] },
+            Action::NpmFetch { manager: manager.into(), lockfile: lockfile.into(), lockfile_sha256: lock_sha.into(), dev: true, workspaces: vec![], keep: vec![] },
             &[],
         );
         b.step("source", "copy source", Action::CopySource { exclude: vec!["**/node_modules".into()] }, &[]);
@@ -1310,6 +1310,19 @@ pub fn host_glibc() -> Option<(u32, u32)> {
     Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
 }
 
+fn runtime_dev_packages(app: &NodeApp) -> Vec<String> {
+    let ts_config = ["next.config.ts", "next.config.mts"].iter().any(|f| app.dir.join(f).exists());
+    let next_major = ["dependencies", "devDependencies"]
+        .iter()
+        .find_map(|k| app.package_json.get(k).and_then(|d| d.get("next")).and_then(|v| v.as_str()))
+        .and_then(|spec| spec.trim_start_matches(|c: char| !c.is_ascii_digit()).split('.').next().and_then(|m| m.parse::<u32>().ok()));
+    if app.framework == Framework::Next && ts_config && app.has_dep("typescript") && next_major.is_none_or(|m| m < 16) {
+        vec!["typescript".into()]
+    } else {
+        vec![]
+    }
+}
+
 fn prod_deps_layer(
     b: &mut PlanBuilder,
     app: &NodeApp,
@@ -1346,8 +1359,8 @@ fn prod_deps_layer(
         "layer-deps",
         "layer node_modules (production)",
         Action::Layer {
-            dest: "app/node_modules".into(),
-            from: LayerFrom::WorkDir { path: "@work/prod/node_modules".into(), exclude: vec![] },
+            dest: "app".into(),
+            from: LayerFrom::WorkDir { path: "@work/prod".into(), exclude: vec!["package.json".into()] },
         },
         &["install-prod"],
     );

@@ -18,6 +18,8 @@ pub enum Action {
         dev: bool,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         workspaces: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        keep: Vec<String>,
     },
     NpmInstall {
         dev: bool,

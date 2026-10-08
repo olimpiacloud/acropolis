@@ -694,7 +694,7 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                 other => bail!("unsupported toolchain {other}"),
             }
         }
-        Action::NpmFetch { manager, lockfile, dev, workspaces, .. } => {
+        Action::NpmFetch { manager, lockfile, dev, workspaces, keep, .. } => {
             let opts = InstallOptions { include_dev: *dev, include_optional: true, platform: Default::default() };
             let out_of_sync = manager == "npm" && !lockfile.is_empty() && npm_lock_out_of_sync(&ctx.opts.app_dir, lockfile);
             if out_of_sync && ctx.opts.env.flag("STRICT_LOCKFILE") {
@@ -709,6 +709,12 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                 acro_npm::resolve::plan_without_lockfile(&ctx.fetcher, &pj, &ws, &opts).await?
             } else {
                 install_plan_scoped(manager, &ctx.opts.app_dir, lockfile, &opts, workspaces)?
+            };
+            let plan = if keep.is_empty() || *dev || lockfile.is_empty() || out_of_sync {
+                plan
+            } else {
+                let full = InstallOptions { include_dev: true, ..opts.clone() };
+                keep_packages(plan, install_plan_scoped(manager, &ctx.opts.app_dir, lockfile, &full, workspaces)?, keep)
             };
             for p in &plan.packages {
                 if let acro_npm::Source::Git { url } = &p.source {
@@ -1102,6 +1108,22 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             }
         }
     }
+}
+
+fn keep_packages(mut plan: InstallPlan, full: InstallPlan, keep: &[String]) -> InstallPlan {
+    let have: std::collections::BTreeSet<String> = plan.packages.iter().map(|p| p.path.clone()).collect();
+    let roots: Vec<String> = keep.iter().map(|k| format!("node_modules/{k}")).collect();
+    for p in full.packages {
+        if keep.contains(&p.name) && !have.contains(&p.path) {
+            plan.packages.push(p);
+        }
+    }
+    for l in full.links {
+        if roots.contains(&l.path) && !plan.links.iter().any(|x| x.path == l.path) {
+            plan.links.push(l);
+        }
+    }
+    plan
 }
 
 pub fn install_plan_for(manager: &str, app_dir: &Path, lockfile: &str, opts: &InstallOptions) -> Result<InstallPlan> {

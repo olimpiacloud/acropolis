@@ -25,7 +25,7 @@ impl StrOrVec {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct HttpCheck {
     internal_port: u16,
     #[serde(default)]
@@ -37,7 +37,7 @@ struct HttpCheck {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TestCase {
     #[serde(default)]
     platform: Option<String>,
@@ -66,6 +66,10 @@ pub struct CaseResult {
     #[serde(default)]
     pub total_s: f64,
     pub detail: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_mb: Option<f64>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub retried: bool,
 }
 
 pub struct E2eConfig {
@@ -337,7 +341,20 @@ fn head_tail(text: &str, head: usize, tail: usize) -> String {
 
 fn run_case(cfg: &E2eConfig, example: &str, idx: usize, case: &TestCase) -> CaseResult {
     let dir = cfg.examples.join(example);
-    let mut r = CaseResult { example: example.into(), case: idx, status: "fail".into(), build_s: 0.0, total_s: 0.0, detail: String::new() };
+    let mut r = CaseResult {
+        example: example.into(),
+        case: idx,
+        status: "fail".into(),
+        build_s: 0.0,
+        total_s: 0.0,
+        detail: String::new(),
+        image_mb: None,
+        retried: false,
+    };
+    if case.http_check.is_some() && case.expected_output.is_some() {
+        r.detail = "invalid test.json: httpCheck and expectedOutput are mutually exclusive".into();
+        return r;
+    }
     let arch = if std::env::consts::ARCH == "x86_64" { "amd64" } else { "arm64" };
     if case.skip_arch.iter().any(|a| a == arch) {
         r.status = "skip".into();
@@ -391,10 +408,17 @@ fn run_case(cfg: &E2eConfig, example: &str, idx: usize, case: &TestCase) -> Case
         let _ = fs::remove_dir_all(&home);
     }
     if case.should_fail {
-        if out.status.success() {
-            r.detail = "expected build failure but build succeeded".into();
-        } else {
-            r.status = "pass".into();
+        match out.status.code() {
+            Some(0) => r.detail = "expected build failure but build succeeded".into(),
+            Some(1 | 78) => r.status = "pass".into(),
+            other => {
+                let err = String::from_utf8_lossy(&out.stderr);
+                r.detail = format!(
+                    "expected a user or config error (exit 1 or 78), got {}: {}",
+                    other.map(|c| c.to_string()).unwrap_or_else(|| "a signal".into()),
+                    err.lines().last().unwrap_or("")
+                );
+            }
         }
         return r;
     }
@@ -412,6 +436,8 @@ fn run_case(cfg: &E2eConfig, example: &str, idx: usize, case: &TestCase) -> Case
         }
     };
     let name = format!("acro-e2e-run-{}-{}-{}", example.to_ascii_lowercase(), idx, std::process::id());
+    let host = cfg.registry.replacen("localhost", "127.0.0.1", 1);
+    r.image_mb = crate::bench::image_size_at(&host, tag.trim_start_matches(&format!("{}/", cfg.registry))).ok().map(|(mb, _)| (mb * 10.0).round() / 10.0);
     let pulled = docker(&["pull", "-q", &tag]);
     let res = match pulled {
         Err(e) => Err(e),
@@ -478,7 +504,7 @@ fn registry_full(cfg: &E2eConfig) -> bool {
 
 fn infra_failure(detail: &str) -> bool {
     detail.contains("error class: infra")
-        || ["/var/lib/registry", "failed to extract layer", "docker pull -q", "No space left on device", "compose up failed"]
+        || ["/var/lib/registry", "No space left on device", "no space left on device", "compose up failed", "toomanyrequests", "429 Too Many Requests"]
             .iter()
             .any(|m| detail.contains(m))
 }
@@ -661,16 +687,25 @@ pub fn run(cfg: E2eConfig) -> Result<Vec<CaseResult>> {
                 }
                 if r.status == "fail" && !retried && infra_failure(&r.detail) {
                     eprintln!("[e2e] retry  {}/case-{} after infra failure: {}", r.example, r.case, r.detail.lines().last().unwrap_or("").chars().take(160).collect::<String>());
+                    {
+                        use std::io::Write;
+                        let mut first = r.clone();
+                        first.status = "retry".into();
+                        let mut f = out_file.lock().unwrap();
+                        let _ = writeln!(f, "{}", serde_json::to_string(&first).unwrap_or_default());
+                    }
                     queue.lock().unwrap().push_back((name, idx, case, true));
                     continue;
                 }
+                r.retried = retried;
                 eprintln!(
-                    "[e2e] {:<6} {}/case-{} ({:.1}s build, {:.1}s total) {}",
+                    "[e2e] {:<6} {}/case-{} ({:.1}s build, {:.1}s total{}) {}",
                     r.status,
                     r.example,
                     r.case,
                     r.build_s,
                     r.total_s,
+                    r.image_mb.map(|m| format!(", {m:.1} MB")).unwrap_or_default(),
                     r.detail.lines().next().unwrap_or("")
                 );
                 {

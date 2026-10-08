@@ -129,10 +129,12 @@
   },
   {
    "action": {
-    "dest": "app/node_modules",
+    "dest": "app",
     "from": {
-     "exclude": [],
-     "path": "@work/prod/node_modules",
+     "exclude": [
+      "package.json"
+     ],
+     "path": "@work/prod",
      "type": "work-dir"
     },
     "kind": "layer"
