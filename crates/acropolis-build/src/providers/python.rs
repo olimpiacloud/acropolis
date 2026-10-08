@@ -18,9 +18,20 @@ pub enum Manager {
 }
 
 pub fn is_python(dir: &Path) -> bool {
-    ["requirements.txt", "pyproject.toml", "Pipfile", "main.py", "app.py", "bot.py", "manage.py", "setup.py", "uv.lock", "poetry.lock"]
-        .iter()
-        .any(|f| dir.join(f).exists())
+    [
+        "requirements.txt",
+        "pyproject.toml",
+        "Pipfile",
+        "main.py",
+        "app.py",
+        "bot.py",
+        "manage.py",
+        "setup.py",
+        "uv.lock",
+        "poetry.lock",
+    ]
+    .iter()
+    .any(|f| dir.join(f).exists())
 }
 
 fn read(dir: &Path, f: &str) -> String {
@@ -53,12 +64,22 @@ pub fn version(dir: &Path, env: &Env) -> VersionSpec {
         return v;
     }
     let pv = read(dir, ".python-version");
-    if let Some(l) = pv.lines().map(|l| l.trim()).find(|l| !l.is_empty() && !l.starts_with('#')) {
-        return VersionSpec { spec: l.to_string(), source: ".python-version".into() };
+    if let Some(l) = pv
+        .lines()
+        .map(|l| l.trim())
+        .find(|l| !l.is_empty() && !l.starts_with('#'))
+    {
+        return VersionSpec {
+            spec: l.to_string(),
+            source: ".python-version".into(),
+        };
     }
     let rt = read(dir, "runtime.txt");
     if let Some(v) = rt.trim().strip_prefix("python-") {
-        return VersionSpec { spec: v.to_string(), source: "runtime.txt".into() };
+        return VersionSpec {
+            spec: v.to_string(),
+            source: "runtime.txt".into(),
+        };
     }
     let pipfile = read(dir, "Pipfile");
     for key in ["python_full_version", "python_version"] {
@@ -69,12 +90,18 @@ pub fn version(dir: &Path, env: &Env) -> VersionSpec {
             {
                 let v = v.trim().trim_matches('"').trim_matches('\'');
                 if !v.is_empty() {
-                    return VersionSpec { spec: v.to_string(), source: format!("Pipfile {key}") };
+                    return VersionSpec {
+                        spec: v.to_string(),
+                        source: format!("Pipfile {key}"),
+                    };
                 }
             }
         }
     }
-    VersionSpec { spec: DEFAULT_PYTHON.into(), source: "default".into() }
+    VersionSpec {
+        spec: DEFAULT_PYTHON.into(),
+        source: "default".into(),
+    }
 }
 
 fn image_for(spec: &str) -> String {
@@ -89,12 +116,20 @@ fn image_for(spec: &str) -> String {
 }
 
 fn deps_text(dir: &Path) -> String {
-    format!("{}\n{}\n{}", read(dir, "requirements.txt"), read(dir, "pyproject.toml"), read(dir, "Pipfile")).to_ascii_lowercase()
+    format!(
+        "{}\n{}\n{}",
+        read(dir, "requirements.txt"),
+        read(dir, "pyproject.toml"),
+        read(dir, "Pipfile")
+    )
+    .to_ascii_lowercase()
 }
 
 fn locked(dir: &Path, dep: &str) -> bool {
     let needle = format!("name = \"{dep}\"");
-    ["uv.lock", "poetry.lock", "pdm.lock"].iter().any(|f| read(dir, f).to_ascii_lowercase().lines().any(|l| l.trim() == needle))
+    ["uv.lock", "poetry.lock", "pdm.lock"]
+        .iter()
+        .any(|f| read(dir, f).to_ascii_lowercase().lines().any(|l| l.trim() == needle))
 }
 
 fn uses(dir: &Path, dep: &str) -> bool {
@@ -104,7 +139,12 @@ fn uses(dir: &Path, dep: &str) -> bool {
     let text = deps_text(dir);
     text.lines().any(|l| {
         let l = l.trim().trim_start_matches('"').trim_start_matches('\'');
-        l.starts_with(dep) && l[dep.len()..].chars().next().map(|c| !c.is_ascii_alphanumeric() && c != '-' && c != '_').unwrap_or(true)
+        l.starts_with(dep)
+            && l[dep.len()..]
+                .chars()
+                .next()
+                .map(|c| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
+                .unwrap_or(true)
     })
 }
 
@@ -118,7 +158,10 @@ fn django_settings_text(dir: &Path) -> String {
             let name = e.file_name().to_string_lossy().into_owned();
             if p.is_dir() && !name.starts_with('.') && name != "node_modules" && name != "__pycache__" {
                 stack.push(p);
-            } else if name.ends_with(".py") && let Ok(t) = std::fs::read_to_string(&p) && t.contains("django.db.backends.") {
+            } else if name.ends_with(".py")
+                && let Ok(t) = std::fs::read_to_string(&p)
+                && t.contains("django.db.backends.")
+            {
                 out.push_str(&t);
             }
         }
@@ -127,7 +170,9 @@ fn django_settings_text(dir: &Path) -> String {
 }
 
 fn main_file(dir: &Path) -> Option<&'static str> {
-    ["main.py", "app.py", "start.py", "bot.py", "hello.py", "server.py"].into_iter().find(|f| dir.join(f).exists())
+    ["main.py", "app.py", "start.py", "bot.py", "hello.py", "server.py"]
+        .into_iter()
+        .find(|f| dir.join(f).exists())
 }
 
 fn django_app(dir: &Path) -> Option<String> {
@@ -146,7 +191,11 @@ fn django_app(dir: &Path) -> Option<String> {
                 let text = std::fs::read_to_string(&p).unwrap_or_default();
                 for line in text.lines() {
                     if let Some(rest) = line.trim().strip_prefix("WSGI_APPLICATION") {
-                        let v = rest.trim_start_matches([' ', '=']).trim().trim_matches('"').trim_matches('\'');
+                        let v = rest
+                            .trim_start_matches([' ', '='])
+                            .trim()
+                            .trim_matches('"')
+                            .trim_matches('\'');
                         if let Some(module) = v.strip_suffix(".application") {
                             return Some(module.to_string());
                         }
@@ -170,7 +219,9 @@ pub fn start_command(dir: &Path, env: &Env) -> Option<String> {
     }
     let mut start = None;
     if let Some(app) = django_app(dir) {
-        start = Some(format!("python manage.py migrate && gunicorn --bind 0.0.0.0:${{PORT:-8000}} {app}:application"));
+        start = Some(format!(
+            "python manage.py migrate && gunicorn --bind 0.0.0.0:${{PORT:-8000}} {app}:application"
+        ));
     }
     let main = main_file(dir);
     if main.is_some() && uses(dir, "python-fasthtml") && uses(dir, "uvicorn") {
@@ -212,13 +263,22 @@ fn mise_env_truthy(dir: &Path, key: &str) -> bool {
 }
 
 fn python_minor(spec: &str) -> (u32, u32) {
-    let digits: String = spec.trim().trim_start_matches(['=', '~', '^', '>', '<', ' ', 'v']).chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    let digits: String = spec
+        .trim()
+        .trim_start_matches(['=', '~', '^', '>', '<', ' ', 'v'])
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
     let mut it = digits.split('.').filter_map(|p| p.parse::<u32>().ok());
     match (it.next(), it.next()) {
         (Some(3), Some(m)) => (3, m),
         _ => {
             let d: Vec<u32> = DEFAULT_PYTHON.split('.').filter_map(|p| p.parse().ok()).collect();
-            if matches!(spec.trim(), "latest" | "*" | "3") { (3, LATEST_PYTHON_MINOR) } else { (d[0], d[1]) }
+            if matches!(spec.trim(), "latest" | "*" | "3") {
+                (3, LATEST_PYTHON_MINOR)
+            } else {
+                (d[0], d[1])
+            }
         }
     }
 }
@@ -231,19 +291,29 @@ fn wheel_fits(wheel: &str, (major, minor): (u32, u32), ft: bool) -> bool {
         return false;
     }
     let (py, abi, plat) = (parts[parts.len() - 3], parts[parts.len() - 2], parts[parts.len() - 1]);
-    let plat_ok = plat == "any" || plat.split('.').any(|p| (p.starts_with("manylinux") || p.starts_with("linux")) && p.ends_with("x86_64"));
+    let plat_ok = plat == "any"
+        || plat
+            .split('.')
+            .any(|p| (p.starts_with("manylinux") || p.starts_with("linux")) && p.ends_with("x86_64"));
     if !plat_ok {
         return false;
     }
     if abi == "none" {
-        return py.split('.').any(|t| t == "py3" || t == format!("py{major}{minor}") || t == format!("cp{major}{minor}"));
+        return py
+            .split('.')
+            .any(|t| t == "py3" || t == format!("py{major}{minor}") || t == format!("cp{major}{minor}"));
     }
     let want = format!("cp{major}{minor}{}", if ft { "t" } else { "" });
     if abi == want {
         return true;
     }
     if abi == "abi3" && !ft {
-        return py.split('.').any(|t| t.strip_prefix(&format!("cp{major}")).and_then(|m| m.parse::<u32>().ok()).map(|m| m <= minor).unwrap_or(false));
+        return py.split('.').any(|t| {
+            t.strip_prefix(&format!("cp{major}"))
+                .and_then(|m| m.parse::<u32>().ok())
+                .map(|m| m <= minor)
+                .unwrap_or(false)
+        });
     }
     false
 }
@@ -254,7 +324,13 @@ fn needs_compiler(dir: &Path, version: (u32, u32), ft: bool) -> bool {
         if !pkg.contains("\nsdist = ") || pkg.contains("source = { virtual") || pkg.contains("source = { editable") {
             return false;
         }
-        let wheels: Vec<&str> = pkg.split("url = \"").skip(1).filter_map(|u| u.split('"').next()).filter(|u| u.ends_with(".whl")).map(|u| u.rsplit('/').next().unwrap_or(u)).collect();
+        let wheels: Vec<&str> = pkg
+            .split("url = \"")
+            .skip(1)
+            .filter_map(|u| u.split('"').next())
+            .filter(|u| u.ends_with(".whl"))
+            .map(|u| u.rsplit('/').next().unwrap_or(u))
+            .collect();
         !wheels.iter().any(|w| wheel_fits(w, version, ft))
     })
 }
@@ -262,13 +338,18 @@ fn needs_compiler(dir: &Path, version: (u32, u32), ft: bool) -> bool {
 fn uv_lock_installs_nothing(dir: &Path) -> bool {
     let lock = read(dir, "uv.lock");
     let pkgs: Vec<&str> = lock.split("[[package]]").skip(1).collect();
-    pkgs.iter().all(|p| p.contains("source = { virtual = \".\" }") && !p.contains("dependencies"))
+    pkgs.iter()
+        .all(|p| p.contains("source = { virtual = \".\" }") && !p.contains("dependencies"))
 }
 
 fn freethreaded(dir: &Path, env: &Env, spec: &str) -> bool {
     (spec.ends_with('t') && spec[..spec.len() - 1].ends_with(|c: char| c.is_ascii_digit()))
         || mise_env_truthy(dir, "PYTHON_BUILD_FREE_THREADING")
-        || env.vars.get("MISE_PYTHON_PRECOMPILED_FLAVOR").map(|f| f.contains("freethreaded")).unwrap_or(false)
+        || env
+            .vars
+            .get("MISE_PYTHON_PRECOMPILED_FLAVOR")
+            .map(|f| f.contains("freethreaded"))
+            .unwrap_or(false)
 }
 
 const UV_PYTHON_DIR: &str = "/opt/uv-python";
@@ -285,16 +366,44 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     let image = image_for(&v.spec);
     b.fact("python", format!("{} ({})", v.spec, v.source));
     b.fact("manager", format!("{m:?}").to_ascii_lowercase());
-    b.step("base", format!("resolve {image}"), Action::ResolveBase { image: image.clone() }, &[]);
+    b.step(
+        "base",
+        format!("resolve {image}"),
+        Action::ResolveBase { image: image.clone() },
+        &[],
+    );
     b.step("copy-base", "copy base layers", Action::CopyBase, &["base"]);
-    b.step("source", "copy source", Action::CopySource { exclude: vec![".venv".into(), "__pycache__".into(), "**/__pycache__".into()] }, &[]);
-    let uv_spec = env.config("UV_VERSION").map(|(v, _)| v).or_else(|| tool_version(dir, "uv").map(|v| v.spec)).unwrap_or_default();
+    b.step(
+        "source",
+        "copy source",
+        Action::CopySource {
+            exclude: vec![".venv".into(), "__pycache__".into(), "**/__pycache__".into()],
+        },
+        &[],
+    );
+    let uv_spec = env
+        .config("UV_VERSION")
+        .map(|(v, _)| v)
+        .or_else(|| tool_version(dir, "uv").map(|v| v.spec))
+        .unwrap_or_default();
     let uv_spec = if uv_spec == "latest" { String::new() } else { uv_spec };
-    b.step("uv", "uv", Action::Toolchain { tool: "uv".into(), spec: uv_spec, parts: vec![] }, &[]);
+    b.step(
+        "uv",
+        "uv",
+        Action::Toolchain {
+            tool: "uv".into(),
+            spec: uv_spec,
+            parts: vec![],
+        },
+        &[],
+    );
     let install: Vec<String> = match m {
         Manager::Uv if uv_lock_installs_nothing(dir) => vec![],
         Manager::Uv => vec!["uv sync --locked --no-dev --no-editable".into()],
-        Manager::Pip => vec!["uv venv /app/.venv".into(), "uv pip install --python /app/.venv/bin/python -r requirements.txt".into()],
+        Manager::Pip => vec![
+            "uv venv /app/.venv".into(),
+            "uv pip install --python /app/.venv/bin/python -r requirements.txt".into(),
+        ],
         Manager::Poetry => vec![
             "uv venv /app/.venv".into(),
             "uv tool run --from poetry poetry install --no-interaction --no-ansi --only main --no-root".into(),
@@ -304,10 +413,20 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
             "uv tool run --from pdm pdm install --check --prod --no-editable --no-self".into(),
         ],
         Manager::Pipenv => {
-            let cmd = if dir.join("Pipfile.lock").exists() { "pipenv install --deploy --ignore-pipfile" } else { "pipenv install --skip-lock" };
-            vec!["uv venv /app/.venv".into(), format!("PIPENV_VENV_IN_PROJECT=1 PIPENV_IGNORE_VIRTUALENVS=0 uv tool run --from pipenv {cmd}")]
+            let cmd = if dir.join("Pipfile.lock").exists() {
+                "pipenv install --deploy --ignore-pipfile"
+            } else {
+                "pipenv install --skip-lock"
+            };
+            vec![
+                "uv venv /app/.venv".into(),
+                format!("PIPENV_VENV_IN_PROJECT=1 PIPENV_IGNORE_VIRTUALENVS=0 uv tool run --from pipenv {cmd}"),
+            ]
         }
-        Manager::Pyproject => vec!["uv venv /app/.venv".into(), "uv pip install --python /app/.venv/bin/python -r pyproject.toml".into()],
+        Manager::Pyproject => vec![
+            "uv venv /app/.venv".into(),
+            "uv pip install --python /app/.venv/bin/python -r pyproject.toml".into(),
+        ],
         Manager::None => vec![],
     };
     let mut env_map = BTreeMap::new();
@@ -368,7 +487,11 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     build_pkgs.dedup();
     runtime_pkgs.sort();
     runtime_pkgs.dedup();
-    let build_image = if build_pkgs.is_empty() { image.clone() } else { image.replace("-slim-bookworm", "-bookworm") };
+    let build_image = if build_pkgs.is_empty() {
+        image.clone()
+    } else {
+        image.replace("-slim-bookworm", "-bookworm")
+    };
     let mut commands = Vec::new();
     if ft {
         let digits: String = v.spec.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
@@ -379,7 +502,10 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
         env_map.insert("UV_PYTHON_DOWNLOADS".into(), "automatic".into());
         env_map.insert("UV_PYTHON".into(), request.clone());
         commands.push(format!("uv python install {request}"));
-        if !install.iter().any(|c| c.starts_with("uv venv") || c.starts_with("uv sync")) {
+        if !install
+            .iter()
+            .any(|c| c.starts_with("uv venv") || c.starts_with("uv sync"))
+        {
             commands.push("uv venv /app/.venv".into());
         }
     }
@@ -406,7 +532,10 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     }
     let compiled = build_image != image && !commands.is_empty();
     if compiled {
-        commands.push(crate::extend::scan_native_libs("/app/.venv /opt/uv-python", crate::extend::NATIVE_DEBS));
+        commands.push(crate::extend::scan_native_libs(
+            "/app/.venv /opt/uv-python",
+            crate::extend::NATIVE_DEBS,
+        ));
     }
     if commands.is_empty() {
         commands.push("true".into());
@@ -414,17 +543,40 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     b.step(
         "install",
         "install python dependencies",
-        Action::ImageRun { image: build_image.clone(), commands, env: env_map, network: true, mount_app: true, after: None, tools: vec!["uv".into()], lowers: vec![] },
+        Action::ImageRun {
+            image: build_image.clone(),
+            commands,
+            env: env_map,
+            network: true,
+            mount_app: true,
+            after: None,
+            tools: vec!["uv".into()],
+            lowers: vec![],
+        },
         &["source", "uv"],
     );
-    b.step("layer-app", "layer app + .venv", Action::Layer { dest: "app".into(), from: LayerFrom::WorkDir { path: ".".into(), exclude: vec![crate::extend::NATIVE_DEBS_FILE.into()] } }, &["install"]);
+    b.step(
+        "layer-app",
+        "layer app + .venv",
+        Action::Layer {
+            dest: "app".into(),
+            from: LayerFrom::WorkDir {
+                path: ".".into(),
+                exclude: vec![crate::extend::NATIVE_DEBS_FILE.into()],
+            },
+        },
+        &["install"],
+    );
     let start = start_command(dir, env);
     b.step(
         "layer-uv",
         "layer uv CLI",
         Action::Layer {
             dest: "usr/local/bin".into(),
-            from: LayerFrom::Tool { tool: "uv".into(), files: vec![("bin/uv".into(), "uv".into()), ("bin/uvx".into(), "uvx".into())] },
+            from: LayerFrom::Tool {
+                tool: "uv".into(),
+                files: vec![("bin/uv".into(), "uv".into()), ("bin/uvx".into(), "uvx".into())],
+            },
         },
         &["uv"],
     );
@@ -436,7 +588,10 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
             "install shared libraries needed by compiled packages",
             Action::ImageRun {
                 image: image.clone(),
-                commands: vec![crate::extend::install_missing_debs(crate::extend::NATIVE_DEBS, &runtime_pkgs)],
+                commands: vec![crate::extend::install_missing_debs(
+                    crate::extend::NATIVE_DEBS,
+                    &runtime_pkgs,
+                )],
                 env: BTreeMap::new(),
                 network: true,
                 mount_app: true,
@@ -451,7 +606,11 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
             "layer native package libraries",
             Action::Layer {
                 dest: "".into(),
-                from: LayerFrom::Upper { step: "native-libs".into(), include: vec![], exclude: vec!["var/cache".into(), "var/log".into(), "root".into()] },
+                from: LayerFrom::Upper {
+                    step: "native-libs".into(),
+                    include: vec![],
+                    exclude: vec!["var/cache".into(), "var/log".into(), "root".into()],
+                },
             },
             &["native-libs"],
         );
@@ -464,7 +623,11 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
             "layer free-threaded python",
             Action::Layer {
                 dest: String::new(),
-                from: LayerFrom::Upper { step: "install".into(), include: vec![UV_PYTHON_DIR.trim_start_matches('/').into()], exclude: vec![] },
+                from: LayerFrom::Upper {
+                    step: "install".into(),
+                    include: vec![UV_PYTHON_DIR.trim_start_matches('/').into()],
+                    exclude: vec![],
+                },
             },
             &["install"],
         );
@@ -472,15 +635,23 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
         b.plan.image.layers.insert(0, "layer-python".into());
     }
     b.step("push", "push image", Action::Push, &push_deps);
-    b.plan.warnings.push("python dependencies are installed with network access inside the base image".into());
+    b.plan
+        .warnings
+        .push("python dependencies are installed with network access inside the base image".into());
     b.plan.image.workdir = Some("/app".into());
     b.plan.image.env = vec![
-        ("PATH".into(), "/app/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into()),
+        (
+            "PATH".into(),
+            "/app/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into(),
+        ),
         ("VIRTUAL_ENV".into(), "/app/.venv".into()),
         ("PYTHONUNBUFFERED".into(), "1".into()),
     ];
     if playwright {
-        b.plan.image.env.push(("PLAYWRIGHT_BROWSERS_PATH".into(), PLAYWRIGHT_DIR.into()));
+        b.plan
+            .image
+            .env
+            .push(("PLAYWRIGHT_BROWSERS_PATH".into(), PLAYWRIGHT_DIR.into()));
     }
     if let Some(start) = start {
         b.plan.image.cmd = Some(super::shell_start(&start));
@@ -507,14 +678,42 @@ mod tests {
     #[test]
     fn wheels() {
         let v = (3, 14);
-        assert!(wheel_fits("greenlet-3.2.4-cp314-cp314-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", v, false));
-        assert!(!wheel_fits("greenlet-3.2.4-cp314-cp314-manylinux_2_24_x86_64.whl", v, true));
-        assert!(wheel_fits("greenlet-3.2.4-cp314-cp314t-manylinux_2_24_x86_64.whl", v, true));
-        assert!(!wheel_fits("greenlet-3.2.4-cp313-cp313-manylinux_2_24_x86_64.whl", v, false));
-        assert!(!wheel_fits("greenlet-3.2.4-cp314-cp314-musllinux_1_2_x86_64.whl", v, false));
+        assert!(wheel_fits(
+            "greenlet-3.2.4-cp314-cp314-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl",
+            v,
+            false
+        ));
+        assert!(!wheel_fits(
+            "greenlet-3.2.4-cp314-cp314-manylinux_2_24_x86_64.whl",
+            v,
+            true
+        ));
+        assert!(wheel_fits(
+            "greenlet-3.2.4-cp314-cp314t-manylinux_2_24_x86_64.whl",
+            v,
+            true
+        ));
+        assert!(!wheel_fits(
+            "greenlet-3.2.4-cp313-cp313-manylinux_2_24_x86_64.whl",
+            v,
+            false
+        ));
+        assert!(!wheel_fits(
+            "greenlet-3.2.4-cp314-cp314-musllinux_1_2_x86_64.whl",
+            v,
+            false
+        ));
         assert!(wheel_fits("six-1.16.0-py2.py3-none-any.whl", v, false));
-        assert!(wheel_fits("cryptography-44.0.0-cp39-abi3-manylinux_2_28_x86_64.whl", v, false));
-        assert!(!wheel_fits("cryptography-44.0.0-cp39-abi3-manylinux_2_28_x86_64.whl", v, true));
+        assert!(wheel_fits(
+            "cryptography-44.0.0-cp39-abi3-manylinux_2_28_x86_64.whl",
+            v,
+            false
+        ));
+        assert!(!wheel_fits(
+            "cryptography-44.0.0-cp39-abi3-manylinux_2_28_x86_64.whl",
+            v,
+            true
+        ));
     }
 
     #[test]

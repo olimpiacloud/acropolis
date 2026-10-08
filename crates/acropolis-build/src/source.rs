@@ -30,7 +30,14 @@ pub fn walk(root: &Path, ignore: &Ignore) -> Result<Vec<SourceEntry>> {
     Ok(out)
 }
 
-fn walk_dir(root: &Path, dir: &Path, prefix: &str, ignore: &Ignore, out: &mut Vec<SourceEntry>, inodes: &mut Inodes) -> Result<()> {
+fn walk_dir(
+    root: &Path,
+    dir: &Path,
+    prefix: &str,
+    ignore: &Ignore,
+    out: &mut Vec<SourceEntry>,
+    inodes: &mut Inodes,
+) -> Result<()> {
     let mut names: Vec<(String, std::fs::Metadata)> = Vec::new();
     for e in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let e = e?;
@@ -40,7 +47,11 @@ fn walk_dir(root: &Path, dir: &Path, prefix: &str, ignore: &Ignore, out: &mut Ve
     }
     names.sort_by(|a, b| a.0.cmp(&b.0));
     for (name, meta) in names {
-        let rel = if prefix.is_empty() { name.clone() } else { format!("{prefix}/{name}") };
+        let rel = if prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{prefix}/{name}")
+        };
         let excluded = ignore.excluded(&rel);
         let path = dir.join(&name);
         let ft = meta.file_type();
@@ -50,28 +61,52 @@ fn walk_dir(root: &Path, dir: &Path, prefix: &str, ignore: &Ignore, out: &mut Ve
             }
             let before = out.len();
             if !excluded {
-                out.push(SourceEntry { rel: rel.clone(), kind: EntryKind::Dir });
+                out.push(SourceEntry {
+                    rel: rel.clone(),
+                    kind: EntryKind::Dir,
+                });
             }
             walk_dir(root, &path, &rel, ignore, out, inodes)?;
             if excluded && out.len() > before {
-                out.insert(before, SourceEntry { rel: rel.clone(), kind: EntryKind::Dir });
+                out.insert(
+                    before,
+                    SourceEntry {
+                        rel: rel.clone(),
+                        kind: EntryKind::Dir,
+                    },
+                );
             }
         } else if excluded {
             continue;
         } else if ft.is_symlink() {
             let target = std::fs::read_link(&path)?.to_string_lossy().into_owned();
-            out.push(SourceEntry { rel, kind: EntryKind::Symlink(target) });
+            out.push(SourceEntry {
+                rel,
+                kind: EntryKind::Symlink(target),
+            });
         } else if ft.is_file() {
             if meta.nlink() > 1 {
                 if let Some(first) = inodes.get(&(meta.dev(), meta.ino())) {
                     let exec = meta.permissions().mode() & 0o111 != 0;
-                    out.push(SourceEntry { rel, kind: EntryKind::Hardlink { target: first.clone(), exec } });
+                    out.push(SourceEntry {
+                        rel,
+                        kind: EntryKind::Hardlink {
+                            target: first.clone(),
+                            exec,
+                        },
+                    });
                     continue;
                 }
                 inodes.insert((meta.dev(), meta.ino()), rel.clone());
             }
             let exec = meta.permissions().mode() & 0o111 != 0;
-            out.push(SourceEntry { rel, kind: EntryKind::File { size: meta.size(), exec } });
+            out.push(SourceEntry {
+                rel,
+                kind: EntryKind::File {
+                    size: meta.size(),
+                    exec,
+                },
+            });
         }
     }
     let _ = root;
@@ -100,14 +135,26 @@ pub fn fragments_for(root: &Path, entries: &[SourceEntry], prefix: &str, with_an
     Ok(frags)
 }
 
-pub fn stream_tree_into<W: std::io::Write>(root: &Path, entries: &[SourceEntry], prefix: &str, with_ancestors: bool, out: &mut W) -> Result<()> {
+pub fn stream_tree_into<W: std::io::Write>(
+    root: &Path,
+    entries: &[SourceEntry],
+    prefix: &str,
+    with_ancestors: bool,
+    out: &mut W,
+) -> Result<()> {
     stream_tree(root, entries, prefix, with_ancestors, &mut |b| {
         out.write_all(&b)?;
         Ok(())
     })
 }
 
-pub fn stream_tree(root: &Path, entries: &[SourceEntry], prefix: &str, with_ancestors: bool, sink: &mut dyn FnMut(Vec<u8>) -> Result<()>) -> Result<()> {
+pub fn stream_tree(
+    root: &Path,
+    entries: &[SourceEntry],
+    prefix: &str,
+    with_ancestors: bool,
+    sink: &mut dyn FnMut(Vec<u8>) -> Result<()>,
+) -> Result<()> {
     const TARGET: u64 = 2 << 20;
     let mut groups: Vec<&[SourceEntry]> = Vec::new();
     let mut start = 0;
@@ -135,39 +182,47 @@ pub fn stream_tree(root: &Path, entries: &[SourceEntry], prefix: &str, with_ance
     sink(take(head))?;
     let window = (rayon::current_num_threads() * 2).max(2);
     for win in groups.chunks(window) {
-    let bodies: Vec<Result<Vec<u8>>> = win
-        .par_iter()
-        .map(|g| {
-            let cap: u64 = g
-                .iter()
-                .map(|e| match e.kind {
-                    EntryKind::File { size, .. } => size + 1024,
-                    _ => 512,
-                })
-                .sum();
-            let mut tw = TarWriter::new(Vec::with_capacity(cap as usize));
-            for e in g.iter() {
-                let dest = if prefix.is_empty() { e.rel.clone() } else { format!("{prefix}/{}", e.rel) };
-                match &e.kind {
-                    EntryKind::Dir => tw.dir(&dest, 0o755)?,
-                    EntryKind::Symlink(t) => tw.symlink(&dest, t)?,
-                    EntryKind::Hardlink { target, exec } => {
-                        let to = if prefix.is_empty() { target.clone() } else { format!("{prefix}/{target}") };
-                        tw.hardlink_mode(&dest, &to, if *exec { 0o755 } else { 0o644 })?
-                    }
-                    EntryKind::File { size, exec } => {
-                        let mut f = std::fs::File::open(root.join(&e.rel))
-                            .with_context(|| format!("opening {}", root.join(&e.rel).display()))?;
-                        tw.file_reader(&dest, if *exec { 0o755 } else { 0o644 }, *size, &mut f)?;
+        let bodies: Vec<Result<Vec<u8>>> = win
+            .par_iter()
+            .map(|g| {
+                let cap: u64 = g
+                    .iter()
+                    .map(|e| match e.kind {
+                        EntryKind::File { size, .. } => size + 1024,
+                        _ => 512,
+                    })
+                    .sum();
+                let mut tw = TarWriter::new(Vec::with_capacity(cap as usize));
+                for e in g.iter() {
+                    let dest = if prefix.is_empty() {
+                        e.rel.clone()
+                    } else {
+                        format!("{prefix}/{}", e.rel)
+                    };
+                    match &e.kind {
+                        EntryKind::Dir => tw.dir(&dest, 0o755)?,
+                        EntryKind::Symlink(t) => tw.symlink(&dest, t)?,
+                        EntryKind::Hardlink { target, exec } => {
+                            let to = if prefix.is_empty() {
+                                target.clone()
+                            } else {
+                                format!("{prefix}/{target}")
+                            };
+                            tw.hardlink_mode(&dest, &to, if *exec { 0o755 } else { 0o644 })?
+                        }
+                        EntryKind::File { size, exec } => {
+                            let mut f = std::fs::File::open(root.join(&e.rel))
+                                .with_context(|| format!("opening {}", root.join(&e.rel).display()))?;
+                            tw.file_reader(&dest, if *exec { 0o755 } else { 0o644 }, *size, &mut f)?;
+                        }
                     }
                 }
-            }
-            Ok(take(tw))
-        })
-        .collect();
-    for b in bodies {
-        sink(b?)?;
-    }
+                Ok(take(tw))
+            })
+            .collect();
+        for b in bodies {
+            sink(b?)?;
+        }
     }
     Ok(())
 }
@@ -240,19 +295,39 @@ pub fn upper_fragments(upper: &Path, prefix: &str, include: &[String], exclude: 
     Ok(vec![buf])
 }
 
-pub fn stream_upper<W: std::io::Write>(upper: &Path, prefix: &str, include: &[String], exclude: &[String], out: &mut W) -> Result<()> {
+pub fn stream_upper<W: std::io::Write>(
+    upper: &Path,
+    prefix: &str,
+    include: &[String],
+    exclude: &[String],
+    out: &mut W,
+) -> Result<()> {
     use std::os::unix::fs::FileTypeExt;
     let mut tw = TarWriter::new(out);
     for d in ancestors(prefix) {
         tw.dir(&d, 0o755)?;
     }
-    let skip_always = ["proc", "dev", "sys", "etc/resolv.conf", "etc/hostname", "etc/hosts", "app", "tmp"];
+    let skip_always = [
+        "proc",
+        "dev",
+        "sys",
+        "etc/resolv.conf",
+        "etc/hostname",
+        "etc/hosts",
+        "app",
+        "tmp",
+    ];
     fn opaque(p: &Path) -> bool {
         use std::os::unix::ffi::OsStrExt;
         let c = std::ffi::CString::new(p.as_os_str().as_bytes()).unwrap_or_default();
         let mut buf = [0u8; 4];
         let n = unsafe {
-            libc::lgetxattr(c.as_ptr(), c"trusted.overlay.opaque".as_ptr(), buf.as_mut_ptr() as *mut libc::c_void, buf.len())
+            libc::lgetxattr(
+                c.as_ptr(),
+                c"trusted.overlay.opaque".as_ptr(),
+                buf.as_mut_ptr() as *mut libc::c_void,
+                buf.len(),
+            )
         };
         n > 0 && buf[0] == b'y'
     }
@@ -268,27 +343,47 @@ pub fn stream_upper<W: std::io::Write>(upper: &Path, prefix: &str, include: &[St
         skip: &[&str],
         inodes: &mut Inodes,
     ) -> Result<()> {
-        let mut names: Vec<_> = std::fs::read_dir(dir)?.filter_map(|e| e.ok()).map(|e| e.file_name()).collect();
+        let mut names: Vec<_> = std::fs::read_dir(dir)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name())
+            .collect();
         names.sort();
         for n in names {
             let name = n.to_string_lossy().into_owned();
-            let r = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+            let r = if rel.is_empty() {
+                name.clone()
+            } else {
+                format!("{rel}/{name}")
+            };
             if skip.contains(&r.as_str()) || exclude.iter().any(|e| r == *e || r.starts_with(&format!("{e}/"))) {
                 continue;
             }
             let inside = include.is_empty()
-                || include.iter().any(|i| r == *i || r.starts_with(&format!("{i}/")) || i.starts_with(&format!("{r}/")));
+                || include
+                    .iter()
+                    .any(|i| r == *i || r.starts_with(&format!("{i}/")) || i.starts_with(&format!("{r}/")));
             if !inside {
                 continue;
             }
             let full = dir.join(&n);
             let meta = std::fs::symlink_metadata(&full)?;
             let ft = meta.file_type();
-            let dest = if prefix.is_empty() { r.clone() } else { format!("{prefix}/{r}") };
+            let dest = if prefix.is_empty() {
+                r.clone()
+            } else {
+                format!("{prefix}/{r}")
+            };
             tw.set_owner(meta.uid(), meta.gid());
             if ft.is_char_device() && meta.rdev() == 0 {
-                let parent = Path::new(&dest).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-                let wh = if parent.is_empty() { format!(".wh.{name}") } else { format!("{parent}/.wh.{name}") };
+                let parent = Path::new(&dest)
+                    .parent()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let wh = if parent.is_empty() {
+                    format!(".wh.{name}")
+                } else {
+                    format!("{parent}/.wh.{name}")
+                };
                 tw.set_owner(0, 0);
                 tw.file_bytes(&wh, 0o644, b"")?;
             } else if ft.is_dir() {
@@ -316,7 +411,17 @@ pub fn stream_upper<W: std::io::Write>(upper: &Path, prefix: &str, include: &[St
         Ok(())
     }
     let mut inodes = Inodes::new();
-    walk_upper(upper, upper, "", &mut tw, prefix, include, exclude, &skip_always, &mut inodes)?;
+    walk_upper(
+        upper,
+        upper,
+        "",
+        &mut tw,
+        prefix,
+        include,
+        exclude,
+        &skip_always,
+        &mut inodes,
+    )?;
     tw.set_owner(0, 0);
     Ok(())
 }
@@ -343,8 +448,16 @@ mod hardlink_tests {
         while let Some(e) = tr.next_entry().unwrap() {
             kinds.push((e.path.clone(), e.kind, e.link.clone()));
         }
-        assert!(kinds.iter().any(|(p, k, _)| p == "usr/lib/dri/a.so" && *k == Kind::File));
-        assert!(kinds.iter().any(|(p, k, l)| p == "usr/lib/dri/b.so" && *k == Kind::Hardlink && l == "usr/lib/dri/a.so"));
+        assert!(
+            kinds
+                .iter()
+                .any(|(p, k, _)| p == "usr/lib/dri/a.so" && *k == Kind::File)
+        );
+        assert!(
+            kinds
+                .iter()
+                .any(|(p, k, l)| p == "usr/lib/dri/b.so" && *k == Kind::Hardlink && l == "usr/lib/dri/a.so")
+        );
         let mut tr = TarReader::new(std::io::Cursor::new(out.clone()));
         while let Some(e) = tr.next_entry().unwrap() {
             if e.kind == Kind::Hardlink {

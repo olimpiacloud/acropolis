@@ -65,7 +65,8 @@ fn plan_provider(dir: &Path, env: &Env) -> Result<Plan> {
         apply_deploy_apt(&mut plan, env)?;
         return Ok(plan);
     }
-    if (forced.as_deref() == Some("ruby") || (forced.is_none() && !dir.join("go.mod").exists() && !dir.join("Cargo.toml").exists()))
+    if (forced.as_deref() == Some("ruby")
+        || (forced.is_none() && !dir.join("go.mod").exists() && !dir.join("Cargo.toml").exists()))
         && providers::ruby::is_ruby(dir)
     {
         let mut plan = providers::ruby::plan(dir, env, &name)?;
@@ -85,7 +86,10 @@ fn plan_provider(dir: &Path, env: &Env) -> Result<Plan> {
         apply_runtime_packages(&mut plan, env)?;
         return Ok(plan);
     }
-    if forced.as_deref().map(|f| !matches!(f, "node" | "go" | "rust" | "python" | "ruby" | "shell")).unwrap_or(!detect::has_package_json(dir))
+    if forced
+        .as_deref()
+        .map(|f| !matches!(f, "node" | "go" | "rust" | "python" | "ruby" | "shell"))
+        .unwrap_or(!detect::has_package_json(dir))
         && let Some(spec) = providers::images::detect(dir, env)
     {
         let mut plan = providers::images::plan(dir, env, &name, spec?)?;
@@ -133,7 +137,9 @@ fn apply_mise_extras(plan: &mut Plan, dir: &Path, env: &Env) {
         Some(plan::Action::ResolveNodeBase { .. }) => "node:".to_string(),
         _ => return,
     };
-    if !providers::node::is_slim_runtime(plan) && (base.contains("distroless") || base.contains("alpine") || base.starts_with("caddy")) {
+    if !providers::node::is_slim_runtime(plan)
+        && (base.contains("distroless") || base.contains("alpine") || base.starts_with("caddy"))
+    {
         return;
     }
     let mut extra_path: Vec<&str> = Vec::new();
@@ -142,7 +148,12 @@ fn apply_mise_extras(plan: &mut Plan, dir: &Path, env: &Env) {
         let spec = detect::tool_version(dir, tool)
             .map(|v| v.spec)
             .or_else(|| plan.facts.get(&format!("extra-{tool}")).cloned())
-            .or_else(|| env.vars.get(&format!("ACROPOLIS_{}_VERSION", tool.to_ascii_uppercase())).filter(|_| plan.provider != tool).cloned());
+            .or_else(|| {
+                env.vars
+                    .get(&format!("ACROPOLIS_{}_VERSION", tool.to_ascii_uppercase()))
+                    .filter(|_| plan.provider != tool)
+                    .cloned()
+            });
         let Some(spec) = spec else { continue };
         let provided = match tool {
             "node" => base.starts_with("node:") || layers_tool(plan, "node"),
@@ -165,38 +176,73 @@ fn apply_mise_extras(plan: &mut Plan, dir: &Path, env: &Env) {
         }
         let spec = if spec == "latest" { String::new() } else { spec };
         let toolchain = if tool == "python" { "python-standalone" } else { tool };
-        let existing = plan.steps.iter().find(|s| matches!(&s.action, plan::Action::Toolchain { tool: t, .. } if t == toolchain)).map(|s| s.id.clone());
+        let existing = plan
+            .steps
+            .iter()
+            .find(|s| matches!(&s.action, plan::Action::Toolchain { tool: t, .. } if t == toolchain))
+            .map(|s| s.id.clone());
         let tool_step = match existing {
             Some(id) => id,
             None => {
                 let id = format!("mise-{tool}");
-                plan.steps.insert(0, plan::Step {
-                    id: id.clone(),
-                    name: format!("{tool} {} (mise)", if spec.is_empty() { "latest" } else { &spec }),
-                    action: plan::Action::Toolchain { tool: toolchain.into(), spec: spec.clone(), parts: vec![] },
-                    deps: vec![],
-                    hash: String::new(),
-                });
+                plan.steps.insert(
+                    0,
+                    plan::Step {
+                        id: id.clone(),
+                        name: format!("{tool} {} (mise)", if spec.is_empty() { "latest" } else { &spec }),
+                        action: plan::Action::Toolchain {
+                            tool: toolchain.into(),
+                            spec: spec.clone(),
+                            parts: vec![],
+                        },
+                        deps: vec![],
+                        hash: String::new(),
+                    },
+                );
                 id
             }
         };
         let (dest, from) = match tool {
-            "bun" => ("usr/local/bin", plan::LayerFrom::Tool { tool: "bun".into(), files: vec![("bin/bun".into(), "bun".into())] }),
+            "bun" => (
+                "usr/local/bin",
+                plan::LayerFrom::Tool {
+                    tool: "bun".into(),
+                    files: vec![("bin/bun".into(), "bun".into())],
+                },
+            ),
             "go" => {
                 extra_path.push("/usr/local/go/bin");
                 ("usr/local/go", plan::LayerFrom::ToolTree { tool: "go".into() })
             }
             "python" => {
                 extra_path.push("/opt/python/bin");
-                ("opt/python", plan::LayerFrom::ToolTree { tool: "python-standalone".into() })
+                (
+                    "opt/python",
+                    plan::LayerFrom::ToolTree {
+                        tool: "python-standalone".into(),
+                    },
+                )
             }
             _ => ("usr/local", plan::LayerFrom::ToolTree { tool: "node".into() }),
         };
         let layer_id = format!("layer-mise-{tool}");
-        let push_idx = plan.steps.iter().position(|s| s.id == "push").unwrap_or(plan.steps.len());
+        let push_idx = plan
+            .steps
+            .iter()
+            .position(|s| s.id == "push")
+            .unwrap_or(plan.steps.len());
         plan.steps.insert(
             push_idx,
-            plan::Step { id: layer_id.clone(), name: format!("layer {tool} (mise)"), action: plan::Action::Layer { dest: dest.into(), from }, deps: vec![tool_step], hash: String::new() },
+            plan::Step {
+                id: layer_id.clone(),
+                name: format!("layer {tool} (mise)"),
+                action: plan::Action::Layer {
+                    dest: dest.into(),
+                    from,
+                },
+                deps: vec![tool_step],
+                hash: String::new(),
+            },
         );
         if let Some(push) = plan.steps.iter_mut().find(|s| s.id == "push") {
             push.deps.push(layer_id.clone());
@@ -211,7 +257,10 @@ fn apply_mise_extras(plan: &mut Plan, dir: &Path, env: &Env) {
         let default = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string();
         match plan.image.env.iter_mut().find(|(k, _)| k == "PATH") {
             Some((_, v)) => *v = format!("{v}:{}", extra_path.join(":")),
-            None => plan.image.env.push(("PATH".into(), format!("{default}:{}", extra_path.join(":")))),
+            None => plan
+                .image
+                .env
+                .push(("PATH".into(), format!("{default}:{}", extra_path.join(":")))),
         }
     }
     plan.facts.insert("mise-extras".into(), added.join(" "));
@@ -222,10 +271,17 @@ fn apply_runtime_packages(plan: &mut Plan, env: &Env) -> Result<()> {
     if plan.facts.contains_key("runtime-packages") || env.config("DEPLOY_APT_PACKAGES").is_some() {
         providers::node::demote_distroless(plan);
     }
-    let Some(pkgs) = plan.facts.get("runtime-packages").cloned() else { return apply_deploy_apt(plan, env) };
+    let Some(pkgs) = plan.facts.get("runtime-packages").cloned() else {
+        return apply_deploy_apt(plan, env);
+    };
     let mut env2 = env.clone();
     let cur = env2.config("DEPLOY_APT_PACKAGES").map(|(v, _)| v).unwrap_or_default();
-    let mut all: Vec<String> = cur.split([' ', ',']).chain(pkgs.split(' ')).filter(|p| !p.is_empty() && *p != "...").map(|p| p.to_string()).collect();
+    let mut all: Vec<String> = cur
+        .split([' ', ','])
+        .chain(pkgs.split(' '))
+        .filter(|p| !p.is_empty() && *p != "...")
+        .map(|p| p.to_string())
+        .collect();
     all.dedup();
     let mut seen = std::collections::BTreeSet::new();
     all.retain(|p| seen.insert(p.clone()));
@@ -234,8 +290,14 @@ fn apply_runtime_packages(plan: &mut Plan, env: &Env) -> Result<()> {
 }
 
 pub fn apply_deploy_apt(plan: &mut Plan, env: &Env) -> Result<()> {
-    let Some((pkgs, _)) = env.config("DEPLOY_APT_PACKAGES") else { return Ok(()) };
-    let pkgs: Vec<String> = pkgs.split([' ', ',']).filter(|p| !p.is_empty()).map(|s| s.to_string()).collect();
+    let Some((pkgs, _)) = env.config("DEPLOY_APT_PACKAGES") else {
+        return Ok(());
+    };
+    let pkgs: Vec<String> = pkgs
+        .split([' ', ','])
+        .filter(|p| !p.is_empty())
+        .map(|s| s.to_string())
+        .collect();
     if pkgs.is_empty() {
         return Ok(());
     }
@@ -252,12 +314,25 @@ pub fn apply_deploy_apt(plan: &mut Plan, env: &Env) -> Result<()> {
         providers::ruby::APT_ARCHIVE_FIX,
         pkgs.join(" ")
     );
-    let push_idx = plan.steps.iter().position(|s| s.id == "push").unwrap_or(plan.steps.len());
+    let push_idx = plan
+        .steps
+        .iter()
+        .position(|s| s.id == "push")
+        .unwrap_or(plan.steps.len());
     let apt = plan::Step {
         id: "apt".into(),
         name: format!("apt-get install {}", pkgs.join(" ")),
         deps: if image == "@base" { vec!["base".into()] } else { vec![] },
-        action: plan::Action::ImageRun { image, commands: vec![cmd], env: Default::default(), network: true, mount_app: false, after: None, tools: vec![], lowers: vec![] },
+        action: plan::Action::ImageRun {
+            image,
+            commands: vec![cmd],
+            env: Default::default(),
+            network: true,
+            mount_app: false,
+            after: None,
+            tools: vec![],
+            lowers: vec![],
+        },
         hash: String::new(),
     };
     let layer = plan::Step {
@@ -265,7 +340,11 @@ pub fn apply_deploy_apt(plan: &mut Plan, env: &Env) -> Result<()> {
         name: "layer apt packages".into(),
         action: plan::Action::Layer {
             dest: String::new(),
-            from: plan::LayerFrom::Upper { step: "apt".into(), include: vec![], exclude: vec!["var/cache".into(), "var/log".into(), "root".into()] },
+            from: plan::LayerFrom::Upper {
+                step: "apt".into(),
+                include: vec![],
+                exclude: vec!["var/cache".into(), "var/log".into(), "root".into()],
+            },
         },
         deps: vec!["apt".into()],
         hash: String::new(),
@@ -289,7 +368,10 @@ pub async fn build(opts: BuildOptions, exec: Arc<dyn acropolis_exec::Executor>) 
     }
     if let Some(c) = &plan.context {
         opts.app_dir = std::fs::canonicalize(opts.app_dir.join(c))?;
-        acropolis_events::log("plan", format!("workspace member: building from {}", opts.app_dir.display()));
+        acropolis_events::log(
+            "plan",
+            format!("workspace member: building from {}", opts.app_dir.display()),
+        );
     }
     acropolis_events::emit(acropolis_events::Event::BuildStarted { app: plan.app.clone() });
     let res = run::execute(plan.clone(), opts, exec).await?;

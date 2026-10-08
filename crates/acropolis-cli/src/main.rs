@@ -10,13 +10,23 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Parser)]
-#[command(name = "acropolis", version, about = "Acropolis: fast, daemonless, reproducible app builder")]
+#[command(
+    name = "acropolis",
+    version,
+    about = "Acropolis: fast, daemonless, reproducible app builder"
+)]
 struct Cli {
     #[arg(long, global = true, default_value = "human", value_parser = ["human", "json", "quiet"])]
     events: String,
     #[arg(long, global = true, env = "ACROPOLIS_HOME")]
     home: Option<PathBuf>,
-    #[arg(long = "mirror", global = true, value_name = "REGISTRY=MIRROR", env = "ACROPOLIS_MIRRORS", value_delimiter = ',')]
+    #[arg(
+        long = "mirror",
+        global = true,
+        value_name = "REGISTRY=MIRROR",
+        env = "ACROPOLIS_MIRRORS",
+        value_delimiter = ','
+    )]
     mirrors: Vec<String>,
     #[command(subcommand)]
     cmd: Command,
@@ -71,7 +81,11 @@ enum Command {
         key: String,
     },
     Prewarm {
-        #[arg(long, value_delimiter = ',', default_value = "node:lts,node:22,node:24,go:latest,bun:latest,uv:latest")]
+        #[arg(
+            long,
+            value_delimiter = ',',
+            default_value = "node:lts,node:22,node:24,go:latest,bun:latest,uv:latest"
+        )]
         tools: Vec<String>,
     },
     Bench {
@@ -129,7 +143,11 @@ enum Command {
     },
 }
 
-fn build_info(plan: Option<&acropolis_build::Plan>, res: Option<&acropolis_build::BuildResult>, err: Option<&anyhow::Error>) -> serde_json::Value {
+fn build_info(
+    plan: Option<&acropolis_build::Plan>,
+    res: Option<&acropolis_build::BuildResult>,
+    err: Option<&anyhow::Error>,
+) -> serde_json::Value {
     let mut packages = serde_json::Map::new();
     let mut requested: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
     if let Some(p) = plan {
@@ -177,7 +195,9 @@ fn build_info(plan: Option<&acropolis_build::Plan>, res: Option<&acropolis_build
 fn parse_env(pairs: &[String]) -> Result<Env> {
     let mut env = Env::default();
     for p in pairs {
-        let (k, v) = p.split_once('=').with_context(|| format!("invalid env {p:?}, expected KEY=VALUE"))?;
+        let (k, v) = p
+            .split_once('=')
+            .with_context(|| format!("invalid env {p:?}, expected KEY=VALUE"))?;
         env.vars.insert(k.to_string(), v.to_string());
     }
     Ok(env)
@@ -198,15 +218,42 @@ fn default_home() -> PathBuf {
     if let Ok(x) = std::env::var("XDG_CACHE_HOME") {
         return PathBuf::from(x).join("acropolis");
     }
-    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())).join(".cache").join("acropolis")
+    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()))
+        .join(".cache")
+        .join("acropolis")
 }
 
 fn main() {
     let cli = Cli::parse();
-    if let Command::Bench { apps, tools, runs, cpus, memory, mirror, out, repo, railpack, railpack_frontend, compression, no_drop_caches, scenario, cache, fresh, apps_file } = &cli.cmd {
+    if let Command::Bench {
+        apps,
+        tools,
+        runs,
+        cpus,
+        memory,
+        mirror,
+        out,
+        repo,
+        railpack,
+        railpack_frontend,
+        compression,
+        no_drop_caches,
+        scenario,
+        cache,
+        fresh,
+        apps_file,
+    } = &cli.cmd
+    {
         let repo = std::fs::canonicalize(repo).expect("repo path");
-        let cache = Some(cache.clone().unwrap_or_else(|| repo.join("bench/results/competitors.jsonl")));
-        let out = out.clone().unwrap_or_else(|| repo.join("bench/results").join(format!("run-{}.jsonl", std::process::id())));
+        let cache = Some(
+            cache
+                .clone()
+                .unwrap_or_else(|| repo.join("bench/results/competitors.jsonl")),
+        );
+        let out = out.clone().unwrap_or_else(|| {
+            repo.join("bench/results")
+                .join(format!("run-{}.jsonl", std::process::id()))
+        });
         let cfg = bench::BenchConfig {
             repo,
             apps: apps.clone(),
@@ -238,7 +285,16 @@ fn main() {
             }
         }
     }
-    if let Command::E2e { examples, filter, jobs, registry, out, isolated, failed_from } = &cli.cmd {
+    if let Command::E2e {
+        examples,
+        filter,
+        jobs,
+        registry,
+        out,
+        isolated,
+        failed_from,
+    } = &cli.cmd
+    {
         let only = match failed_from {
             Some(p) => match e2e::failed_cases(p) {
                 Ok(set) => Some(set),
@@ -249,8 +305,13 @@ fn main() {
             },
             None => None,
         };
-        let out = out.clone().unwrap_or_else(|| PathBuf::from(format!("e2e-{}.jsonl", std::process::id())));
-        let home = cli.home.clone().unwrap_or_else(|| std::env::temp_dir().join("acropolis-e2e-home"));
+        let out = out
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(format!("e2e-{}.jsonl", std::process::id())));
+        let home = cli
+            .home
+            .clone()
+            .unwrap_or_else(|| std::env::temp_dir().join("acropolis-e2e-home"));
         let cfg = e2e::E2eConfig {
             examples: std::fs::canonicalize(examples).expect("examples dir"),
             filter: filter.clone(),
@@ -266,7 +327,11 @@ fn main() {
             Ok(results) => {
                 println!("{}", e2e::summary(&results));
                 eprintln!("results: {}", out.display());
-                std::process::exit(if results.iter().any(|r| r.status == "fail") { 1 } else { 0 });
+                std::process::exit(if results.iter().any(|r| r.status == "fail") {
+                    1
+                } else {
+                    0
+                });
             }
             Err(e) => {
                 eprintln!("error: {e:#}");
@@ -304,7 +369,10 @@ fn main() {
         "quiet" => acropolis_events::Mode::Quiet,
         _ => acropolis_events::Mode::Human,
     });
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime");
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
     let code = match rt.block_on(run(cli)) {
         Ok(()) => 0,
         Err(e) => {
@@ -339,25 +407,45 @@ async fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
-        Command::Build { dir, tag, env, compression, level, hermetic, keep_work, concurrency, config, oci, info } => {
+        Command::Build {
+            dir,
+            tag,
+            env,
+            compression,
+            level,
+            hermetic,
+            keep_work,
+            concurrency,
+            config,
+            oci,
+            info,
+        } => {
             let mut env = parse_env(&env)?.with_operator(std::env::vars());
             if let Some(c) = config {
                 env.vars.insert("ACROPOLIS_CONFIG_FILE".into(), c);
             }
-            let compression = Compression::parse(&compression).with_context(|| format!("unknown compression {compression}"))?;
+            let compression =
+                Compression::parse(&compression).with_context(|| format!("unknown compression {compression}"))?;
             let target = tag.as_deref().map(Reference::parse).transpose()?;
             let abs_home = std::path::absolute(&home)?;
             let readonly = vec![
                 abs_home.join("store"),
                 abs_home.join("toolchains"),
-                std::env::var_os("ACROPOLIS_ROOTFS").map(PathBuf::from).unwrap_or_else(|| abs_home.join("rootfs")),
+                std::env::var_os("ACROPOLIS_ROOTFS")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| abs_home.join("rootfs")),
             ];
             let exec: Arc<dyn Executor> = if hermetic == "off" {
-                Arc::new(HostExecutor { isolation: Isolation::None, readonly: Vec::new() })
+                Arc::new(HostExecutor {
+                    isolation: Isolation::None,
+                    readonly: Vec::new(),
+                })
             } else {
                 let e = HostExecutor::detect();
                 if e.isolation == Isolation::None {
-                    bail!("cannot create network namespaces for hermetic build steps; rerun with --hermetic=off to build without isolation");
+                    bail!(
+                        "cannot create network namespaces for hermetic build steps; rerun with --hermetic=off to build without isolation"
+                    );
                 }
                 Arc::new(e.with_readonly(readonly))
             };
@@ -366,7 +454,11 @@ async fn run(cli: Cli) -> Result<()> {
                 home,
                 target,
                 env: env.clone(),
-                layer: LayerOptions { compression, level, threads: 0 },
+                layer: LayerOptions {
+                    compression,
+                    level,
+                    threads: 0,
+                },
                 mirrors,
                 concurrency,
                 keep_work,
@@ -376,7 +468,14 @@ async fn run(cli: Cli) -> Result<()> {
             let built = acropolis_build::build(opts, exec).await;
             if let Some(path) = &info {
                 let plan = acropolis_build::plan_app(&std::fs::canonicalize(&dir)?, &env).ok();
-                std::fs::write(path, serde_json::to_vec_pretty(&build_info(plan.as_ref(), built.as_ref().ok().map(|(_, r)| r), built.as_ref().err()))?)?;
+                std::fs::write(
+                    path,
+                    serde_json::to_vec_pretty(&build_info(
+                        plan.as_ref(),
+                        built.as_ref().ok().map(|(_, r)| r),
+                        built.as_ref().err(),
+                    ))?,
+                )?;
             }
             let (_plan, res) = built?;
             acropolis_events::emit(acropolis_events::Event::Stats(acropolis_events::stats()));
@@ -398,13 +497,25 @@ async fn run(cli: Cli) -> Result<()> {
             let mut b = acropolis_build::plan::PlanBuilder::new("prewarm", "prewarm");
             for (i, t) in tools.iter().enumerate() {
                 let (tool, spec) = t.split_once(':').unwrap_or((t.as_str(), "latest"));
-                let spec = if spec == "latest" && tool != "node" { String::new() } else { spec.to_string() };
-                let parts = if tool == "node" { vec!["npm".to_string(), "headers".to_string()] } else { vec![] };
+                let spec = if spec == "latest" && tool != "node" {
+                    String::new()
+                } else {
+                    spec.to_string()
+                };
+                let parts = if tool == "node" {
+                    vec!["npm".to_string(), "headers".to_string()]
+                } else {
+                    vec![]
+                };
                 let tool = if tool == "python" { "python-standalone" } else { tool };
                 b.step(
                     &format!("tool-{i}"),
                     format!("{tool} {}", if spec.is_empty() { "latest" } else { &spec }),
-                    acropolis_build::plan::Action::Toolchain { tool: tool.to_string(), spec, parts },
+                    acropolis_build::plan::Action::Toolchain {
+                        tool: tool.to_string(),
+                        spec,
+                        parts,
+                    },
                     &[],
                 );
             }
@@ -418,14 +529,21 @@ async fn run(cli: Cli) -> Result<()> {
                 home: home.clone(),
                 target: None,
                 env,
-                layer: LayerOptions { compression: Compression::Zstd, level: 0, threads: 0 },
+                layer: LayerOptions {
+                    compression: Compression::Zstd,
+                    level: 0,
+                    threads: 0,
+                },
                 mirrors,
                 concurrency: 64,
                 keep_work: false,
                 platform: acropolis_oci::image::host_platform(),
                 oci_out: None,
             };
-            let exec: Arc<dyn Executor> = Arc::new(HostExecutor { isolation: Isolation::None, readonly: Vec::new() });
+            let exec: Arc<dyn Executor> = Arc::new(HostExecutor {
+                isolation: Isolation::None,
+                readonly: Vec::new(),
+            });
             let res = acropolis_build::run::execute(plan, opts, exec).await;
             let _ = std::fs::remove_dir_all(&scratch);
             res?;
@@ -435,23 +553,39 @@ async fn run(cli: Cli) -> Result<()> {
             let started = std::time::Instant::now();
             if action == "export" {
                 let n = acropolis_build::cache::export(&home, &key, &file)?;
-                println!("cache {key}: exported {:.1} MB to {} in {:.1}s", n as f64 / 1e6, file.display(), started.elapsed().as_secs_f64());
+                println!(
+                    "cache {key}: exported {:.1} MB to {} in {:.1}s",
+                    n as f64 / 1e6,
+                    file.display(),
+                    started.elapsed().as_secs_f64()
+                );
             } else {
                 let n = acropolis_build::cache::import(&home, &key, &file)?;
-                println!("cache {key}: imported {:.1} MB from {} in {:.1}s", n as f64 / 1e6, file.display(), started.elapsed().as_secs_f64());
+                println!(
+                    "cache {key}: imported {:.1} MB from {} in {:.1}s",
+                    n as f64 / 1e6,
+                    file.display(),
+                    started.elapsed().as_secs_f64()
+                );
             }
             Ok(())
         }
         Command::Gc { max_size } => {
             let max = acropolis_build::gc::parse_size(&max_size).with_context(|| format!("invalid size {max_size}"))?;
-            let rootfs = std::env::var_os("ACROPOLIS_ROOTFS").map(PathBuf::from).unwrap_or_else(|| home.join("rootfs"));
+            let rootfs = std::env::var_os("ACROPOLIS_ROOTFS")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join("rootfs"));
             let r = acropolis_build::gc::collect(&home, &rootfs, max)?;
             println!(
                 "gc: {:.2} GB -> {:.2} GB, {} entries removed{}",
                 r.before as f64 / 1e9,
                 r.after as f64 / 1e9,
                 r.removed,
-                if r.exclusive { "" } else { " (builds running: only entries idle for over 1h)" }
+                if r.exclusive {
+                    ""
+                } else {
+                    " (builds running: only entries idle for over 1h)"
+                }
             );
             Ok(())
         }

@@ -35,7 +35,12 @@ pub fn plan_static(dir: &Path, env: &Env, name: &str, root: &str, fallback: bool
     let mut b = PlanBuilder::new(name, "staticfile");
     b.fact("root", root.to_string());
     let image = super::node::CADDY_IMAGE;
-    b.step("base", format!("resolve {image}"), Action::ResolveBase { image: image.into() }, &[]);
+    b.step(
+        "base",
+        format!("resolve {image}"),
+        Action::ResolveBase { image: image.into() },
+        &[],
+    );
     b.step("copy-base", "copy base layers", Action::CopyBase, &["base"]);
     let mut files = BTreeMap::new();
     let custom = dir.join("Caddyfile");
@@ -46,17 +51,45 @@ pub fn plan_static(dir: &Path, env: &Env, name: &str, root: &str, fallback: bool
     };
     let _ = env;
     files.insert("Caddyfile".to_string(), caddyfile);
-    b.step("layer-caddy", "layer Caddyfile", Action::Layer { dest: "".into(), from: LayerFrom::Inline { files } }, &[]);
+    b.step(
+        "layer-caddy",
+        "layer Caddyfile",
+        Action::Layer {
+            dest: "".into(),
+            from: LayerFrom::Inline { files },
+        },
+        &[],
+    );
     let exclude = vec!["Staticfile".to_string(), "Caddyfile".to_string()];
     let from = if root == "." || root.is_empty() {
         LayerFrom::AppSource { exclude }
     } else {
-        LayerFrom::AppSubdir { path: root.trim_start_matches("./").to_string(), exclude }
+        LayerFrom::AppSubdir {
+            path: root.trim_start_matches("./").to_string(),
+            exclude,
+        }
     };
-    b.step("layer-site", format!("layer {root}"), Action::Layer { dest: "app/dist".into(), from }, &[]);
-    b.step("push", "push image", Action::Push, &["base", "copy-base", "layer-caddy", "layer-site"]);
+    b.step(
+        "layer-site",
+        format!("layer {root}"),
+        Action::Layer {
+            dest: "app/dist".into(),
+            from,
+        },
+        &[],
+    );
+    b.step(
+        "push",
+        "push image",
+        Action::Push,
+        &["base", "copy-base", "layer-caddy", "layer-site"],
+    );
     b.plan.image.layers = vec!["layer-caddy".into(), "layer-site".into()];
-    b.plan.image.cmd = Some(vec!["/bin/sh".into(), "-c".into(), "exec caddy run --config /Caddyfile --adapter caddyfile 2>&1".into()]);
+    b.plan.image.cmd = Some(vec![
+        "/bin/sh".into(),
+        "-c".into(),
+        "exec caddy run --config /Caddyfile --adapter caddyfile 2>&1".into(),
+    ]);
     b.plan.image.entrypoint = Some(vec![]);
     b.plan.image.workdir = Some("/app".into());
     b.plan.image.ports = vec![80];
@@ -67,7 +100,10 @@ pub fn shell_script(dir: &Path, env: &Env) -> Option<String> {
     if let Some((s, _)) = env.config("SHELL_SCRIPT") {
         return Some(s);
     }
-    ["start.sh"].iter().find(|f| dir.join(f).exists()).map(|s| s.to_string())
+    ["start.sh"]
+        .iter()
+        .find(|f| dir.join(f).exists())
+        .map(|s| s.to_string())
 }
 
 pub fn plan_shell(dir: &Path, env: &Env, name: &str, script: &str) -> Result<Plan> {
@@ -86,19 +122,44 @@ pub fn plan_shell(dir: &Path, env: &Env, name: &str, script: &str) -> Result<Pla
         b.fact("runtime-packages", "zsh");
     }
     let base = "debian:bookworm-slim";
-    b.step("base", format!("resolve {base}"), Action::ResolveBase { image: base.into() }, &[]);
+    b.step(
+        "base",
+        format!("resolve {base}"),
+        Action::ResolveBase { image: base.into() },
+        &[],
+    );
     b.step("copy-base", "copy base layers", Action::CopyBase, &["base"]);
-    let commands: Vec<String> = ["INSTALL_CMD", "BUILD_CMD"].iter().filter_map(|k| env.config(k).map(|(v, _)| v)).collect();
+    let commands: Vec<String> = ["INSTALL_CMD", "BUILD_CMD"]
+        .iter()
+        .filter_map(|k| env.config(k).map(|(v, _)| v))
+        .collect();
     let mut layers = Vec::new();
     let mut push_deps = vec!["base", "copy-base"];
     if commands.is_empty() {
-        b.step("layer-app", "layer app source", Action::Layer { dest: "app".into(), from: LayerFrom::AppSource { exclude: vec![] } }, &[]);
+        b.step(
+            "layer-app",
+            "layer app source",
+            Action::Layer {
+                dest: "app".into(),
+                from: LayerFrom::AppSource { exclude: vec![] },
+            },
+            &[],
+        );
     } else {
         b.step("source", "copy source", Action::CopySource { exclude: vec![] }, &[]);
         b.step(
             "build",
             format!("run {}", commands.join(" && ")),
-            Action::ImageRun { image: base.into(), commands, env: BTreeMap::new(), network: false, mount_app: true, after: None, tools: vec![], lowers: vec![] },
+            Action::ImageRun {
+                image: base.into(),
+                commands,
+                env: BTreeMap::new(),
+                network: false,
+                mount_app: true,
+                after: None,
+                tools: vec![],
+                lowers: vec![],
+            },
             &["source"],
         );
         b.step(
@@ -106,11 +167,26 @@ pub fn plan_shell(dir: &Path, env: &Env, name: &str, script: &str) -> Result<Pla
             "layer system changes",
             Action::Layer {
                 dest: "".into(),
-                from: LayerFrom::Upper { step: "build".into(), include: vec![], exclude: vec!["var/cache".into(), "var/log".into(), "root".into()] },
+                from: LayerFrom::Upper {
+                    step: "build".into(),
+                    include: vec![],
+                    exclude: vec!["var/cache".into(), "var/log".into(), "root".into()],
+                },
             },
             &["build"],
         );
-        b.step("layer-app", "layer app", Action::Layer { dest: "app".into(), from: LayerFrom::WorkDir { path: ".".into(), exclude: vec![] } }, &["build"]);
+        b.step(
+            "layer-app",
+            "layer app",
+            Action::Layer {
+                dest: "app".into(),
+                from: LayerFrom::WorkDir {
+                    path: ".".into(),
+                    exclude: vec![],
+                },
+            },
+            &["build"],
+        );
         layers.push("layer-system".to_string());
         push_deps.push("layer-system");
     }

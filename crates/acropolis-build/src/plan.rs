@@ -5,11 +5,23 @@ use std::collections::BTreeMap;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Action {
-    ResolveBase { image: String },
-    ResolveNodeBase { spec: String, variant: String },
-    ResolveBaseLatest { template: String, github: String },
+    ResolveBase {
+        image: String,
+    },
+    ResolveNodeBase {
+        spec: String,
+        variant: String,
+    },
+    ResolveBaseLatest {
+        template: String,
+        github: String,
+    },
     CopyBase,
-    Toolchain { tool: String, spec: String, parts: Vec<String> },
+    Toolchain {
+        tool: String,
+        spec: String,
+        parts: Vec<String>,
+    },
     NpmFetch {
         #[serde(default = "default_manager")]
         manager: String,
@@ -34,11 +46,26 @@ pub enum Action {
         #[serde(default, skip_serializing_if = "String::is_empty")]
         patches: String,
     },
-    GoModules { gosum_sha256: String },
-    CargoVendor { lockfile_sha256: String },
-    BundleSpa { manager: String, lockfile: String, out: String },
-    CopySource { exclude: Vec<String> },
-    Run { argv: Vec<String>, env: BTreeMap<String, String>, network: bool, cwd: String },
+    GoModules {
+        gosum_sha256: String,
+    },
+    CargoVendor {
+        lockfile_sha256: String,
+    },
+    BundleSpa {
+        manager: String,
+        lockfile: String,
+        out: String,
+    },
+    CopySource {
+        exclude: Vec<String>,
+    },
+    Run {
+        argv: Vec<String>,
+        env: BTreeMap<String, String>,
+        network: bool,
+        cwd: String,
+    },
     ImageRun {
         image: String,
         commands: Vec<String>,
@@ -53,24 +80,56 @@ pub enum Action {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         lowers: Vec<String>,
     },
-    Layer { dest: String, from: LayerFrom },
+    Layer {
+        dest: String,
+        from: LayerFrom,
+    },
     Push,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum LayerFrom {
-    AppSource { exclude: Vec<String> },
-    AppSubdir { path: String, exclude: Vec<String> },
-    NodeModules { dev: bool },
-    WorkDir { path: String, exclude: Vec<String> },
-    WorkFile { path: String, mode: u32 },
-    Paths { items: Vec<(String, String)> },
-    Tool { tool: String, files: Vec<(String, String)> },
-    ToolTree { tool: String },
-    Upper { step: String, include: Vec<String>, exclude: Vec<String> },
-    Inline { files: BTreeMap<String, String> },
-    Image { image: String, include: Vec<String> },
+    AppSource {
+        exclude: Vec<String>,
+    },
+    AppSubdir {
+        path: String,
+        exclude: Vec<String>,
+    },
+    NodeModules {
+        dev: bool,
+    },
+    WorkDir {
+        path: String,
+        exclude: Vec<String>,
+    },
+    WorkFile {
+        path: String,
+        mode: u32,
+    },
+    Paths {
+        items: Vec<(String, String)>,
+    },
+    Tool {
+        tool: String,
+        files: Vec<(String, String)>,
+    },
+    ToolTree {
+        tool: String,
+    },
+    Upper {
+        step: String,
+        include: Vec<String>,
+        exclude: Vec<String>,
+    },
+    Inline {
+        files: BTreeMap<String, String>,
+    },
+    Image {
+        image: String,
+        include: Vec<String>,
+    },
     NodeShim,
 }
 
@@ -85,9 +144,13 @@ fn default_manager() -> String {
 impl Action {
     pub fn class(&self) -> &'static str {
         match self {
-            Action::ResolveBase { .. } | Action::ResolveNodeBase { .. } | Action::ResolveBaseLatest { .. } | Action::Toolchain { .. } | Action::NpmFetch { .. } | Action::GoModules { .. } | Action::CargoVendor { .. } => {
-                "fetch"
-            }
+            Action::ResolveBase { .. }
+            | Action::ResolveNodeBase { .. }
+            | Action::ResolveBaseLatest { .. }
+            | Action::Toolchain { .. }
+            | Action::NpmFetch { .. }
+            | Action::GoModules { .. }
+            | Action::CargoVendor { .. } => "fetch",
             Action::Run { network: true, .. } => "build+net",
             Action::ImageRun { network: true, .. } => "image+net",
             Action::ImageRun { .. } => "image",
@@ -139,8 +202,10 @@ fn canonical(v: &Value) -> String {
         Value::Object(m) => {
             let mut keys: Vec<&String> = m.keys().collect();
             keys.sort();
-            let parts: Vec<String> =
-                keys.iter().map(|k| format!("{}:{}", serde_json::to_string(k).unwrap(), canonical(&m[*k]))).collect();
+            let parts: Vec<String> = keys
+                .iter()
+                .map(|k| format!("{}:{}", serde_json::to_string(k).unwrap(), canonical(&m[*k])))
+                .collect();
             format!("{{{}}}", parts.join(","))
         }
         Value::Array(a) => format!("[{}]", a.iter().map(canonical).collect::<Vec<_>>().join(",")),
@@ -156,7 +221,11 @@ impl Plan {
     pub fn finalize(&mut self) {
         let mut hashes: BTreeMap<String, String> = BTreeMap::new();
         for s in self.steps.iter_mut() {
-            let deps: Vec<String> = s.deps.iter().map(|d| hashes.get(d).cloned().unwrap_or_default()).collect();
+            let deps: Vec<String> = s
+                .deps
+                .iter()
+                .map(|d| hashes.get(d).cloned().unwrap_or_default())
+                .collect();
             let v = serde_json::json!({ "action": serde_json::to_value(&s.action).unwrap(), "deps": deps });
             s.hash = hash_value(&v);
             hashes.insert(s.id.clone(), s.hash.clone());
@@ -174,13 +243,22 @@ impl Plan {
 
     pub fn render(&self) -> String {
         let mut out = String::new();
-        out.push_str(&format!("plan {} for {} ({})\n", &self.hash[..12], self.app, self.provider));
+        out.push_str(&format!(
+            "plan {} for {} ({})\n",
+            &self.hash[..12],
+            self.app,
+            self.provider
+        ));
         for (k, v) in &self.facts {
             out.push_str(&format!("  {k:<16} {v}\n"));
         }
         out.push_str("\nsteps:\n");
         for s in &self.steps {
-            let deps = if s.deps.is_empty() { String::new() } else { format!("  <- {}", s.deps.join(", ")) };
+            let deps = if s.deps.is_empty() {
+                String::new()
+            } else {
+                format!("  <- {}", s.deps.join(", "))
+            };
             out.push_str(&format!(
                 "  {:<14} [{:<9}] {}  #{}{}\n",
                 s.id,

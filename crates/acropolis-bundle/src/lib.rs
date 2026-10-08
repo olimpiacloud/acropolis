@@ -2,11 +2,11 @@ use acropolis_fetch::Fetcher;
 use acropolis_npm::{InstallPackage, InstallPlan};
 use anyhow::{Context, Result, anyhow, bail};
 use rolldown::plugin::{
-    HookLoadArgs, HookLoadOutput, HookLoadReturn, HookResolveIdArgs, HookResolveIdOutput, HookResolveIdReturn, HookUsage,
-    Plugin, PluginContext, SharedLoadPluginContext,
+    HookLoadArgs, HookLoadOutput, HookLoadReturn, HookResolveIdArgs, HookResolveIdOutput, HookResolveIdReturn,
+    HookUsage, Plugin, PluginContext, SharedLoadPluginContext,
 };
-use rolldown_common::side_effects::HookSideEffects;
 use rolldown::{Bundler, BundlerOptions, InputItem, ModuleType, OutputFormat, Platform, RawMinifyOptions};
+use rolldown_common::side_effects::HookSideEffects;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -40,7 +40,12 @@ pub struct Stats {
 }
 
 fn package_name(spec: &str) -> Option<&str> {
-    if spec.starts_with('.') || spec.starts_with('/') || spec.starts_with('\0') || spec.starts_with('#') || spec.contains(':') {
+    if spec.starts_with('.')
+        || spec.starts_with('/')
+        || spec.starts_with('\0')
+        || spec.starts_with('#')
+        || spec.contains(':')
+    {
         return None;
     }
     if spec.starts_with('@') {
@@ -78,7 +83,11 @@ impl LazyPackages {
     }
 
     fn owner(&self, file: &str) -> Option<(String, String)> {
-        let rel = Path::new(file).strip_prefix(&self.root).ok()?.to_string_lossy().into_owned();
+        let rel = Path::new(file)
+            .strip_prefix(&self.root)
+            .ok()?
+            .to_string_lossy()
+            .into_owned();
         let cells = self.cells.lock().unwrap();
         let mut best: Option<&String> = None;
         for k in cells.keys() {
@@ -92,10 +101,17 @@ impl LazyPackages {
     }
 
     async fn index(&self, path: &str) -> Result<Arc<PkgIndex>> {
-        let pkg = self.by_path.get(path).cloned().ok_or_else(|| anyhow!("{path} is not in the lockfile"))?;
+        let pkg = self
+            .by_path
+            .get(path)
+            .cloned()
+            .ok_or_else(|| anyhow!("{path} is not in the lockfile"))?;
         let cell = {
             let mut cells = self.cells.lock().unwrap();
-            cells.entry(path.to_string()).or_insert_with(|| Arc::new(OnceCell::new())).clone()
+            cells
+                .entry(path.to_string())
+                .or_insert_with(|| Arc::new(OnceCell::new()))
+                .clone()
         };
         let idx = cell
             .get_or_try_init(|| async {
@@ -106,7 +122,8 @@ impl LazyPackages {
                 let blob = self.fetcher.blob(&pkg.name, &url, integrity).await?;
                 let t0 = Instant::now();
                 let blob_path = blob.path.clone();
-                let entries = tokio::task::spawn_blocking(move || acropolis_npm::install::read_tarball(&blob_path)).await??;
+                let entries =
+                    tokio::task::spawn_blocking(move || acropolis_npm::install::read_tarball(&blob_path)).await??;
                 let idx = Arc::new(PkgIndex::new(entries));
                 idx.materialize(&self.root.join(path), "package.json")?;
                 let mut s = self.stats.lock().unwrap();
@@ -143,9 +160,17 @@ impl LazyPackages {
     fn prefetch_deps(self: &Arc<Self>, path: &str, idx: &PkgIndex) {
         let importer = self.root.join(path).join("package.json").to_string_lossy().into_owned();
         for key in ["dependencies", "peerDependencies"] {
-            let Some(deps) = idx.pj.get(key).and_then(|d| d.as_object()) else { continue };
+            let Some(deps) = idx.pj.get(key).and_then(|d| d.as_object()) else {
+                continue;
+            };
             for name in deps.keys() {
-                let Some(cand) = self.candidates(Some(&importer), name).into_iter().find(|c| self.by_path.contains_key(c)) else { continue };
+                let Some(cand) = self
+                    .candidates(Some(&importer), name)
+                    .into_iter()
+                    .find(|c| self.by_path.contains_key(c))
+                else {
+                    continue;
+                };
                 if self.cells.lock().unwrap().contains_key(&cand) {
                     continue;
                 }
@@ -168,7 +193,8 @@ struct LazyInstallPlugin {
 }
 
 const ASSET_EXTS: &[&str] = &[
-    "svg", "png", "jpg", "jpeg", "gif", "webp", "avif", "ico", "bmp", "woff", "woff2", "ttf", "otf", "eot", "mp4", "webm", "ogg", "mp3", "wav", "flac", "aac", "pdf", "txt",
+    "svg", "png", "jpg", "jpeg", "gif", "webp", "avif", "ico", "bmp", "woff", "woff2", "ttf", "otf", "eot", "mp4",
+    "webm", "ogg", "mp3", "wav", "flac", "aac", "pdf", "txt",
 ];
 const INLINE_LIMIT: usize = 4096;
 
@@ -207,7 +233,9 @@ impl Plugin for LazyInstallPlugin {
             let clean = args.specifier.split(['?', '#']).next().unwrap_or(args.specifier);
             let rel = clean.trim_start_matches('/');
             if self.lazy.root.join("public").join(rel).is_file() {
-                return Ok(Some(HookResolveIdOutput::from_id(format!("{PUBLIC_PREFIX}{clean}#public"))));
+                return Ok(Some(HookResolveIdOutput::from_id(format!(
+                    "{PUBLIC_PREFIX}{clean}#public"
+                ))));
             }
             let p = self.lazy.root.join(rel);
             if p.is_file() {
@@ -227,11 +255,21 @@ impl Plugin for LazyInstallPlugin {
             None => ("", args.specifier),
         };
         let found: Option<(String, Arc<PkgIndex>, Option<String>)> = if let Some(name) = package_name(spec) {
-            let Some(cand) = lazy.candidates(args.importer, name).into_iter().find(|c| lazy.by_path.contains_key(c)) else { return Ok(None) };
+            let Some(cand) = lazy
+                .candidates(args.importer, name)
+                .into_iter()
+                .find(|c| lazy.by_path.contains_key(c))
+            else {
+                return Ok(None);
+            };
             let idx = lazy.index(&cand).await?;
             lazy.prefetch_deps(&cand, &idx);
             let subpath = spec[name.len()..].trim_start_matches('/');
-            let rel = if idx.browser_remaps() { None } else { idx.resolve_subpath(subpath, conditions) };
+            let rel = if idx.browser_remaps() {
+                None
+            } else {
+                idx.resolve_subpath(subpath, conditions)
+            };
             Some((cand, idx, rel))
         } else if let Some(imp) = args.importer
             && let Some((pkg, inner)) = lazy.owner(imp)
@@ -245,9 +283,20 @@ impl Plugin for LazyInstallPlugin {
                     .and_then(|t| idx.resolve_path(t.trim_start_matches("./")));
                 Some((pkg, idx, rel))
             } else if spec.starts_with('.') {
-                let dir = Path::new(&inner).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-                let target = if dir.is_empty() { spec.to_string() } else { format!("{dir}/{spec}") };
-                let rel = if idx.browser_remaps() { None } else { idx.resolve_path(&target) };
+                let dir = Path::new(&inner)
+                    .parent()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let target = if dir.is_empty() {
+                    spec.to_string()
+                } else {
+                    format!("{dir}/{spec}")
+                };
+                let rel = if idx.browser_remaps() {
+                    None
+                } else {
+                    idx.resolve_path(&target)
+                };
                 Some((pkg, idx, rel))
             } else {
                 None
@@ -262,7 +311,11 @@ impl Plugin for LazyInstallPlugin {
                 let mut out = HookResolveIdOutput::from_id(format!("{id}{query}"));
                 out.package_json_path = Some(lazy.root.join(&pkg).join("package.json").to_string_lossy().into_owned());
                 if let Some(se) = idx.side_effects(&rel) {
-                    out.side_effects = Some(if se { HookSideEffects::True } else { HookSideEffects::False });
+                    out.side_effects = Some(if se {
+                        HookSideEffects::True
+                    } else {
+                        HookSideEffects::False
+                    });
                 }
                 Ok(Some(out))
             }
@@ -284,24 +337,44 @@ impl Plugin for LazyInstallPlugin {
             }));
         }
         let path = args.id.split('?').next().unwrap_or(args.id);
-        let ext = Path::new(path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+        let ext = Path::new(path)
+            .extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
         if ASSET_EXTS.contains(&ext.as_str()) && !args.id.starts_with('\0') {
             let data = std::fs::read(path).with_context(|| format!("reading asset {path}"))?;
-            let url = if data.len() < INLINE_LIMIT && !matches!(ext.as_str(), "woff" | "woff2" | "ttf" | "otf" | "eot") && !args.id.contains("?url") {
+            let url = if data.len() < INLINE_LIMIT
+                && !matches!(ext.as_str(), "woff" | "woff2" | "ttf" | "otf" | "eot")
+                && !args.id.contains("?url")
+            {
                 use base64::Engine;
-                format!("data:{};base64,{}", mime_of(&ext), base64::engine::general_purpose::STANDARD.encode(&data))
+                format!(
+                    "data:{};base64,{}",
+                    mime_of(&ext),
+                    base64::engine::general_purpose::STANDARD.encode(&data)
+                )
             } else {
-                let stem = Path::new(path).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                let stem = Path::new(path)
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
                 let name = format!("assets/{stem}-{}.{ext}", short_hash(&data));
                 std::fs::create_dir_all(self.out_dir.join("assets"))?;
                 std::fs::write(self.out_dir.join(&name), &data)?;
                 format!("{}/{name}", self.base.trim_end_matches('/'))
             };
-            return Ok(Some(HookLoadOutput { code: format!("export default {url:?};").into(), module_type: Some(ModuleType::Js), ..Default::default() }));
+            return Ok(Some(HookLoadOutput {
+                code: format!("export default {url:?};").into(),
+                module_type: Some(ModuleType::Js),
+                ..Default::default()
+            }));
         }
         if path.ends_with(".css") {
             if path.ends_with(".module.css") || args.id.contains('?') {
-                anyhow::bail!("CSS modules and CSS query imports are not supported by the native bundler: {}", args.id);
+                anyhow::bail!(
+                    "CSS modules and CSS query imports are not supported by the native bundler: {}",
+                    args.id
+                );
             }
             let text = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
             self.css.lock().unwrap().insert(args.id.to_string(), text);
@@ -381,7 +454,9 @@ fn remove_entry_scripts(html: &str, entries: &[String]) -> String {
         let mut pos = 0;
         while let Some(i) = lower[pos..].find("<script") {
             let start = pos + i;
-            let Some(close) = lower[start..].find("</script>") else { break };
+            let Some(close) = lower[start..].find("</script>") else {
+                break;
+            };
             let end = start + close + "</script>".len();
             let tag_end = start + lower[start..].find('>').unwrap_or(0);
             let tag = &out[start..=tag_end];
@@ -417,7 +492,10 @@ pub async fn build_spa(input: SpaInput) -> Result<SpaOutput> {
         fetcher: input.fetcher.clone(),
         cells: Mutex::new(HashMap::new()),
         full: Mutex::new(std::collections::HashSet::new()),
-        stats: Mutex::new(Stats { packages_in_lockfile: input.plan.packages.len(), ..Default::default() }),
+        stats: Mutex::new(Stats {
+            packages_in_lockfile: input.plan.packages.len(),
+            ..Default::default()
+        }),
     });
     for l in &input.plan.links {
         let dest = input.root.join(&l.path);
@@ -448,13 +526,23 @@ pub async fn build_spa(input: SpaInput) -> Result<SpaOutput> {
             env_obj.push((k.clone(), format!("{v:?}")));
         }
     }
-    let obj = format!("{{{}}}", env_obj.iter().map(|(k, v)| format!("{k:?}:{v}")).collect::<Vec<_>>().join(","));
+    let obj = format!(
+        "{{{}}}",
+        env_obj
+            .iter()
+            .map(|(k, v)| format!("{k:?}:{v}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
     defines.push(("import.meta.env".into(), obj));
     let options = BundlerOptions {
         input: Some(
             entries
                 .iter()
-                .map(|e| InputItem { name: Some("index".into()), import: format!("./{}", e.trim_start_matches('/')) })
+                .map(|e| InputItem {
+                    name: Some("index".into()),
+                    import: format!("./{}", e.trim_start_matches('/')),
+                })
                 .collect(),
         ),
         cwd: Some(input.root.clone()),
@@ -514,7 +602,14 @@ pub async fn build_spa(input: SpaInput) -> Result<SpaOutput> {
         let mut copied: HashMap<PathBuf, String> = HashMap::new();
         for id in &ordered {
             let path = PathBuf::from(id.split('?').next().unwrap_or(id));
-            combined.push_str(&process_css(&path, &css_contents[id], &input.out_dir, &input.base, &mut copied, 0)?);
+            combined.push_str(&process_css(
+                &path,
+                &css_contents[id],
+                &input.out_dir,
+                &input.base,
+                &mut copied,
+                0,
+            )?);
         }
         let hash = short_hash(combined.as_bytes());
         let name = format!("assets/index-{hash}.css");
@@ -526,7 +621,9 @@ pub async fn build_spa(input: SpaInput) -> Result<SpaOutput> {
     let base = input.base.trim_end_matches('/');
     let mut head = format!("<script type=\"module\" crossorigin src=\"{base}/{entry_js}\"></script>");
     for c in &css {
-        head.push_str(&format!("\n    <link rel=\"stylesheet\" crossorigin href=\"{base}/{c}\">"));
+        head.push_str(&format!(
+            "\n    <link rel=\"stylesheet\" crossorigin href=\"{base}/{c}\">"
+        ));
     }
     let mut out_html = remove_entry_scripts(&html, &entries);
     match out_html.to_ascii_lowercase().find("</head>") {
@@ -539,7 +636,11 @@ pub async fn build_spa(input: SpaInput) -> Result<SpaOutput> {
         copy_dir(&public, &input.out_dir)?;
     }
     let stats = lazy.stats.lock().unwrap().clone();
-    Ok(SpaOutput { stats, files: output.assets.len() + 1, ms: start.elapsed().as_millis() as u64 })
+    Ok(SpaOutput {
+        stats,
+        files: output.assets.len() + 1,
+        ms: start.elapsed().as_millis() as u64,
+    })
 }
 
 fn short_hash(data: &[u8]) -> String {
@@ -553,7 +654,14 @@ fn short_hash(data: &[u8]) -> String {
     s
 }
 
-fn process_css(path: &Path, text: &str, out_dir: &Path, base: &str, copied: &mut HashMap<PathBuf, String>, depth: usize) -> Result<String> {
+fn process_css(
+    path: &Path,
+    text: &str,
+    out_dir: &Path,
+    base: &str,
+    copied: &mut HashMap<PathBuf, String>,
+    depth: usize,
+) -> Result<String> {
     use lightningcss::dependencies::{Dependency, DependencyOptions};
     use lightningcss::printer::PrinterOptions;
     use lightningcss::stylesheet::{MinifyOptions, ParserOptions, StyleSheet};
@@ -561,11 +669,23 @@ fn process_css(path: &Path, text: &str, out_dir: &Path, base: &str, copied: &mut
         bail!("@import nesting too deep at {}", path.display());
     }
     let filename = path.to_string_lossy().into_owned();
-    let mut sheet = StyleSheet::parse(text, ParserOptions { filename: filename.clone(), ..Default::default() })
-        .map_err(|e| anyhow!("parsing {filename}: {e}"))?;
-    sheet.minify(MinifyOptions::default()).map_err(|e| anyhow!("minifying {filename}: {e}"))?;
+    let mut sheet = StyleSheet::parse(
+        text,
+        ParserOptions {
+            filename: filename.clone(),
+            ..Default::default()
+        },
+    )
+    .map_err(|e| anyhow!("parsing {filename}: {e}"))?;
+    sheet
+        .minify(MinifyOptions::default())
+        .map_err(|e| anyhow!("minifying {filename}: {e}"))?;
     let res = sheet
-        .to_css(PrinterOptions { minify: true, analyze_dependencies: Some(DependencyOptions { remove_imports: true }), ..Default::default() })
+        .to_css(PrinterOptions {
+            minify: true,
+            analyze_dependencies: Some(DependencyOptions { remove_imports: true }),
+            ..Default::default()
+        })
         .map_err(|e| anyhow!("printing {filename}: {e}"))?;
     let mut code = res.code;
     let dir = path.parent().unwrap_or(Path::new("."));
@@ -578,12 +698,18 @@ fn process_css(path: &Path, text: &str, out_dir: &Path, base: &str, copied: &mut
                     continue;
                 }
                 let target = dir.join(&imp.url);
-                let t = std::fs::read_to_string(&target).with_context(|| format!("@import {} from {filename}", imp.url))?;
+                let t =
+                    std::fs::read_to_string(&target).with_context(|| format!("@import {} from {filename}", imp.url))?;
                 prefix.push_str(&process_css(&target, &t, out_dir, base, copied, depth + 1)?);
             }
             Dependency::Url(u) => {
                 let url = u.url.clone();
-                let replacement = if url.starts_with("data:") || url.starts_with("http") || url.starts_with("//") || url.starts_with('#') || url.starts_with('/') {
+                let replacement = if url.starts_with("data:")
+                    || url.starts_with("http")
+                    || url.starts_with("//")
+                    || url.starts_with('#')
+                    || url.starts_with('/')
+                {
                     url.clone()
                 } else {
                     let clean = url.split(['?', '#']).next().unwrap_or(&url);
@@ -592,8 +718,14 @@ fn process_css(path: &Path, text: &str, out_dir: &Path, base: &str, copied: &mut
                         Some(r) => r.clone(),
                         None => {
                             let data = std::fs::read(&src).with_context(|| format!("url({url}) in {filename}"))?;
-                            let stem = src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-                            let ext = src.extension().map(|s| format!(".{}", s.to_string_lossy())).unwrap_or_default();
+                            let stem = src
+                                .file_stem()
+                                .map(|s| s.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            let ext = src
+                                .extension()
+                                .map(|s| format!(".{}", s.to_string_lossy()))
+                                .unwrap_or_default();
                             let name = format!("assets/{stem}-{}{ext}", short_hash(&data));
                             std::fs::create_dir_all(out_dir.join("assets"))?;
                             std::fs::write(out_dir.join(&name), &data)?;
@@ -635,15 +767,36 @@ pub fn simple_vite_config(root: &Path) -> bool {
         let l = line.trim();
         if l.starts_with("import ") {
             if let Some(from) = l.rsplit(" from ").next() {
-                imports.push(from.trim().trim_end_matches(';').trim_matches(|c| c == '\'' || c == '"').to_string());
+                imports.push(
+                    from.trim()
+                        .trim_end_matches(';')
+                        .trim_matches(|c| c == '\'' || c == '"')
+                        .to_string(),
+                );
             }
         }
     }
-    let allowed = ["vite", "@vitejs/plugin-react", "@vitejs/plugin-react-swc", "node:path", "path", "node:url", "url"];
-    let postcss = ["postcss.config.js", "postcss.config.cjs", "postcss.config.mjs", "postcss.config.ts", "tailwind.config.js", "tailwind.config.ts"]
-        .iter()
-        .any(|f| root.join(f).exists());
-    !postcss && imports.iter().all(|i| allowed.contains(&i.as_str()))
+    let allowed = [
+        "vite",
+        "@vitejs/plugin-react",
+        "@vitejs/plugin-react-swc",
+        "node:path",
+        "path",
+        "node:url",
+        "url",
+    ];
+    let postcss = [
+        "postcss.config.js",
+        "postcss.config.cjs",
+        "postcss.config.mjs",
+        "postcss.config.ts",
+        "tailwind.config.js",
+        "tailwind.config.ts",
+    ]
+    .iter()
+    .any(|f| root.join(f).exists());
+    !postcss
+        && imports.iter().all(|i| allowed.contains(&i.as_str()))
         && !cfg.contains("resolve:")
         && !cfg.contains("css:")
         && !cfg.contains("build:")

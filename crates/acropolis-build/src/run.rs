@@ -76,10 +76,18 @@ fn open_app_cache(opts: &BuildOptions) -> Option<AppCache> {
     });
     let dir = crate::cache::app_dir(&opts.home, &key);
     std::fs::create_dir_all(&dir).ok()?;
-    let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(".lock")).ok()?;
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join(".lock"))
+        .ok()?;
     let rc = unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&lock), libc::LOCK_EX | libc::LOCK_NB) };
     if rc != 0 {
-        acropolis_events::log("cache", format!("app cache {key} is in use by another build; building without it"));
+        acropolis_events::log(
+            "cache",
+            format!("app cache {key} is in use by another build; building without it"),
+        );
         return None;
     }
     crate::gc::touch(&dir.join(".lock"));
@@ -124,7 +132,11 @@ fn find_node_modules(root: &Path) -> Vec<String> {
                 continue;
             }
             let name = e.file_name().to_string_lossy().into_owned();
-            let r = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+            let r = if rel.is_empty() {
+                name.clone()
+            } else {
+                format!("{rel}/{name}")
+            };
             if name == "node_modules" {
                 out.push(r);
             } else if depth < 5 && !name.starts_with('.') {
@@ -145,7 +157,9 @@ fn stash_node_modules(cache: &Path, src: &Path) {
             });
         }
     }
-    let Ok(key) = std::fs::read_to_string(cache.join("nm.key")) else { return };
+    let Ok(key) = std::fs::read_to_string(cache.join("nm.key")) else {
+        return;
+    };
     let _ = std::fs::remove_file(cache.join("nm.key"));
     let dirs = find_node_modules(src);
     if dirs.is_empty() || std::fs::create_dir_all(&prev).is_err() {
@@ -166,9 +180,13 @@ fn restore_node_modules(cache: &Path, src: &Path, key: &str) -> bool {
     if std::fs::read_to_string(prev.join(".key")).ok().as_deref() != Some(key) {
         return false;
     }
-    let Ok(list) = std::fs::read_to_string(prev.join(".list")) else { return false };
+    let Ok(list) = std::fs::read_to_string(prev.join(".list")) else {
+        return false;
+    };
     for line in list.lines() {
-        let Some((i, rel)) = line.split_once('\t') else { continue };
+        let Some((i, rel)) = line.split_once('\t') else {
+            continue;
+        };
         let dest = src.join(rel);
         if let Some(parent) = dest.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -223,7 +241,11 @@ impl Ctx {
     }
 
     fn base(&self) -> Option<Arc<ResolvedImage>> {
-        self.out.lock().unwrap().values().find_map(|o| if let Out::Base(b) = o { Some(b.clone()) } else { None })
+        self.out
+            .lock()
+            .unwrap()
+            .values()
+            .find_map(|o| if let Out::Base(b) = o { Some(b.clone()) } else { None })
     }
 
     fn tools(&self) -> Vec<Installed> {
@@ -255,7 +277,12 @@ impl Ctx {
         while let Some(start) = out.find("{tool:") {
             let Some(end) = out[start..].find('}') else { break };
             let name = out[start + 6..start + end].to_string();
-            let root = self.tools().into_iter().find(|t| t.name == name).map(|t| t.root.to_string_lossy().into_owned()).unwrap_or_default();
+            let root = self
+                .tools()
+                .into_iter()
+                .find(|t| t.name == name)
+                .map(|t| t.root.to_string_lossy().into_owned())
+                .unwrap_or_default();
             out.replace_range(start..start + end + 1, &root);
         }
         out
@@ -269,7 +296,12 @@ impl Ctx {
             let Some(end) = out[start..].find('}') else { break };
             let inner = out[start + 9..start + end].to_string();
             let (name, fallback) = inner.split_once('|').unwrap_or((inner.as_str(), ""));
-            let v = self.tools().into_iter().find(|t| t.name == name).map(|t| t.version).unwrap_or_else(|| fallback.to_string());
+            let v = self
+                .tools()
+                .into_iter()
+                .find(|t| t.name == name)
+                .map(|t| t.version)
+                .unwrap_or_else(|| fallback.to_string());
             out.replace_range(start..start + end + 1, &v);
             from = start + v.len();
         }
@@ -293,10 +325,16 @@ pub async fn execute(plan: Plan, opts: BuildOptions, exec: Arc<dyn Executor>) ->
     let store = Arc::new(Store::open(opts.home.join("store"))?);
     let fetcher = Fetcher::new(store.clone(), opts.concurrency)?;
     let registry = Arc::new(make_registry(fetcher.client().clone(), &opts.mirrors));
-    let work = opts.home.join("work").join(format!("{}-{}", &plan.hash[..12], std::process::id()));
+    let work = opts
+        .home
+        .join("work")
+        .join(format!("{}-{}", &plan.hash[..12], std::process::id()));
     std::fs::create_dir_all(&work)?;
 
-    acropolis_events::emit(acropolis_events::Event::PlanReady { hash: plan.hash.clone(), steps: plan.steps.len() });
+    acropolis_events::emit(acropolis_events::Event::PlanReady {
+        hash: plan.hash.clone(),
+        steps: plan.steps.len(),
+    });
     let home_lock = crate::gc::shared(&opts.home);
     let cache = open_app_cache(&opts);
     let stable_src = opts.env.config("CACHE_SRC").map(|(v, _)| v != "0").unwrap_or(true);
@@ -318,7 +356,8 @@ pub async fn execute(plan: Plan, opts: BuildOptions, exec: Arc<dyn Executor>) ->
             if let Ok(rd) = std::fs::read_dir(&c.dir) {
                 for e in rd.flatten() {
                     let name = e.file_name().to_string_lossy().into_owned();
-                    let mine = name.ends_with(&format!("-{}", std::process::id())) || name.contains(&format!("-{}-", std::process::id()));
+                    let mine = name.ends_with(&format!("-{}", std::process::id()))
+                        || name.contains(&format!("-{}-", std::process::id()));
                     if (name.starts_with(".src-old-") || name.starts_with(".nm-old-")) && !mine {
                         let p = e.path();
                         std::thread::spawn(move || {
@@ -345,7 +384,13 @@ pub async fn execute(plan: Plan, opts: BuildOptions, exec: Arc<dyn Executor>) ->
         base_copy: Mutex::new(None),
         late: Mutex::new(HashMap::new()),
     });
-    let secs = |name: &str| opts.env.config(name).and_then(|(v, _)| v.parse::<u64>().ok()).filter(|s| *s > 0).map(std::time::Duration::from_secs);
+    let secs = |name: &str| {
+        opts.env
+            .config(name)
+            .and_then(|(v, _)| v.parse::<u64>().ok())
+            .filter(|s| *s > 0)
+            .map(std::time::Duration::from_secs)
+    };
     let step_timeout = secs("STEP_TIMEOUT");
     let build_timeout = match opts.env.config("BUILD_TIMEOUT").map(|(v, _)| v) {
         Some(v) if v.trim() == "0" => None,
@@ -358,15 +403,25 @@ pub async fn execute(plan: Plan, opts: BuildOptions, exec: Arc<dyn Executor>) ->
             Action::NpmInstall { .. } => step
                 .deps
                 .iter()
-                .filter(|d| plan.step(d).is_some_and(|s| matches!(s.action, Action::Toolchain { .. })))
+                .filter(|d| {
+                    plan.step(d)
+                        .is_some_and(|s| matches!(s.action, Action::Toolchain { .. }))
+                })
                 .collect(),
             _ => Vec::new(),
         };
         let mut deps: Vec<StepFuture> = Vec::new();
         let mut late: Vec<StepFuture> = Vec::new();
         for d in &step.deps {
-            let f = futs.get(d).cloned().ok_or_else(|| anyhow!("step {} depends on unknown {}", step.id, d))?;
-            if late_ids.contains(&d) { late.push(f) } else { deps.push(f) }
+            let f = futs
+                .get(d)
+                .cloned()
+                .ok_or_else(|| anyhow!("step {} depends on unknown {}", step.id, d))?;
+            if late_ids.contains(&d) {
+                late.push(f)
+            } else {
+                deps.push(f)
+            }
         }
         if !late.is_empty() {
             ctx.late.lock().unwrap().insert(step.id.clone(), late);
@@ -461,8 +516,14 @@ pub async fn execute(plan: Plan, opts: BuildOptions, exec: Arc<dyn Executor>) ->
         let _ = std::fs::remove_dir_all(&work);
     }
     drop(home_lock);
-    if let Some(max) = opts.env.config("CACHE_MAX").and_then(|(v, _)| crate::gc::parse_size(&v)) {
-        let rootfs = std::env::var_os("ACROPOLIS_ROOTFS").map(PathBuf::from).unwrap_or_else(|| opts.home.join("rootfs"));
+    if let Some(max) = opts
+        .env
+        .config("CACHE_MAX")
+        .and_then(|(v, _)| crate::gc::parse_size(&v))
+    {
+        let rootfs = std::env::var_os("ACROPOLIS_ROOTFS")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| opts.home.join("rootfs"));
         let home = opts.home.clone();
         let _ = tokio::task::spawn_blocking(move || crate::gc::collect(&home, &rootfs, max)).await;
     }
@@ -497,10 +558,15 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             resolve_base(ctx, step, &image).await
         }
         Action::ResolveNodeBase { spec, variant } if variant.starts_with(crate::providers::node::DISTROLESS) => {
-            let version = acropolis_toolchain::node::resolve(&ctx.fetcher, &acropolis_semver::fuzzy_version(spec)).await?;
+            let version =
+                acropolis_toolchain::node::resolve(&ctx.fetcher, &acropolis_semver::fuzzy_version(spec)).await?;
             let major: u32 = version.split('.').next().and_then(|m| m.parse().ok()).unwrap_or(0);
             if crate::providers::node::DISTROLESS_NODE_MAJORS.contains(&major) {
-                let order = if variant.ends_with("debian13") { ["debian13", "debian12"] } else { ["debian12", "debian13"] };
+                let order = if variant.ends_with("debian13") {
+                    ["debian13", "debian12"]
+                } else {
+                    ["debian12", "debian13"]
+                };
                 for debian in order {
                     let image = format!("gcr.io/distroless/nodejs{major}-{debian}:debug");
                     match resolve_base(ctx, step, &image).await {
@@ -510,7 +576,10 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                     }
                 }
             }
-            acropolis_events::log(&step.id, format!("no distroless image for node {version}: using node:{version}-bookworm-slim"));
+            acropolis_events::log(
+                &step.id,
+                format!("no distroless image for node {version}: using node:{version}-bookworm-slim"),
+            );
             resolve_base(ctx, step, &format!("node:{version}-bookworm-slim")).await
         }
         Action::ResolveNodeBase { spec, variant } => {
@@ -554,7 +623,13 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                     acropolis_toolchain::node::install(fetcher, &version, &tmp, p).await?;
                     publish(&tmp, &dest)?;
                     acropolis_events::log(&step.id, format!("node {version}"));
-                    Ok(Out::Tool(Installed { name: "node".into(), version, bin_dir: dest.join("bin"), root: dest, archive: None }))
+                    Ok(Out::Tool(Installed {
+                        name: "node".into(),
+                        version,
+                        bin_dir: dest.join("bin"),
+                        root: dest,
+                        archive: None,
+                    }))
                 }
                 "go" => {
                     let version = acropolis_toolchain::go::resolve(fetcher, spec).await?;
@@ -579,11 +654,21 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                     if ctx.opts.env.flag("PREWARM") {
                         precompile_go_std(ctx, step, &dest).await?;
                     }
-                    Ok(Out::Tool(Installed { name: "go".into(), version, bin_dir: dest.join("bin"), root: dest, archive: None }))
+                    Ok(Out::Tool(Installed {
+                        name: "go".into(),
+                        version,
+                        bin_dir: dest.join("bin"),
+                        root: dest,
+                        archive: None,
+                    }))
                 }
                 "bun" => {
                     let release = acropolis_toolchain::bun::resolve(fetcher, spec).await?;
-                    let dest = ctx.opts.home.join("toolchains").join(format!("bun-{}", release.version));
+                    let dest = ctx
+                        .opts
+                        .home
+                        .join("toolchains")
+                        .join(format!("bun-{}", release.version));
                     let marker = dest.join(".acropolis-complete");
                     if !marker.exists() {
                         let tmp = staging(&dest);
@@ -591,46 +676,88 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                         publish(&tmp, &dest)?;
                     }
                     acropolis_events::log(&step.id, format!("bun {}", release.version));
-                    Ok(Out::Tool(Installed { name: "bun".into(), version: release.version, bin_dir: dest.join("bin"), root: dest, archive: None }))
+                    Ok(Out::Tool(Installed {
+                        name: "bun".into(),
+                        version: release.version,
+                        bin_dir: dest.join("bin"),
+                        root: dest,
+                        archive: None,
+                    }))
                 }
                 "yarn-berry" => {
                     let dest = ctx.opts.home.join("toolchains").join(format!("yarn-berry-{spec}"));
                     if !dest.join(".acropolis-complete").exists() {
                         let tmp = staging(&dest);
                         let url = format!("https://repo.yarnpkg.com/{spec}/packages/yarnpkg-cli/bin/yarn.js");
-                        acropolis_events::log(&step.id, format!("warning: {url} has no published checksum; pinned by version only"));
+                        acropolis_events::log(
+                            &step.id,
+                            format!("warning: {url} has no published checksum; pinned by version only"),
+                        );
                         let blob = fetcher.blob("yarn.js", &url, None).await?;
                         std::fs::create_dir_all(&tmp)?;
                         std::fs::copy(&blob.path, tmp.join("yarn.js"))?;
                         publish(&tmp, &dest)?;
                     }
-                    Ok(Out::Tool(Installed { name: "yarn-berry".into(), version: spec.clone(), bin_dir: dest.clone(), root: dest, archive: None }))
+                    Ok(Out::Tool(Installed {
+                        name: "yarn-berry".into(),
+                        version: spec.clone(),
+                        bin_dir: dest.clone(),
+                        root: dest,
+                        archive: None,
+                    }))
                 }
                 "composer" => {
                     let dest = ctx.opts.home.join("toolchains").join("composer-latest-stable");
                     if !dest.join(".acropolis-complete").exists() {
                         let tmp = staging(&dest);
-                        let sum = fetcher.bytes("https://getcomposer.org/download/latest-stable/composer.phar.sha256sum").await?;
-                        let hex = String::from_utf8_lossy(&sum).split_whitespace().next().unwrap_or("").to_string();
+                        let sum = fetcher
+                            .bytes("https://getcomposer.org/download/latest-stable/composer.phar.sha256sum")
+                            .await?;
+                        let hex = String::from_utf8_lossy(&sum)
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or("")
+                            .to_string();
                         let expected = acropolis_store::Integrity::parse_hex(acropolis_store::Algo::Sha256, &hex)?;
-                        let blob = fetcher.blob("composer.phar", "https://getcomposer.org/download/latest-stable/composer.phar", Some(expected)).await?;
+                        let blob = fetcher
+                            .blob(
+                                "composer.phar",
+                                "https://getcomposer.org/download/latest-stable/composer.phar",
+                                Some(expected),
+                            )
+                            .await?;
                         std::fs::create_dir_all(tmp.join("bin"))?;
                         std::fs::copy(&blob.path, tmp.join("bin/composer"))?;
                         use std::os::unix::fs::PermissionsExt;
                         std::fs::set_permissions(tmp.join("bin/composer"), std::fs::Permissions::from_mode(0o755))?;
                         publish(&tmp, &dest)?;
                     }
-                    Ok(Out::Tool(Installed { name: "composer".into(), version: "latest-stable".into(), bin_dir: dest.join("bin"), root: dest, archive: None }))
+                    Ok(Out::Tool(Installed {
+                        name: "composer".into(),
+                        version: "latest-stable".into(),
+                        bin_dir: dest.join("bin"),
+                        root: dest,
+                        archive: None,
+                    }))
                 }
                 "mise" => {
-                    let tag = if spec.is_empty() || spec == "latest" { github_latest_tag("jdx/mise").await? } else { format!("v{}", spec.trim_start_matches('v')) };
+                    let tag = if spec.is_empty() || spec == "latest" {
+                        github_latest_tag("jdx/mise").await?
+                    } else {
+                        format!("v{}", spec.trim_start_matches('v'))
+                    };
                     let dest = ctx.opts.home.join("toolchains").join(format!("mise-{tag}"));
                     if !dest.join(".acropolis-complete").exists() {
                         let tmp = staging(&dest);
-                        let arch = if std::env::consts::ARCH == "aarch64" { "arm64" } else { "x64" };
+                        let arch = if std::env::consts::ARCH == "aarch64" {
+                            "arm64"
+                        } else {
+                            "x64"
+                        };
                         let file = format!("mise-{tag}-linux-{arch}-musl");
                         let base = format!("https://github.com/jdx/mise/releases/download/{tag}");
-                        let sums = String::from_utf8_lossy(&fetcher.bytes(&format!("{base}/SHASUMS256.txt")).await?).into_owned();
+                        let sums = String::from_utf8_lossy(&fetcher.bytes(&format!("{base}/SHASUMS256.txt")).await?)
+                            .into_owned();
                         let expected = acropolis_toolchain::parse_shasums(&sums.replace("./", ""), &file)?;
                         let blob = fetcher.blob(&file, &format!("{base}/{file}"), Some(expected)).await?;
                         std::fs::create_dir_all(tmp.join("bin"))?;
@@ -640,19 +767,35 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                         publish(&tmp, &dest)?;
                     }
                     acropolis_events::log(&step.id, format!("mise {tag}"));
-                    Ok(Out::Tool(Installed { name: "mise".into(), version: tag, bin_dir: dest.join("bin"), root: dest, archive: None }))
+                    Ok(Out::Tool(Installed {
+                        name: "mise".into(),
+                        version: tag,
+                        bin_dir: dest.join("bin"),
+                        root: dest,
+                        archive: None,
+                    }))
                 }
                 t if t.starts_with("npm:") => {
                     let pkg = &t[4..];
                     let release = acropolis_toolchain::npmpkg::resolve(fetcher, pkg, spec).await?;
-                    let dest = ctx.opts.home.join("toolchains").join(format!("npm-{}-{}", pkg.replace('/', "+"), release.version));
+                    let dest = ctx.opts.home.join("toolchains").join(format!(
+                        "npm-{}-{}",
+                        pkg.replace('/', "+"),
+                        release.version
+                    ));
                     if !dest.join(".acropolis-complete").exists() {
                         let tmp = staging(&dest);
                         acropolis_toolchain::npmpkg::install(fetcher, &release, &tmp).await?;
                         publish(&tmp, &dest)?;
                     }
                     acropolis_events::log(&step.id, format!("{pkg} {}", release.version));
-                    Ok(Out::Tool(Installed { name: t.to_string(), version: release.version, bin_dir: dest.join("bin"), root: dest, archive: None }))
+                    Ok(Out::Tool(Installed {
+                        name: t.to_string(),
+                        version: release.version,
+                        bin_dir: dest.join("bin"),
+                        root: dest,
+                        archive: None,
+                    }))
                 }
                 "uv" => {
                     let release = acropolis_toolchain::uv::resolve(fetcher, spec).await?;
@@ -664,11 +807,25 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                         publish(&tmp, &dest)?;
                     }
                     acropolis_events::log(&step.id, format!("uv {}", release.version));
-                    Ok(Out::Tool(Installed { name: "uv".into(), version: release.version, bin_dir: dest.join("bin"), root: dest, archive: None }))
+                    Ok(Out::Tool(Installed {
+                        name: "uv".into(),
+                        version: release.version,
+                        bin_dir: dest.join("bin"),
+                        root: dest,
+                        archive: None,
+                    }))
                 }
                 "python-standalone" => {
-                    let key = if spec.is_empty() { "latest".to_string() } else { spec.clone() };
-                    let dest = ctx.opts.home.join("toolchains").join(format!("python-standalone-{key}"));
+                    let key = if spec.is_empty() {
+                        "latest".to_string()
+                    } else {
+                        spec.clone()
+                    };
+                    let dest = ctx
+                        .opts
+                        .home
+                        .join("toolchains")
+                        .join(format!("python-standalone-{key}"));
                     if !dest.join(".acropolis-complete").exists() {
                         let uv = acropolis_toolchain::uv::resolve(fetcher, "").await?;
                         let uv_dest = ctx.opts.home.join("toolchains").join(format!("uv-{}", uv.version));
@@ -699,7 +856,9 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                             .map(|e| e.path())
                             .find(|p| {
                                 std::fs::symlink_metadata(p).map(|m| m.is_dir()).unwrap_or(false)
-                                    && p.file_name().map(|n| n.to_string_lossy().starts_with("cpython-")).unwrap_or(false)
+                                    && p.file_name()
+                                        .map(|n| n.to_string_lossy().starts_with("cpython-"))
+                                        .unwrap_or(false)
                             })
                             .ok_or_else(|| anyhow!("uv python install {key} produced no cpython directory"))?;
                         std::fs::rename(&inner, &tmp)?;
@@ -718,11 +877,21 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
                         .unwrap_or(key);
                     acropolis_events::log(&step.id, format!("python {version} (standalone)"));
-                    Ok(Out::Tool(Installed { name: "python-standalone".into(), version, bin_dir: dest.join("bin"), root: dest, archive: None }))
+                    Ok(Out::Tool(Installed {
+                        name: "python-standalone".into(),
+                        version,
+                        bin_dir: dest.join("bin"),
+                        root: dest,
+                        archive: None,
+                    }))
                 }
                 "rust" => {
                     let release = acropolis_cargo::resolve(fetcher, spec, &[]).await?;
-                    let dest = ctx.opts.home.join("toolchains").join(format!("rust-{}", release.version));
+                    let dest = ctx
+                        .opts
+                        .home
+                        .join("toolchains")
+                        .join(format!("rust-{}", release.version));
                     let marker = dest.join(".acropolis-complete");
                     if !marker.exists() {
                         let tmp = staging(&dest);
@@ -730,19 +899,42 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                         publish(&tmp, &dest)?;
                     }
                     acropolis_events::log(&step.id, format!("rust {} ({})", release.version, release.date));
-                    Ok(Out::Tool(Installed { name: "rust".into(), version: release.version, bin_dir: dest.join("bin"), root: dest, archive: None }))
+                    Ok(Out::Tool(Installed {
+                        name: "rust".into(),
+                        version: release.version,
+                        bin_dir: dest.join("bin"),
+                        root: dest,
+                        archive: None,
+                    }))
                 }
                 other => bail!("unsupported toolchain {other}"),
             }
         }
-        Action::NpmFetch { manager, lockfile, dev, workspaces, keep, .. } => {
-            let opts = InstallOptions { include_dev: *dev, include_optional: true, platform: Default::default() };
-            let out_of_sync = manager == "npm" && !lockfile.is_empty() && npm_lock_out_of_sync(&ctx.opts.app_dir, lockfile);
+        Action::NpmFetch {
+            manager,
+            lockfile,
+            dev,
+            workspaces,
+            keep,
+            ..
+        } => {
+            let opts = InstallOptions {
+                include_dev: *dev,
+                include_optional: true,
+                platform: Default::default(),
+            };
+            let out_of_sync =
+                manager == "npm" && !lockfile.is_empty() && npm_lock_out_of_sync(&ctx.opts.app_dir, lockfile);
             if out_of_sync && ctx.opts.env.flag("STRICT_LOCKFILE") {
-                bail!("package-lock.json is out of sync with package.json (ACROPOLIS_STRICT_LOCKFILE=1); run `npm install` and commit the lockfile");
+                bail!(
+                    "package-lock.json is out of sync with package.json (ACROPOLIS_STRICT_LOCKFILE=1); run `npm install` and commit the lockfile"
+                );
             }
             if out_of_sync {
-                acropolis_events::log(&step.id, "warning: package-lock.json is out of sync with package.json; resolving from the registry like `npm install`");
+                acropolis_events::log(
+                    &step.id,
+                    "warning: package-lock.json is out of sync with package.json; resolving from the registry like `npm install`",
+                );
             }
             let plan = if lockfile.is_empty() || out_of_sync {
                 let pj = crate::detect::read_package_json(&ctx.opts.app_dir)?;
@@ -754,17 +946,33 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             let plan = if keep.is_empty() || *dev || lockfile.is_empty() || out_of_sync {
                 plan
             } else {
-                let full = InstallOptions { include_dev: true, ..opts.clone() };
-                keep_packages(plan, install_plan_scoped(manager, &ctx.opts.app_dir, lockfile, &full, workspaces)?, keep)
+                let full = InstallOptions {
+                    include_dev: true,
+                    ..opts.clone()
+                };
+                keep_packages(
+                    plan,
+                    install_plan_scoped(manager, &ctx.opts.app_dir, lockfile, &full, workspaces)?,
+                    keep,
+                )
             };
             check_package_urls(&plan, &ctx.opts.env)?;
             for p in &plan.packages {
                 if let acropolis_npm::Source::Git { url } = &p.source {
-                    acropolis_events::log(&step.id, format!("warning: {} comes from git ({url}); it is pinned by commit, not by content hash", p.path));
+                    acropolis_events::log(
+                        &step.id,
+                        format!(
+                            "warning: {} comes from git ({url}); it is pinned by commit, not by content hash",
+                            p.path
+                        ),
+                    );
                 }
             }
             let tarballs = acropolis_npm::install::fetch_all(&ctx.fetcher, &plan).await?;
-            acropolis_events::log(&step.id, format!("{} packages ({} tarballs)", plan.packages.len(), tarballs.len()));
+            acropolis_events::log(
+                &step.id,
+                format!("{} packages ({} tarballs)", plan.packages.len(), tarballs.len()),
+            );
             Ok(Out::Npm(Arc::new(NpmState { plan, tarballs })))
         }
         Action::CopySource { exclude } => {
@@ -779,26 +987,52 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             acropolis_events::log(&step.id, format!("{:.1} MB", n as f64 / 1e6));
             Ok(Out::None)
         }
-        Action::NpmInstall { target, scripts, manager, types_only, .. } => {
+        Action::NpmInstall {
+            target,
+            scripts,
+            manager,
+            types_only,
+            ..
+        } => {
             let state = ctx
                 .dep_outputs(step)
                 .into_iter()
                 .find_map(|o| if let Out::Npm(s) = o { Some(s) } else { None })
                 .ok_or_else(|| anyhow!("install without fetched packages"))?;
-            let root = if target == "src" { ctx.src.clone() } else { ctx.work.join(target) };
+            let root = if target == "src" {
+                ctx.src.clone()
+            } else {
+                ctx.work.join(target)
+            };
             std::fs::create_dir_all(&root)?;
-            let reuse = ctx.cache.as_ref().filter(|c| target == "src" && ctx.src.starts_with(&c.dir)).map(|c| c.dir.clone());
+            let reuse = ctx
+                .cache
+                .as_ref()
+                .filter(|c| target == "src" && ctx.src.starts_with(&c.dir))
+                .map(|c| c.dir.clone());
             if reuse.is_some() {
                 ctx.await_late(step).await?;
             }
-            let mut versions: Vec<String> =
-                ctx.dep_outputs(step).into_iter().filter_map(|o| if let Out::Tool(t) = o { Some(format!("{}={}", t.name, t.version)) } else { None }).collect();
+            let mut versions: Vec<String> = ctx
+                .dep_outputs(step)
+                .into_iter()
+                .filter_map(|o| {
+                    if let Out::Tool(t) = o {
+                        Some(format!("{}={}", t.name, t.version))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
             versions.sort();
             let key = format!("{} {}", step.hash, versions.join(" "));
             if let Some(cache_dir) = &reuse {
                 if restore_node_modules(cache_dir, &root, &key) {
                     std::fs::write(cache_dir.join("nm.key"), &key)?;
-                    acropolis_events::log(&step.id, "reused node_modules from the previous build (same lockfile and toolchains)");
+                    acropolis_events::log(
+                        &step.id,
+                        "reused node_modules from the previous build (same lockfile and toolchains)",
+                    );
                     return Ok(Out::None);
                 }
                 let prev = cache_dir.join("nm-prev");
@@ -817,7 +1051,10 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             let r2 = root.clone();
             let s2 = state.clone();
             let types = *types_only;
-            let n = tokio::task::spawn_blocking(move || acropolis_npm::install::materialize_with(&s2.plan, &s2.tarballs, &r2, types)).await??;
+            let n = tokio::task::spawn_blocking(move || {
+                acropolis_npm::install::materialize_with(&s2.plan, &s2.tarballs, &r2, types)
+            })
+            .await??;
             acropolis_events::log(&step.id, format!("{:.1} MB written", n as f64 / 1e6));
             for line in apply_patched_dependencies(&ctx.opts.app_dir, &state.plan, &root)? {
                 acropolis_events::log(&step.id, line);
@@ -833,7 +1070,10 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             if !scripts.is_empty() && scripts != "none" {
                 let policy = acropolis_npm::scripts::Policy::parse(scripts);
                 let mut jobs = acropolis_npm::scripts::lifecycle_jobs(&state.plan, &root, &policy);
-                if target == "prod" && ctx.opts.env.flag("NODE_PLAYWRIGHT_INSTALL") && root.join("node_modules/playwright/cli.js").exists() {
+                if target == "prod"
+                    && ctx.opts.env.flag("NODE_PLAYWRIGHT_INSTALL")
+                    && root.join("node_modules/playwright/cli.js").exists()
+                {
                     jobs.push(acropolis_npm::scripts::ScriptJob {
                         path: "node_modules/playwright".into(),
                         name: "playwright".into(),
@@ -850,7 +1090,9 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
         Action::GoModules { .. } => {
             let text = std::fs::read_to_string(ctx.opts.app_dir.join("go.sum"))?;
             let sum = acropolis_gomod::parse_go_sum(&text)?;
-            let cache = acropolis_gomod::ModCache { root: ctx.cache_path("gomodcache") };
+            let cache = acropolis_gomod::ModCache {
+                root: ctx.cache_path("gomodcache"),
+            };
             let proxy = ctx
                 .opts
                 .env
@@ -860,16 +1102,30 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                 .filter(|p| p.starts_with("http"))
                 .unwrap_or_else(|| "https://proxy.golang.org".to_string());
             let stats = acropolis_gomod::download_all(&ctx.fetcher, &sum, &cache, &proxy).await?;
-            acropolis_events::log(&step.id, format!("{} modules, {} go.mod files", stats.modules, stats.gomods));
+            acropolis_events::log(
+                &step.id,
+                format!("{} modules, {} go.mod files", stats.modules, stats.gomods),
+            );
             Ok(Out::None)
         }
         Action::BundleSpa { manager, lockfile, out } => {
-            let opts = InstallOptions { include_dev: true, include_optional: true, platform: Default::default() };
+            let opts = InstallOptions {
+                include_dev: true,
+                include_optional: true,
+                platform: Default::default(),
+            };
             let plan = install_plan_for(manager, &ctx.opts.app_dir, lockfile, &opts)?;
             let root = ctx.work.join("bundle");
             let app = ctx.opts.app_dir.clone();
             let r2 = root.clone();
-            tokio::task::spawn_blocking(move || source::copy_tree(&app, &r2, &Ignore::load(&app, &["**/node_modules".to_string(), "dist".to_string()]))).await??;
+            tokio::task::spawn_blocking(move || {
+                source::copy_tree(
+                    &app,
+                    &r2,
+                    &Ignore::load(&app, &["**/node_modules".to_string(), "dist".to_string()]),
+                )
+            })
+            .await??;
             let mut env = BTreeMap::new();
             for (k, v) in &ctx.opts.env.vars {
                 env.insert(k.clone(), v.clone());
@@ -905,11 +1161,22 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             let stats = acropolis_cargo::vendor(&ctx.fetcher, &lock, &vendor_dir).await?;
             let cargo_home = ctx.cache_path("cargo-home");
             std::fs::create_dir_all(&cargo_home)?;
-            std::fs::write(cargo_home.join("config.toml"), acropolis_cargo::cargo_config(&vendor_dir))?;
-            acropolis_events::log(&step.id, format!("{} crates, {:.1} MB", stats.crates, stats.bytes as f64 / 1e6));
+            std::fs::write(
+                cargo_home.join("config.toml"),
+                acropolis_cargo::cargo_config(&vendor_dir),
+            )?;
+            acropolis_events::log(
+                &step.id,
+                format!("{} crates, {:.1} MB", stats.crates, stats.bytes as f64 / 1e6),
+            );
             Ok(Out::None)
         }
-        Action::Run { argv, env, network, cwd } => {
+        Action::Run {
+            argv,
+            env,
+            network,
+            cwd,
+        } => {
             let tools = ctx.tools();
             let mut path: Vec<String> = Vec::new();
             let cwd_path = match cwd.as_str() {
@@ -949,8 +1216,14 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                     seed_go_cache(&go.root, &ctx.cache_path("gocache"));
                 }
                 full_env.insert("GOPATH".into(), ctx.work.join("gopath").to_string_lossy().into_owned());
-                full_env.insert("GOMODCACHE".into(), ctx.cache_path("gomodcache").to_string_lossy().into_owned());
-                full_env.insert("GOCACHE".into(), ctx.cache_path("gocache").to_string_lossy().into_owned());
+                full_env.insert(
+                    "GOMODCACHE".into(),
+                    ctx.cache_path("gomodcache").to_string_lossy().into_owned(),
+                );
+                full_env.insert(
+                    "GOCACHE".into(),
+                    ctx.cache_path("gocache").to_string_lossy().into_owned(),
+                );
                 full_env.insert("GOPROXY".into(), "off".into());
                 full_env.insert("GOSUMDB".into(), "off".into());
                 full_env.insert("GOTOOLCHAIN".into(), "local".into());
@@ -960,7 +1233,10 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                 let cargo_home = ctx.cache_path("cargo-home");
                 std::fs::create_dir_all(&cargo_home)?;
                 full_env.insert("CARGO_HOME".into(), cargo_home.to_string_lossy().into_owned());
-                full_env.insert("CARGO_TARGET_DIR".into(), ctx.cache_path("cargo-target").to_string_lossy().into_owned());
+                full_env.insert(
+                    "CARGO_TARGET_DIR".into(),
+                    ctx.cache_path("cargo-target").to_string_lossy().into_owned(),
+                );
                 full_env.insert("CARGO_TERM_COLOR".into(), "never".into());
                 full_env.insert("CARGO_INCREMENTAL".into(), "0".into());
             }
@@ -970,7 +1246,10 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                 if let Some(p) = full_env.get_mut("PATH") {
                     *p = format!("{}:{p}", global.join("bin").display());
                 }
-                full_env.insert("npm_node_execpath".into(), node.bin_dir.join("node").to_string_lossy().into_owned());
+                full_env.insert(
+                    "npm_node_execpath".into(),
+                    node.bin_dir.join("node").to_string_lossy().into_owned(),
+                );
                 full_env.insert("INIT_CWD".into(), cwd_path.to_string_lossy().into_owned());
             }
             for (k, v) in env {
@@ -987,23 +1266,48 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             let node_cache = ctx
                 .cache
                 .as_ref()
-                .filter(|_| (cwd_path.starts_with(&ctx.src) || cwd_path.starts_with(&ctx.work)) && cwd_path.join("package.json").exists())
+                .filter(|_| {
+                    (cwd_path.starts_with(&ctx.src) || cwd_path.starts_with(&ctx.work))
+                        && cwd_path.join("package.json").exists()
+                })
                 .map(|c| c.dir.clone());
             if let Some(c) = &node_cache {
                 restore_node_caches(c, &cwd_path);
             }
-            let res = ctx.exec.run(Cmd { step: step.id.clone(), argv, cwd: cwd_path.clone(), env: full_env, network: *network }).await;
+            let res = ctx
+                .exec
+                .run(Cmd {
+                    step: step.id.clone(),
+                    argv,
+                    cwd: cwd_path.clone(),
+                    env: full_env,
+                    network: *network,
+                })
+                .await;
             if let Some(c) = &node_cache {
                 save_node_caches(c, &cwd_path);
             }
             res?;
             Ok(Out::None)
         }
-        Action::ImageRun { image, commands, env, network, mount_app, after, tools, lowers } => {
+        Action::ImageRun {
+            image,
+            commands,
+            env,
+            network,
+            mount_app,
+            after,
+            tools,
+            lowers,
+        } => {
             let image = if image == "@base" {
-                ctx.base().map(|b| b.reference.to_string()).ok_or_else(|| anyhow!("no base image resolved"))?
+                ctx.base()
+                    .map(|b| b.reference.to_string())
+                    .ok_or_else(|| anyhow!("no base image resolved"))?
             } else if let Some(variant) = image.strip_prefix("@base-variant:") {
-                let (from, to) = variant.split_once('=').ok_or_else(|| anyhow!("invalid image alias {image}"))?;
+                let (from, to) = variant
+                    .split_once('=')
+                    .ok_or_else(|| anyhow!("invalid image alias {image}"))?;
                 let base = ctx.base().ok_or_else(|| anyhow!("no base image resolved"))?;
                 let mut r = base.reference.clone();
                 r.digest = None;
@@ -1022,23 +1326,40 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             let base = ctx.work.join(format!("run-{}", step.id));
             let upper = base.join("upper");
             let mut full_env: BTreeMap<String, String> = image_env;
-            full_env.entry("PATH".into()).or_insert_with(|| "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into());
+            full_env
+                .entry("PATH".into())
+                .or_insert_with(|| "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into());
             full_env.insert("HOME".into(), "/root".into());
             full_env.insert("SOURCE_DATE_EPOCH".into(), "0".into());
             for (k, v) in env {
                 let v = ctx.subst(v);
                 let placeholder = format!("${{{k}}}");
-                let v = if v.contains(&placeholder) { v.replace(&placeholder, full_env.get(k).map(|s| s.as_str()).unwrap_or("")) } else { v };
+                let v = if v.contains(&placeholder) {
+                    v.replace(&placeholder, full_env.get(k).map(|s| s.as_str()).unwrap_or(""))
+                } else {
+                    v
+                };
                 full_env.insert(k.clone(), v);
             }
             let mut binds = Vec::new();
             let installed = ctx.tools();
             let mut extra_path = Vec::new();
             for t in tools {
-                let inst = installed.iter().find(|i| &i.name == t).ok_or_else(|| anyhow!("toolchain {t} not installed"))?;
+                let inst = installed
+                    .iter()
+                    .find(|i| &i.name == t)
+                    .ok_or_else(|| anyhow!("toolchain {t} not installed"))?;
                 let root = format!("/opt/acropolis/{}", t.replace(':', "-"));
-                let rel = inst.bin_dir.strip_prefix(&inst.root).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "bin".into());
-                binds.push(acropolis_exec::rootfs::Bind { host: inst.root.clone(), guest: root.clone(), readonly: true });
+                let rel = inst
+                    .bin_dir
+                    .strip_prefix(&inst.root)
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|_| "bin".into());
+                binds.push(acropolis_exec::rootfs::Bind {
+                    host: inst.root.clone(),
+                    guest: root.clone(),
+                    readonly: true,
+                });
                 extra_path.push(format!("{root}/{rel}"));
             }
             if !extra_path.is_empty() {
@@ -1047,7 +1368,11 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             }
             if *mount_app {
                 std::fs::create_dir_all(&ctx.src)?;
-                binds.push(acropolis_exec::rootfs::Bind { host: ctx.src.clone(), guest: "/app".into(), readonly: false });
+                binds.push(acropolis_exec::rootfs::Bind {
+                    host: ctx.src.clone(),
+                    guest: "/app".into(),
+                    readonly: false,
+                });
                 if let Some(c) = &ctx.cache {
                     for (name, guest) in [
                         ("root-cache", "/root/.cache"),
@@ -1060,13 +1385,21 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                     ] {
                         let host = c.dir.join(name);
                         std::fs::create_dir_all(&host)?;
-                        binds.push(acropolis_exec::rootfs::Bind { host, guest: guest.into(), readonly: false });
+                        binds.push(acropolis_exec::rootfs::Bind {
+                            host,
+                            guest: guest.into(),
+                            readonly: false,
+                        });
                     }
                     if full_env.contains_key("UV_CACHE_DIR") {
                         full_env.insert("UV_CACHE_DIR".into(), "/root/.cache/uv".into());
                     }
-                    full_env.entry("COMPOSER_CACHE_DIR".into()).or_insert_with(|| "/root/.cache/composer".into());
-                    full_env.entry("PIP_CACHE_DIR".into()).or_insert_with(|| "/root/.cache/pip".into());
+                    full_env
+                        .entry("COMPOSER_CACHE_DIR".into())
+                        .or_insert_with(|| "/root/.cache/composer".into());
+                    full_env
+                        .entry("PIP_CACHE_DIR".into())
+                        .or_insert_with(|| "/root/.cache/pip".into());
                 }
             }
             let spec = acropolis_exec::rootfs::RootfsRun {
@@ -1132,7 +1465,11 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             let mut labels = BTreeMap::new();
             labels.insert("dev.acropolis.plan".to_string(), ctx.plan.hash.clone());
             let patch = ConfigPatch {
-                env: spec.env.iter().map(|(k, v)| (k.clone(), ctx.subst_versions(v))).collect(),
+                env: spec
+                    .env
+                    .iter()
+                    .map(|(k, v)| (k.clone(), ctx.subst_versions(v)))
+                    .collect(),
                 entrypoint: spec.entrypoint.clone(),
                 cmd: spec.cmd.clone(),
                 workdir: spec.workdir.clone(),
@@ -1148,7 +1485,10 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             if let Some(target) = &ctx.opts.target {
                 assemble::push_layers(&ctx.registry, target, &layers).await?;
                 let digest = assemble::push_manifest(&ctx.registry, target, &assembled).await?;
-                acropolis_events::emit(acropolis_events::Event::ImagePushed { reference: target.to_string(), digest: digest.clone() });
+                acropolis_events::emit(acropolis_events::Event::ImagePushed {
+                    reference: target.to_string(),
+                    digest: digest.clone(),
+                });
                 Ok(Out::Pushed(digest))
             } else {
                 ctx.store.put_bytes("manifest", &assembled.manifest, None)?;
@@ -1163,7 +1503,12 @@ fn contained(base: &Path, path: &Path) -> Result<()> {
     let real = std::fs::canonicalize(path).with_context(|| format!("resolving {}", path.display()))?;
     let root = std::fs::canonicalize(base).with_context(|| format!("resolving {}", base.display()))?;
     if !real.starts_with(&root) {
-        bail!("{} resolves to {}, outside of {}", path.display(), real.display(), root.display());
+        bail!(
+            "{} resolves to {}, outside of {}",
+            path.display(),
+            real.display(),
+            root.display()
+        );
     }
     Ok(())
 }
@@ -1182,7 +1527,11 @@ fn symlink_on_the_way(root: &Path, rel: &str) -> bool {
 
 fn clean_relative(p: &str) -> Result<&str> {
     let t = p.trim_start_matches("./");
-    if Path::new(t).is_absolute() || Path::new(t).components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+    if Path::new(t).is_absolute()
+        || Path::new(t)
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
         bail!("path {p:?} must stay inside the app directory");
     }
     Ok(t)
@@ -1194,8 +1543,19 @@ fn private_host(host: &str) -> bool {
         return true;
     }
     match h.parse::<std::net::IpAddr>() {
-        Ok(std::net::IpAddr::V4(ip)) => ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_unspecified() || ip.octets()[0] == 100 && (ip.octets()[1] & 0xc0) == 64,
-        Ok(std::net::IpAddr::V6(ip)) => ip.is_loopback() || ip.is_unspecified() || (ip.segments()[0] & 0xfe00) == 0xfc00 || (ip.segments()[0] & 0xffc0) == 0xfe80,
+        Ok(std::net::IpAddr::V4(ip)) => {
+            ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.octets()[0] == 100 && (ip.octets()[1] & 0xc0) == 64
+        }
+        Ok(std::net::IpAddr::V6(ip)) => {
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || (ip.segments()[0] & 0xfe00) == 0xfc00
+                || (ip.segments()[0] & 0xffc0) == 0xfe80
+        }
         Err(_) => false,
     }
 }
@@ -1211,10 +1571,16 @@ fn check_package_urls(plan: &InstallPlan, env: &crate::Env) -> Result<()> {
         };
         let Ok(u) = url::Url::parse(url) else { continue };
         if u.scheme() == "http" {
-            bail!("{} is fetched over plain http ({url}); use https or set ACROPOLIS_ALLOW_PRIVATE_REGISTRY=1", p.path);
+            bail!(
+                "{} is fetched over plain http ({url}); use https or set ACROPOLIS_ALLOW_PRIVATE_REGISTRY=1",
+                p.path
+            );
         }
         if u.host_str().is_some_and(private_host) {
-            bail!("{} points at a private or link-local address ({url}); set ACROPOLIS_ALLOW_PRIVATE_REGISTRY=1 if this registry is intended", p.path);
+            bail!(
+                "{} points at a private or link-local address ({url}); set ACROPOLIS_ALLOW_PRIVATE_REGISTRY=1 if this registry is intended",
+                p.path
+            );
         }
     }
     Ok(())
@@ -1223,9 +1589,18 @@ fn check_package_urls(plan: &InstallPlan, env: &crate::Env) -> Result<()> {
 pub fn patched_dependencies(app_dir: &Path) -> Vec<(String, String)> {
     let mut out = Vec::new();
     if let Ok(pj) = crate::detect::read_package_json(app_dir) {
-        for v in [pj.get("patchedDependencies"), pj.get("pnpm").and_then(|p| p.get("patchedDependencies"))].into_iter().flatten() {
+        for v in [
+            pj.get("patchedDependencies"),
+            pj.get("pnpm").and_then(|p| p.get("patchedDependencies")),
+        ]
+        .into_iter()
+        .flatten()
+        {
             if let Some(m) = v.as_object() {
-                out.extend(m.iter().filter_map(|(k, v)| v.as_str().map(|f| (k.clone(), f.to_string()))));
+                out.extend(
+                    m.iter()
+                        .filter_map(|(k, v)| v.as_str().map(|f| (k.clone(), f.to_string()))),
+                );
             }
         }
     }
@@ -1237,7 +1612,10 @@ pub fn patched_dependencies(app_dir: &Path) -> Vec<(String, String)> {
                 continue;
             }
             if inside && let Some((k, v)) = line.trim().split_once(": ") {
-                out.push((k.trim_matches(['"', '\'']).to_string(), v.trim().trim_matches(['"', '\'']).to_string()));
+                out.push((
+                    k.trim_matches(['"', '\'']).to_string(),
+                    v.trim().trim_matches(['"', '\'']).to_string(),
+                ));
             }
         }
     }
@@ -1250,10 +1628,15 @@ fn apply_patched_dependencies(app_dir: &Path, plan: &InstallPlan, root: &Path) -
     let mut log = Vec::new();
     for (spec, file) in patched_dependencies(app_dir) {
         let rel = clean_relative(&file)?;
-        let diff = std::fs::read_to_string(app_dir.join(rel)).with_context(|| format!("reading patch {file} for {spec}"))?;
+        let diff =
+            std::fs::read_to_string(app_dir.join(rel)).with_context(|| format!("reading patch {file} for {spec}"))?;
         let (name, version) = acropolis_npm::patch::targets(&spec);
         let mut applied = 0;
-        for p in plan.packages.iter().filter(|p| p.name == name && version.as_ref().is_none_or(|v| *v == p.version)) {
+        for p in plan
+            .packages
+            .iter()
+            .filter(|p| p.name == name && version.as_ref().is_none_or(|v| *v == p.version))
+        {
             let dir = root.join(&p.path);
             if dir.is_dir() {
                 acropolis_npm::patch::apply(&diff, &dir).with_context(|| format!("applying {file} to {}", p.path))?;
@@ -1289,7 +1672,13 @@ pub fn install_plan_for(manager: &str, app_dir: &Path, lockfile: &str, opts: &In
     install_plan_scoped(manager, app_dir, lockfile, opts, &[])
 }
 
-pub fn install_plan_scoped(manager: &str, app_dir: &Path, lockfile: &str, opts: &InstallOptions, workspaces: &[String]) -> Result<InstallPlan> {
+pub fn install_plan_scoped(
+    manager: &str,
+    app_dir: &Path,
+    lockfile: &str,
+    opts: &InstallOptions,
+    workspaces: &[String],
+) -> Result<InstallPlan> {
     let bytes = std::fs::read(app_dir.join(lockfile)).with_context(|| format!("reading {lockfile}"))?;
     match manager {
         "npm" => InstallPlan::from_lock(&PackageLock::parse(&bytes)?, opts),
@@ -1311,12 +1700,20 @@ pub fn install_plan_scoped(manager: &str, app_dir: &Path, lockfile: &str, opts: 
     }
 }
 
-async fn run_lifecycle(ctx: &Arc<Ctx>, step: &Step, root: &Path, jobs: &[acropolis_npm::scripts::ScriptJob]) -> Result<()> {
+async fn run_lifecycle(
+    ctx: &Arc<Ctx>,
+    step: &Step,
+    root: &Path,
+    jobs: &[acropolis_npm::scripts::ScriptJob],
+) -> Result<()> {
     if jobs.is_empty() {
         return Ok(());
     }
     let tools = ctx.tools();
-    let node = tools.iter().find(|t| t.name == "node").ok_or_else(|| anyhow!("install scripts need the node toolchain"))?;
+    let node = tools
+        .iter()
+        .find(|t| t.name == "node")
+        .ok_or_else(|| anyhow!("install scripts need the node toolchain"))?;
     let npm_dir = node.root.join("lib/node_modules/npm");
     let home = ctx.work.join("home");
     std::fs::create_dir_all(&home)?;
@@ -1331,7 +1728,10 @@ async fn run_lifecycle(ctx: &Arc<Ctx>, step: &Step, root: &Path, jobs: &[acropol
             let mut path = vec![
                 pkg_dir.join("node_modules/.bin").to_string_lossy().into_owned(),
                 root.join("node_modules/.bin").to_string_lossy().into_owned(),
-                npm_dir.join("node_modules/@npmcli/run-script/lib/node-gyp-bin").to_string_lossy().into_owned(),
+                npm_dir
+                    .join("node_modules/@npmcli/run-script/lib/node-gyp-bin")
+                    .to_string_lossy()
+                    .into_owned(),
                 npm_dir.join("bin/node-gyp-bin").to_string_lossy().into_owned(),
             ];
             for t in &tools {
@@ -1345,13 +1745,38 @@ async fn run_lifecycle(ctx: &Arc<Ctx>, step: &Step, root: &Path, jobs: &[acropol
             env.insert("npm_lifecycle_script".to_string(), command.clone());
             env.insert("npm_package_name".to_string(), job.name.clone());
             env.insert("npm_package_version".to_string(), version.clone());
-            env.insert("npm_config_nodedir".to_string(), node.root.to_string_lossy().into_owned());
-            env.insert("npm_config_node_gyp".to_string(), npm_dir.join("node_modules/node-gyp/bin/node-gyp.js").to_string_lossy().into_owned());
-            env.insert("npm_config_user_agent".to_string(), format!("npm/10 node/v{} linux x64", node.version));
-            env.insert("npm_node_execpath".to_string(), node.bin_dir.join("node").to_string_lossy().into_owned());
+            env.insert(
+                "npm_config_nodedir".to_string(),
+                node.root.to_string_lossy().into_owned(),
+            );
+            env.insert(
+                "npm_config_node_gyp".to_string(),
+                npm_dir
+                    .join("node_modules/node-gyp/bin/node-gyp.js")
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            env.insert(
+                "npm_config_user_agent".to_string(),
+                format!("npm/10 node/v{} linux x64", node.version),
+            );
+            env.insert(
+                "npm_node_execpath".to_string(),
+                node.bin_dir.join("node").to_string_lossy().into_owned(),
+            );
             env.insert("INIT_CWD".to_string(), root.to_string_lossy().into_owned());
-            env.insert("PUPPETEER_CACHE_DIR".to_string(), root.join("node_modules/.cache/puppeteer").to_string_lossy().into_owned());
-            env.insert("PLAYWRIGHT_BROWSERS_PATH".to_string(), root.join("node_modules/.cache/ms-playwright").to_string_lossy().into_owned());
+            env.insert(
+                "PUPPETEER_CACHE_DIR".to_string(),
+                root.join("node_modules/.cache/puppeteer")
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            env.insert(
+                "PLAYWRIGHT_BROWSERS_PATH".to_string(),
+                root.join("node_modules/.cache/ms-playwright")
+                    .to_string_lossy()
+                    .into_owned(),
+            );
             env.insert("NODE_ENV".to_string(), "production".to_string());
             acropolis_events::log(&step.id, format!("{} {stage}: {command}", job.name));
             ctx.exec
@@ -1370,12 +1795,20 @@ async fn run_lifecycle(ctx: &Arc<Ctx>, step: &Step, root: &Path, jobs: &[acropol
 }
 
 async fn resolve_alias(ctx: &Arc<Ctx>, image: &str) -> Result<String> {
-    let Some(build_image) = image.strip_prefix("@slim-of:") else { return Ok(image.to_string()) };
+    let Some(build_image) = image.strip_prefix("@slim-of:") else {
+        return Ok(image.to_string());
+    };
     let (layers, _) = image_rootfs(ctx, build_image).await?;
     for dir in layers.iter().rev() {
         for rel in ["etc/os-release", "usr/lib/os-release"] {
-            let Ok(text) = std::fs::read_to_string(dir.join(rel)) else { continue };
-            let field = |k: &str| text.lines().find_map(|l| l.strip_prefix(k)).map(|v| v.trim_matches('"').to_string());
+            let Ok(text) = std::fs::read_to_string(dir.join(rel)) else {
+                continue;
+            };
+            let field = |k: &str| {
+                text.lines()
+                    .find_map(|l| l.strip_prefix(k))
+                    .map(|v| v.trim_matches('"').to_string())
+            };
             if field("ID=").as_deref() == Some("debian")
                 && let Some(code) = field("VERSION_CODENAME=").filter(|c| !c.is_empty())
             {
@@ -1390,7 +1823,12 @@ async fn image_rootfs(ctx: &Arc<Ctx>, image: &str) -> Result<(Vec<PathBuf>, BTre
     let r = Reference::parse(image)?;
     let resolved = ctx.registry.resolve(&r, &ctx.opts.platform).await?;
     let mut env = BTreeMap::new();
-    if let Some(list) = resolved.config.get("config").and_then(|c| c.get("Env")).and_then(|e| e.as_array()) {
+    if let Some(list) = resolved
+        .config
+        .get("config")
+        .and_then(|c| c.get("Env"))
+        .and_then(|e| e.as_array())
+    {
         for item in list {
             if let Some((k, v)) = item.as_str().and_then(|s| s.split_once('=')) {
                 env.insert(k.to_string(), v.to_string());
@@ -1403,7 +1841,9 @@ async fn image_rootfs(ctx: &Arc<Ctx>, image: &str) -> Result<(Vec<PathBuf>, BTre
         let d = d.clone();
         async move {
             let hex = d.digest.trim_start_matches("sha256:").to_string();
-            let rootfs_root = std::env::var("ACROPOLIS_ROOTFS").map(PathBuf::from).unwrap_or_else(|_| ctx.opts.home.join("rootfs"));
+            let rootfs_root = std::env::var("ACROPOLIS_ROOTFS")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| ctx.opts.home.join("rootfs"));
             std::fs::create_dir_all(&rootfs_root)?;
             let dir = rootfs_root.join(&hex);
             let marker = rootfs_root.join(format!("{hex}.complete"));
@@ -1446,13 +1886,23 @@ async fn image_rootfs(ctx: &Arc<Ctx>, image: &str) -> Result<(Vec<PathBuf>, BTre
 }
 
 fn npm_lock_out_of_sync(app_dir: &Path, lockfile: &str) -> bool {
-    let Ok(pj) = crate::detect::read_package_json(app_dir) else { return false };
-    let Ok(bytes) = std::fs::read(app_dir.join(lockfile)) else { return false };
-    let Ok(lock) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return false };
+    let Ok(pj) = crate::detect::read_package_json(app_dir) else {
+        return false;
+    };
+    let Ok(bytes) = std::fs::read(app_dir.join(lockfile)) else {
+        return false;
+    };
+    let Ok(lock) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return false;
+    };
     let root = lock.get("packages").and_then(|p| p.get(""));
     for k in ["dependencies", "devDependencies", "optionalDependencies"] {
         let want = pj.get(k).and_then(|d| d.as_object()).cloned().unwrap_or_default();
-        let have = root.and_then(|r| r.get(k)).and_then(|d| d.as_object()).cloned().unwrap_or_default();
+        let have = root
+            .and_then(|r| r.get(k))
+            .and_then(|d| d.as_object())
+            .cloned()
+            .unwrap_or_default();
         for (name, range) in &want {
             if have.get(name) != Some(range) {
                 return true;
@@ -1473,7 +1923,10 @@ fn with_config_excludes(ctx: &Ctx, base: &[String]) -> Vec<String> {
 fn staging(dest: &Path) -> PathBuf {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let name = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = dest
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     dest.with_file_name(format!(".{name}.staging-{}-{n}", std::process::id()))
 }
 
@@ -1504,13 +1957,22 @@ async fn precompile_go_std(ctx: &Arc<Ctx>, step: &Step, root: &Path) -> Result<(
         .output()
         .await?;
     if !out.status.success() {
-        bail!("precompiling the Go standard library failed: {}", String::from_utf8_lossy(&out.stderr));
+        bail!(
+            "precompiling the Go standard library failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
     std::fs::write(staged.join(".complete"), "")?;
     if std::fs::rename(&staged, root.join(GO_STD_CACHE)).is_err() {
         let _ = std::fs::remove_dir_all(&staged);
     }
-    acropolis_events::log(&step.id, format!("precompiled the Go standard library in {:.1}s", started.elapsed().as_secs_f64()));
+    acropolis_events::log(
+        &step.id,
+        format!(
+            "precompiled the Go standard library in {:.1}s",
+            started.elapsed().as_secs_f64()
+        ),
+    );
     Ok(())
 }
 
@@ -1519,7 +1981,9 @@ fn seed_go_cache(go_root: &Path, gocache: &Path) {
     if !std_cache.join(".complete").exists() {
         return;
     }
-    let empty = std::fs::read_dir(gocache).map(|mut rd| rd.next().is_none()).unwrap_or(true);
+    let empty = std::fs::read_dir(gocache)
+        .map(|mut rd| rd.next().is_none())
+        .unwrap_or(true);
     if !empty {
         return;
     }
@@ -1562,7 +2026,12 @@ fn image_cache_path(ctx: &Ctx, image: &str) -> PathBuf {
 fn load_cached_image(ctx: &Ctx, image: &str) -> Option<ResolvedImage> {
     let base = image_cache_path(ctx, image);
     let meta = std::fs::metadata(base.with_extension("json")).ok()?;
-    let ttl = ctx.opts.env.config("TAG_TTL").and_then(|(v, _)| v.parse::<u64>().ok()).unwrap_or(900);
+    let ttl = ctx
+        .opts
+        .env
+        .config("TAG_TTL")
+        .and_then(|(v, _)| v.parse::<u64>().ok())
+        .unwrap_or(900);
     let pinned = image.contains("@sha256:");
     let age = meta.modified().ok()?.elapsed().ok()?;
     if !pinned && (ttl == 0 || age.as_secs() > ttl) {
@@ -1621,7 +2090,9 @@ async fn resolve_base(ctx: &Arc<Ctx>, step: &Step, image: &str) -> Result<Out> {
         Err(e) if image.contains("-trixie-slim") && format!("{e:#}").contains("MANIFEST_UNKNOWN") => {
             let fallback = image.replace("-trixie-slim", "-bookworm-slim");
             acropolis_events::log(&step.id, format!("warning: {image} does not exist, using {fallback}"));
-            ctx.registry.resolve_manifest(&Reference::parse(&fallback)?, &ctx.opts.platform).await?
+            ctx.registry
+                .resolve_manifest(&Reference::parse(&fallback)?, &ctx.opts.platform)
+                .await?
         }
         other => other?,
     };
@@ -1638,7 +2109,13 @@ async fn resolve_base(ctx: &Arc<Ctx>, step: &Step, image: &str) -> Result<Out> {
     Ok(Out::Base(Arc::new(resolved)))
 }
 
-async fn write_oci_layout(ctx: &Arc<Ctx>, base: Option<&ResolvedImage>, layers: &[Layer], a: &assemble::Assembled, out: &Path) -> Result<()> {
+async fn write_oci_layout(
+    ctx: &Arc<Ctx>,
+    base: Option<&ResolvedImage>,
+    layers: &[Layer],
+    a: &assemble::Assembled,
+    out: &Path,
+) -> Result<()> {
     let mut blobs: Vec<(String, PathBuf)> = Vec::new();
     if let Some(b) = base {
         let futs = b.manifest.layers.iter().map(|d| async move {
@@ -1660,7 +2137,8 @@ async fn write_oci_layout(ctx: &Arc<Ctx>, base: Option<&ResolvedImage>, layers: 
     if let Some(t) = &ctx.opts.target {
         desc["annotations"] = serde_json::json!({ "org.opencontainers.image.ref.name": t.tag.clone().unwrap_or_else(|| "latest".into()), "io.containerd.image.name": t.to_string() });
     }
-    let index = serde_json::json!({ "schemaVersion": 2, "mediaType": acropolis_oci::image::MT_OCI_INDEX, "manifests": [desc] });
+    let index =
+        serde_json::json!({ "schemaVersion": 2, "mediaType": acropolis_oci::image::MT_OCI_INDEX, "manifests": [desc] });
     let manifest = a.manifest.clone();
     let config = a.config.clone();
     let manifest_hex = a.manifest_digest.trim_start_matches("sha256:").to_string();
@@ -1701,13 +2179,33 @@ async fn write_oci_layout(ctx: &Arc<Ctx>, base: Option<&ResolvedImage>, layers: 
 const NFT_CACHE_HOOK: &str = include_str!("nft-cache.js");
 
 fn layer_cache_key(ctx: &Arc<Ctx>, step: &Step, from: &LayerFrom) -> Option<String> {
-    if !matches!(from, LayerFrom::Tool { .. } | LayerFrom::ToolTree { .. } | LayerFrom::NodeModules { .. } | LayerFrom::Inline { .. }) {
+    if !matches!(
+        from,
+        LayerFrom::Tool { .. } | LayerFrom::ToolTree { .. } | LayerFrom::NodeModules { .. } | LayerFrom::Inline { .. }
+    ) {
         return None;
     }
-    let mut versions: Vec<String> = ctx.dep_outputs(step).into_iter().filter_map(|o| if let Out::Tool(t) = o { Some(format!("{}={}", t.name, t.version)) } else { None }).collect();
+    let mut versions: Vec<String> = ctx
+        .dep_outputs(step)
+        .into_iter()
+        .filter_map(|o| {
+            if let Out::Tool(t) = o {
+                Some(format!("{}={}", t.name, t.version))
+            } else {
+                None
+            }
+        })
+        .collect();
     versions.sort();
     let o = ctx.opts.layer;
-    let text = format!("v1 {} {:?} {} {} {}", step.hash, o.compression, o.level, versions.join(","), step.id);
+    let text = format!(
+        "v1 {} {:?} {} {} {}",
+        step.hash,
+        o.compression,
+        o.level,
+        versions.join(","),
+        step.id
+    );
     Some(acropolis_store::sha256_bytes(text.as_bytes()).hex())
 }
 
@@ -1750,7 +2248,9 @@ fn save_cached_layer(ctx: &Arc<Ctx>, key: &str, l: &Layer) {
 
 async fn github_latest_tag(repo: &str) -> Result<String> {
     let url = format!("https://github.com/{repo}/releases/latest");
-    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build()?;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
     acropolis_events::add_request();
     let resp = client.get(&url).send().await?;
     let loc = resp
@@ -1825,20 +2325,43 @@ async fn build_layer(ctx: &Arc<Ctx>, step: &Step, dest: &str, from: &LayerFrom) 
                     }
                     contained(&src, &root)?;
                     if root.is_file() {
-                        let prefix = if dest.is_empty() { to.clone() } else { format!("{dest}/{to}") };
+                        let prefix = if dest.is_empty() {
+                            to.clone()
+                        } else {
+                            format!("{dest}/{to}")
+                        };
                         let mut tw = TarWriter::new(Vec::new());
-                        let parent = Path::new(&prefix).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-                        for d in source::ancestors(&parent).into_iter().skip(source::ancestors(&dest).len()) {
+                        let parent = Path::new(&prefix)
+                            .parent()
+                            .map(|p| p.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        for d in source::ancestors(&parent)
+                            .into_iter()
+                            .skip(source::ancestors(&dest).len())
+                        {
                             tw.dir(&d, 0o755)?;
                         }
                         let mut f = std::fs::File::open(&root)?;
                         let meta = f.metadata()?;
                         use std::os::unix::fs::PermissionsExt;
-                        tw.file_reader(&prefix, if meta.permissions().mode() & 0o111 != 0 { 0o755 } else { 0o644 }, meta.len(), &mut f)?;
+                        tw.file_reader(
+                            &prefix,
+                            if meta.permissions().mode() & 0o111 != 0 {
+                                0o755
+                            } else {
+                                0o644
+                            },
+                            meta.len(),
+                            &mut f,
+                        )?;
                         std::io::Write::write_all(&mut b, tw.get_mut())?;
                         continue;
                     }
-                    let prefix = if dest.is_empty() { to.clone() } else { format!("{dest}/{to}") };
+                    let prefix = if dest.is_empty() {
+                        to.clone()
+                    } else {
+                        format!("{dest}/{to}")
+                    };
                     let entries = source::walk(&root, &Ignore::new(&[]))?;
                     let mut sub_head = TarWriter::new(Vec::new());
                     let base_anc = source::ancestors(&dest).len();
@@ -1867,7 +2390,10 @@ async fn build_layer(ctx: &Arc<Ctx>, step: &Step, dest: &str, from: &LayerFrom) 
             let mode = *mode;
             tokio::task::spawn_blocking(move || {
                 let mut tw = TarWriter::new(layer::LayerBuilder::new(&store, &comment, opts)?);
-                let parent = Path::new(&dest).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+                let parent = Path::new(&dest)
+                    .parent()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default();
                 for d in source::ancestors(&parent) {
                     tw.dir(&d, 0o755)?;
                 }
@@ -1879,14 +2405,25 @@ async fn build_layer(ctx: &Arc<Ctx>, step: &Step, dest: &str, from: &LayerFrom) 
             .await?
         }
         LayerFrom::Tool { tool, files } => {
-            let t = ctx.tools().into_iter().find(|t| &t.name == tool).ok_or_else(|| anyhow!("toolchain {tool} not installed"))?;
+            let t = ctx
+                .tools()
+                .into_iter()
+                .find(|t| &t.name == tool)
+                .ok_or_else(|| anyhow!("toolchain {tool} not installed"))?;
             let files = files.clone();
             tokio::task::spawn_blocking(move || {
                 let mut tw = TarWriter::new(layer::LayerBuilder::new(&store, &comment, opts)?);
                 let mut dirs = std::collections::BTreeSet::new();
                 for (_, to) in &files {
-                    let full = if dest.is_empty() { to.clone() } else { format!("{dest}/{to}") };
-                    let parent = Path::new(&full).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+                    let full = if dest.is_empty() {
+                        to.clone()
+                    } else {
+                        format!("{dest}/{to}")
+                    };
+                    let parent = Path::new(&full)
+                        .parent()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_default();
                     for d in source::ancestors(&parent) {
                         dirs.insert(d);
                     }
@@ -1895,7 +2432,11 @@ async fn build_layer(ctx: &Arc<Ctx>, step: &Step, dest: &str, from: &LayerFrom) 
                     tw.dir(d, 0o755)?;
                 }
                 for (from, to) in &files {
-                    let full = if dest.is_empty() { to.clone() } else { format!("{dest}/{to}") };
+                    let full = if dest.is_empty() {
+                        to.clone()
+                    } else {
+                        format!("{dest}/{to}")
+                    };
                     let src = t.root.join(from);
                     let mut f = std::fs::File::open(&src).with_context(|| format!("opening {}", src.display()))?;
                     let size = f.metadata()?.len();
@@ -1905,7 +2446,11 @@ async fn build_layer(ctx: &Arc<Ctx>, step: &Step, dest: &str, from: &LayerFrom) 
             })
             .await?
         }
-        LayerFrom::Upper { step: from_step, include, exclude } => {
+        LayerFrom::Upper {
+            step: from_step,
+            include,
+            exclude,
+        } => {
             let upper = match ctx.get(from_step) {
                 Out::Upper(p) => p,
                 _ => bail!("step {from_step} has no filesystem output"),
@@ -1920,9 +2465,16 @@ async fn build_layer(ctx: &Arc<Ctx>, step: &Step, dest: &str, from: &LayerFrom) 
             .await?
         }
         LayerFrom::ToolTree { tool } => {
-            let t = ctx.tools().into_iter().find(|t| &t.name == tool).ok_or_else(|| anyhow!("toolchain {tool} not installed"))?;
+            let t = ctx
+                .tools()
+                .into_iter()
+                .find(|t| &t.name == tool)
+                .ok_or_else(|| anyhow!("toolchain {tool} not installed"))?;
             tokio::task::spawn_blocking(move || {
-                let entries = source::walk(&t.root, &Ignore::new(&[".acropolis-complete".into(), ".acropolis-std-*".into()]))?;
+                let entries = source::walk(
+                    &t.root,
+                    &Ignore::new(&[".acropolis-complete".into(), ".acropolis-std-*".into()]),
+                )?;
                 let mut b = layer::LayerBuilder::new(&store, &comment, opts)?;
                 source::stream_tree_into(&t.root, &entries, &dest, true, &mut b)?;
                 b.finish()
@@ -1956,7 +2508,11 @@ async fn build_layer(ctx: &Arc<Ctx>, step: &Step, dest: &str, from: &LayerFrom) 
                     tw.dir(&d, 0o755)?;
                 }
                 for (name, content) in &files {
-                    let p = if dest.is_empty() { name.clone() } else { format!("{dest}/{name}") };
+                    let p = if dest.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{dest}/{name}")
+                    };
                     let mode = if name.ends_with(".sh") { 0o755 } else { 0o644 };
                     tw.file_bytes(&p, mode, content.as_bytes())?;
                 }
@@ -1973,7 +2529,11 @@ async fn build_layer(ctx: &Arc<Ctx>, step: &Step, dest: &str, from: &LayerFrom) 
                 let ig = Ignore::new(&[".wh.*".into(), "**/.wh.*".into()]);
                 for path in &include {
                     let rel = clean_relative(path.trim_matches('/'))?;
-                    let target = if dest.is_empty() { rel.to_string() } else { format!("{dest}/{rel}") };
+                    let target = if dest.is_empty() {
+                        rel.to_string()
+                    } else {
+                        format!("{dest}/{rel}")
+                    };
                     let found: Vec<PathBuf> = layers
                         .iter()
                         .filter(|l| !symlink_on_the_way(l, rel))
@@ -1984,7 +2544,10 @@ async fn build_layer(ctx: &Arc<Ctx>, step: &Step, dest: &str, from: &LayerFrom) 
                         bail!("{rel} not found in {image}");
                     }
                     let mut head = TarWriter::new(Vec::new());
-                    let parent = Path::new(&target).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+                    let parent = Path::new(&target)
+                        .parent()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_default();
                     for d in source::ancestors(&parent) {
                         head.dir(&d, 0o755)?;
                     }
@@ -2018,10 +2581,16 @@ async fn build_layer(ctx: &Arc<Ctx>, step: &Step, dest: &str, from: &LayerFrom) 
                 .ok_or_else(|| anyhow!("node_modules layer without fetched packages"))?;
             tokio::task::spawn_blocking(move || {
                 let mut b = layer::LayerBuilder::new(&store, &comment, opts)?;
-                acropolis_npm::install::stream_node_modules(&state.plan, &state.tarballs, &dest, |_| true, &mut |frag| {
-                    std::io::Write::write_all(&mut b, &frag)?;
-                    Ok(())
-                })?;
+                acropolis_npm::install::stream_node_modules(
+                    &state.plan,
+                    &state.tarballs,
+                    &dest,
+                    |_| true,
+                    &mut |frag| {
+                        std::io::Write::write_all(&mut b, &frag)?;
+                        Ok(())
+                    },
+                )?;
                 b.finish()
             })
             .await?

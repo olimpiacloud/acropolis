@@ -48,7 +48,11 @@ fn cpath(p: &Path) -> Result<CString> {
 }
 
 fn check(rc: libc::c_int) -> std::io::Result<()> {
-    if rc != 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) }
+    if rc != 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 fn enter(p: &Prepared) -> std::io::Result<()> {
@@ -80,7 +84,13 @@ fn enter(p: &Prepared) -> std::io::Result<()> {
             libc::_exit(128 + libc::WTERMSIG(status));
         }
         libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
-        check(libc::mount(std::ptr::null(), c"/".as_ptr(), std::ptr::null(), libc::MS_REC | libc::MS_PRIVATE, std::ptr::null()))?;
+        check(libc::mount(
+            std::ptr::null(),
+            c"/".as_ptr(),
+            std::ptr::null(),
+            libc::MS_REC | libc::MS_PRIVATE,
+            std::ptr::null(),
+        ))?;
         check(libc::mount(
             c"overlay".as_ptr(),
             p.merged.as_ptr(),
@@ -106,7 +116,13 @@ fn enter(p: &Prepared) -> std::io::Result<()> {
             let fd = libc::open(target.as_ptr(), libc::O_CREAT | libc::O_WRONLY | libc::O_CLOEXEC, 0o666);
             if fd >= 0 {
                 libc::close(fd);
-                check(libc::mount(host.as_ptr(), target.as_ptr(), std::ptr::null(), libc::MS_BIND, std::ptr::null()))?;
+                check(libc::mount(
+                    host.as_ptr(),
+                    target.as_ptr(),
+                    std::ptr::null(),
+                    libc::MS_BIND,
+                    std::ptr::null(),
+                ))?;
             }
         }
         for (target, link) in &p.dev_links {
@@ -121,7 +137,14 @@ fn enter(p: &Prepared) -> std::io::Result<()> {
                 c"mode=1777".as_ptr() as *const libc::c_void,
             );
         }
-        if libc::mount(c"/sys".as_ptr(), p.sys_target.as_ptr(), std::ptr::null(), libc::MS_BIND | libc::MS_REC, std::ptr::null()) == 0 {
+        if libc::mount(
+            c"/sys".as_ptr(),
+            p.sys_target.as_ptr(),
+            std::ptr::null(),
+            libc::MS_BIND | libc::MS_REC,
+            std::ptr::null(),
+        ) == 0
+        {
             let _ = libc::mount(
                 std::ptr::null(),
                 p.sys_target.as_ptr(),
@@ -131,10 +154,22 @@ fn enter(p: &Prepared) -> std::io::Result<()> {
             );
         }
         if let Some(src) = &p.resolv_src {
-            let _ = libc::mount(src.as_ptr(), p.resolv_target.as_ptr(), std::ptr::null(), libc::MS_BIND, std::ptr::null());
+            let _ = libc::mount(
+                src.as_ptr(),
+                p.resolv_target.as_ptr(),
+                std::ptr::null(),
+                libc::MS_BIND,
+                std::ptr::null(),
+            );
         }
         for (host, guest, ro) in &p.binds {
-            check(libc::mount(host.as_ptr(), guest.as_ptr(), std::ptr::null(), libc::MS_BIND | libc::MS_REC, std::ptr::null()))?;
+            check(libc::mount(
+                host.as_ptr(),
+                guest.as_ptr(),
+                std::ptr::null(),
+                libc::MS_BIND | libc::MS_REC,
+                std::ptr::null(),
+            ))?;
             if *ro {
                 check(libc::mount(
                     std::ptr::null(),
@@ -172,7 +207,12 @@ pub async fn run(spec: RootfsRun) -> Result<Vec<String>> {
     for d in [&spec.upper, &spec.work, &spec.merged] {
         std::fs::create_dir_all(d)?;
     }
-    let lower: Vec<String> = spec.lower.iter().rev().map(|p| p.to_string_lossy().into_owned()).collect();
+    let lower: Vec<String> = spec
+        .lower
+        .iter()
+        .rev()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
     let opts = format!(
         "lowerdir={},upperdir={},workdir={}",
         lower.join(":"),
@@ -207,7 +247,11 @@ pub async fn run(spec: RootfsRun) -> Result<Vec<String>> {
     }
     let resolv = Path::new("/run/systemd/resolve/resolv.conf");
     let resolv_src = if spec.network {
-        let src = if resolv.exists() { resolv.to_path_buf() } else { PathBuf::from("/etc/resolv.conf") };
+        let src = if resolv.exists() {
+            resolv.to_path_buf()
+        } else {
+            PathBuf::from("/etc/resolv.conf")
+        };
         let t = spec.upper.join("etc/resolv.conf");
         if !t.exists() {
             std::fs::write(&t, b"")?;
@@ -224,12 +268,23 @@ pub async fn run(spec: RootfsRun) -> Result<Vec<String>> {
         dev_target: cpath(&spec.merged.join("dev"))?,
         dev_nodes: ["null", "zero", "full", "random", "urandom", "tty"]
             .iter()
-            .map(|n| Ok((cpath(&Path::new("/dev").join(n))?, cpath(&spec.merged.join("dev").join(n))?)))
+            .map(|n| {
+                Ok((
+                    cpath(&Path::new("/dev").join(n))?,
+                    cpath(&spec.merged.join("dev").join(n))?,
+                ))
+            })
             .collect::<Result<_>>()?,
-        dev_links: [("/proc/self/fd", "fd"), ("/proc/self/fd/0", "stdin"), ("/proc/self/fd/1", "stdout"), ("/proc/self/fd/2", "stderr"), ("pts/ptmx", "ptmx")]
-            .iter()
-            .map(|(t, l)| Ok((CString::new(*t)?, cpath(&spec.merged.join("dev").join(l))?)))
-            .collect::<Result<_>>()?,
+        dev_links: [
+            ("/proc/self/fd", "fd"),
+            ("/proc/self/fd/0", "stdin"),
+            ("/proc/self/fd/1", "stdout"),
+            ("/proc/self/fd/2", "stderr"),
+            ("pts/ptmx", "ptmx"),
+        ]
+        .iter()
+        .map(|(t, l)| Ok((CString::new(*t)?, cpath(&spec.merged.join("dev").join(l))?)))
+        .collect::<Result<_>>()?,
         dev_shm: cpath(&spec.merged.join("dev/shm"))?,
         sys_target: cpath(&spec.merged.join("sys"))?,
         resolv_src,
@@ -239,11 +294,17 @@ pub async fn run(spec: RootfsRun) -> Result<Vec<String>> {
     };
     let mut c = Command::new(&spec.argv[0]);
     c.args(&spec.argv[1..]).env_clear().envs(&spec.env);
-    c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true).process_group(0);
+    c.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .process_group(0);
     unsafe {
         c.pre_exec(move || enter(&prepared));
     }
-    let mut child = c.spawn().with_context(|| format!("starting {} in image rootfs", spec.argv[0]))?;
+    let mut child = c
+        .spawn()
+        .with_context(|| format!("starting {} in image rootfs", spec.argv[0]))?;
     let group = crate::ProcessGroup::of(&child);
     let (status, tail) = crate::wait_with_output(&spec.step, &mut child, group).await?;
     for b in &spec.binds {

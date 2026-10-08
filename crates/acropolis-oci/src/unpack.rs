@@ -59,7 +59,10 @@ pub fn unpack_for_overlay<R: Read>(reader: R, dest: &Path) -> Result<u64> {
         if symlinked_ancestor(dest, &path) {
             continue;
         }
-        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -67,7 +70,13 @@ pub fn unpack_for_overlay<R: Read>(reader: R, dest: &Path) -> Result<u64> {
             if let Some(parent) = path.parent() {
                 let p = cstr(parent);
                 unsafe {
-                    libc::setxattr(p.as_ptr(), c"trusted.overlay.opaque".as_ptr(), b"y".as_ptr() as *const libc::c_void, 1, 0);
+                    libc::setxattr(
+                        p.as_ptr(),
+                        c"trusted.overlay.opaque".as_ptr(),
+                        b"y".as_ptr() as *const libc::c_void,
+                        1,
+                        0,
+                    );
                 }
             }
             continue;
@@ -177,7 +186,12 @@ mod tests {
         unpack_for_overlay(std::io::Cursor::new(data), &dest).unwrap();
         assert!(!outside.join("pwned").exists());
         assert_eq!(std::fs::read(dest.join("ok/file")).unwrap(), b"y");
-        assert!(std::fs::symlink_metadata(dest.join("ok/link")).unwrap().file_type().is_symlink());
+        assert!(
+            std::fs::symlink_metadata(dest.join("ok/link"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 }

@@ -34,7 +34,11 @@ pub struct BunLock {
 
 fn obj_map(v: Option<&Value>) -> BTreeMap<String, String> {
     v.and_then(|v| v.as_object())
-        .map(|m| m.iter().filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string()))).collect())
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -64,7 +68,11 @@ pub fn key_to_path(key: &str) -> String {
             i += 1;
         }
     }
-    names.iter().map(|n| format!("node_modules/{n}")).collect::<Vec<_>>().join("/")
+    names
+        .iter()
+        .map(|n| format!("node_modules/{n}"))
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn key_segments(key: &str) -> Vec<String> {
@@ -104,21 +112,32 @@ impl BunLock {
                 let arr = v.as_array().cloned().unwrap_or_default();
                 let spec = arr.first().and_then(|s| s.as_str()).unwrap_or("").to_string();
                 let (name, rest) = split_spec(&spec);
-                let (registry, meta, integrity) = if rest.starts_with("workspace:")
-                    || rest.starts_with("link:")
-                    || rest.starts_with("file:")
-                {
-                    (String::new(), arr.get(1).cloned().unwrap_or(Value::Null), None)
-                } else if arr.get(1).map(|v| v.is_string()).unwrap_or(false) {
-                    (
-                        arr[1].as_str().unwrap_or("").to_string(),
-                        arr.get(2).cloned().unwrap_or(Value::Null),
-                        arr.get(3).and_then(|i| i.as_str()).map(|s| s.to_string()),
-                    )
-                } else {
-                    (String::new(), arr.get(1).cloned().unwrap_or(Value::Null), arr.get(2).and_then(|i| i.as_str()).map(|s| s.to_string()))
-                };
-                entries.insert(key.clone(), Entry { name, spec: rest, registry, meta, integrity });
+                let (registry, meta, integrity) =
+                    if rest.starts_with("workspace:") || rest.starts_with("link:") || rest.starts_with("file:") {
+                        (String::new(), arr.get(1).cloned().unwrap_or(Value::Null), None)
+                    } else if arr.get(1).map(|v| v.is_string()).unwrap_or(false) {
+                        (
+                            arr[1].as_str().unwrap_or("").to_string(),
+                            arr.get(2).cloned().unwrap_or(Value::Null),
+                            arr.get(3).and_then(|i| i.as_str()).map(|s| s.to_string()),
+                        )
+                    } else {
+                        (
+                            String::new(),
+                            arr.get(1).cloned().unwrap_or(Value::Null),
+                            arr.get(2).and_then(|i| i.as_str()).map(|s| s.to_string()),
+                        )
+                    };
+                entries.insert(
+                    key.clone(),
+                    Entry {
+                        name,
+                        spec: rest,
+                        registry,
+                        meta,
+                        integrity,
+                    },
+                );
             }
         }
         Ok(BunLock { workspaces, entries })
@@ -128,7 +147,11 @@ impl BunLock {
         let segs = key_segments(from_key);
         for depth in (0..=segs.len()).rev() {
             let prefix = segs[..depth].join("/");
-            let cand = if prefix.is_empty() { dep.to_string() } else { format!("{prefix}/{dep}") };
+            let cand = if prefix.is_empty() {
+                dep.to_string()
+            } else {
+                format!("{prefix}/{dep}")
+            };
             if self.entries.contains_key(&cand) {
                 return Some(cand);
             }
@@ -144,8 +167,16 @@ impl BunLock {
         let mut reachable: BTreeSet<String> = BTreeSet::new();
         let mut queue: VecDeque<String> = VecDeque::new();
         let mut plan = InstallPlan::default();
-        for w in self.workspaces.iter().filter(|w| only.is_empty() || only.contains(&w.path)) {
-            let scope = if w.path.is_empty() { String::new() } else { w.name.clone() };
+        for w in self
+            .workspaces
+            .iter()
+            .filter(|w| only.is_empty() || only.contains(&w.path))
+        {
+            let scope = if w.path.is_empty() {
+                String::new()
+            } else {
+                w.name.clone()
+            };
             let mut roots: Vec<&String> = w.deps.keys().collect();
             if opts.include_optional {
                 roots.extend(w.optional.keys());
@@ -174,7 +205,13 @@ impl BunLock {
             reachable.insert(k.clone());
             let mut deps: Vec<String> = obj_map(e.meta.get("dependencies")).into_keys().collect();
             deps.extend(obj_map(e.meta.get("peerDependencies")).into_keys().filter(|p| {
-                let optional = e.meta.get("peerDependenciesMeta").and_then(|m| m.get(p)).and_then(|m| m.get("optional")).and_then(|o| o.as_bool()).unwrap_or(false);
+                let optional = e
+                    .meta
+                    .get("peerDependenciesMeta")
+                    .and_then(|m| m.get(p))
+                    .and_then(|m| m.get("optional"))
+                    .and_then(|o| o.as_bool())
+                    .unwrap_or(false);
                 !optional
             }));
             if opts.include_optional {
@@ -198,12 +235,23 @@ impl BunLock {
         for k in &reachable {
             let e = &self.entries[k];
             let path = key_to_path(k);
-            let nm = path.rsplit_once("/node_modules/").map(|(a, _)| format!("{a}/node_modules")).unwrap_or_else(|| "node_modules".into());
+            let nm = path
+                .rsplit_once("/node_modules/")
+                .map(|(a, _)| format!("{a}/node_modules"))
+                .unwrap_or_else(|| "node_modules".into());
             bin_dirs.entry(nm).or_default().push(path.clone());
             let bins = bins_of(&e.name, &e.meta.get("bin").cloned());
-            if let Some(target) = e.spec.strip_prefix("workspace:").or_else(|| e.spec.strip_prefix("link:")).or_else(|| e.spec.strip_prefix("file:")) {
+            if let Some(target) = e
+                .spec
+                .strip_prefix("workspace:")
+                .or_else(|| e.spec.strip_prefix("link:"))
+                .or_else(|| e.spec.strip_prefix("file:"))
+            {
                 let target = target.trim_start_matches("./");
-                plan.links.push(Link { path: path.clone(), target: relative_link(Path::new(&path), Path::new(target)) });
+                plan.links.push(Link {
+                    path: path.clone(),
+                    target: relative_link(Path::new(&path), Path::new(target)),
+                });
                 if !bins.is_empty() {
                     plan.known_bins.insert(path.clone(), bins);
                 }
@@ -212,7 +260,10 @@ impl BunLock {
             let source = if e.spec.starts_with("github:") || e.spec.starts_with("git+") || e.spec.starts_with("git:") {
                 Source::Git { url: e.spec.clone() }
             } else if e.spec.starts_with("http://") || e.spec.starts_with("https://") {
-                Source::Registry { url: e.spec.clone(), integrity: None }
+                Source::Registry {
+                    url: e.spec.clone(),
+                    integrity: None,
+                }
             } else {
                 let url = if e.registry.is_empty() {
                     default_registry_url(&e.name, &e.spec)
@@ -220,7 +271,13 @@ impl BunLock {
                     e.registry.clone()
                 } else {
                     let short = e.name.rsplit('/').next().unwrap_or(&e.name);
-                    format!("{}/{}/-/{}-{}.tgz", e.registry.trim_end_matches('/'), e.name, short, e.spec)
+                    format!(
+                        "{}/{}/-/{}-{}.tgz",
+                        e.registry.trim_end_matches('/'),
+                        e.name,
+                        short,
+                        e.spec
+                    )
                 };
                 let integrity = match &e.integrity {
                     Some(i) => Some(Integrity::parse_sri(i).with_context(|| format!("integrity of {k}"))?),
@@ -239,7 +296,10 @@ impl BunLock {
                 dev: false,
             });
         }
-        plan.bin_dirs = bin_dirs.into_iter().map(|(dir, packages)| BinDir { dir, packages }).collect();
+        plan.bin_dirs = bin_dirs
+            .into_iter()
+            .map(|(dir, packages)| BinDir { dir, packages })
+            .collect();
         Ok(plan)
     }
 }
@@ -250,8 +310,14 @@ mod tests {
 
     #[test]
     fn keys() {
-        assert_eq!(key_to_path("body-parser/debug"), "node_modules/body-parser/node_modules/debug");
-        assert_eq!(key_to_path("@babel/core/semver"), "node_modules/@babel/core/node_modules/semver");
+        assert_eq!(
+            key_to_path("body-parser/debug"),
+            "node_modules/body-parser/node_modules/debug"
+        );
+        assert_eq!(
+            key_to_path("@babel/core/semver"),
+            "node_modules/@babel/core/node_modules/semver"
+        );
         assert_eq!(key_to_path("@a/b"), "node_modules/@a/b");
     }
 
@@ -272,19 +338,37 @@ mod tests {
 }"#;
         let lock = BunLock::parse(text).unwrap();
         let plan = lock
-            .install_plan(&InstallOptions { include_dev: false, include_optional: true, platform: Default::default() })
+            .install_plan(&InstallOptions {
+                include_dev: false,
+                include_optional: true,
+                platform: Default::default(),
+            })
             .unwrap();
         assert_eq!(plan.packages.len(), 1);
         assert_eq!(plan.links.len(), 2);
         let b = plan.links.iter().find(|l| l.path == "node_modules/pkg-b").unwrap();
         assert_eq!(b.target, "../packages/pkg-b");
         let scoped = lock
-            .install_plan_scoped(&InstallOptions { include_dev: false, include_optional: true, platform: Default::default() }, &["packages/pkg-a".into()])
+            .install_plan_scoped(
+                &InstallOptions {
+                    include_dev: false,
+                    include_optional: true,
+                    platform: Default::default(),
+                },
+                &["packages/pkg-a".into()],
+            )
             .unwrap();
         assert_eq!(scoped.packages.len(), 1);
         assert!(scoped.links.is_empty());
         let scoped = lock
-            .install_plan_scoped(&InstallOptions { include_dev: false, include_optional: true, platform: Default::default() }, &["packages/pkg-b".into()])
+            .install_plan_scoped(
+                &InstallOptions {
+                    include_dev: false,
+                    include_optional: true,
+                    platform: Default::default(),
+                },
+                &["packages/pkg-b".into()],
+            )
             .unwrap();
         assert_eq!(scoped.links.len(), 1);
         assert_eq!(scoped.packages.len(), 1);

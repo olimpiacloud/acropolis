@@ -78,7 +78,11 @@ pub fn parse_range(spec: &str) -> Vec<VersionReq> {
             toks
         };
         let norm: Vec<String> = comparators.iter().filter_map(|c| normalize_comparator(c)).collect();
-        let joined = if norm.is_empty() { "*".to_string() } else { norm.join(", ") };
+        let joined = if norm.is_empty() {
+            "*".to_string()
+        } else {
+            norm.join(", ")
+        };
         if let Ok(r) = VersionReq::parse(&joined) {
             out.push(r);
         }
@@ -91,7 +95,10 @@ pub fn best_match<'a>(spec: &str, versions: impl Iterator<Item = &'a Version>) -
     if reqs.is_empty() {
         return None;
     }
-    versions.filter(|v| v.pre.is_empty() && reqs.iter().any(|r| r.matches(v))).max().cloned()
+    versions
+        .filter(|v| v.pre.is_empty() && reqs.iter().any(|r| r.matches(v)))
+        .max()
+        .cloned()
 }
 
 #[cfg(test)]
@@ -125,13 +132,28 @@ pub fn fuzzy_version(spec: &str) -> String {
         let parts: Vec<&str> = v.split_whitespace().collect();
         for (i, part) in parts.iter().enumerate() {
             if let Some(after) = part.strip_prefix(">=") {
-                let x = if after.is_empty() { parts.get(i + 1).copied().unwrap_or("") } else { after };
-                return x.trim().trim_start_matches('v').split('.').next().unwrap_or("").to_string();
+                let x = if after.is_empty() {
+                    parts.get(i + 1).copied().unwrap_or("")
+                } else {
+                    after
+                };
+                return x
+                    .trim()
+                    .trim_start_matches('v')
+                    .split('.')
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
             }
         }
     }
     if let Some(after) = v.strip_prefix('^') {
-        return after.trim_start_matches('v').split('.').next().unwrap_or("").to_string();
+        return after
+            .trim_start_matches('v')
+            .split('.')
+            .next()
+            .unwrap_or("")
+            .to_string();
     }
     let v = v.trim_start_matches('~').trim_start_matches('v');
     let v = v.replace(".x", "");

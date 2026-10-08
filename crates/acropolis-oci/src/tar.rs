@@ -61,7 +61,12 @@ fn pax_record(key: &str, value: &str) -> Vec<u8> {
 
 impl<W: Write> TarWriter<W> {
     pub fn new(out: W) -> Self {
-        TarWriter { out, entries: 0, uid: 0, gid: 0 }
+        TarWriter {
+            out,
+            entries: 0,
+            uid: 0,
+            gid: 0,
+        }
     }
 
     pub fn entries(&self) -> u64 {
@@ -110,14 +115,27 @@ impl<W: Write> TarWriter<W> {
             Kind::Symlink => '2',
             Kind::Hardlink => '1',
         };
-        fill(&mut h, flag, name, mode, if size_fits { size } else { 0 }, linkname, prefix, (self.uid, self.gid));
+        fill(
+            &mut h,
+            flag,
+            name,
+            mode,
+            if size_fits { size } else { 0 },
+            linkname,
+            prefix,
+            (self.uid, self.gid),
+        );
         self.out.write_all(&h)?;
         self.entries += 1;
         Ok(())
     }
 
     pub fn dir(&mut self, path: &str, mode: u32) -> io::Result<()> {
-        let p = if path.ends_with('/') { path.to_string() } else { format!("{path}/") };
+        let p = if path.ends_with('/') {
+            path.to_string()
+        } else {
+            format!("{path}/")
+        };
         self.header(Kind::Dir, &p, mode, 0, "")
     }
 
@@ -181,7 +199,16 @@ fn pad<W: Write>(out: &mut W, size: u64) -> io::Result<()> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn fill(h: &mut [u8; BLOCK], flag: char, name: &str, mode: u32, size: u64, link: &str, prefix: &str, owner: (u32, u32)) {
+fn fill(
+    h: &mut [u8; BLOCK],
+    flag: char,
+    name: &str,
+    mode: u32,
+    size: u64,
+    link: &str,
+    prefix: &str,
+    owner: (u32, u32),
+) {
     h[..name.len()].copy_from_slice(name.as_bytes());
     octal(&mut h[100..108], (mode & 0o7777) as u64);
     octal(&mut h[108..116], owner.0 as u64);
@@ -218,7 +245,12 @@ pub struct TarReader<R: Read> {
 
 impl<R: Read> TarReader<R> {
     pub fn new(inner: R) -> Self {
-        TarReader { inner, remaining: 0, padding: 0, done: false }
+        TarReader {
+            inner,
+            remaining: 0,
+            padding: 0,
+            done: false,
+        }
     }
 
     fn skip_rest(&mut self) -> io::Result<()> {
@@ -280,11 +312,22 @@ impl<R: Read> TarReader<R> {
                 _ => {}
             }
             let name = cstr(&h[0..100]);
-            let prefix = if &h[257..262] == b"ustar" { cstr(&h[345..500]) } else { String::new() };
+            let prefix = if &h[257..262] == b"ustar" {
+                cstr(&h[345..500])
+            } else {
+                String::new()
+            };
             let path = pax_path.take().or(gnu_long_name.take()).unwrap_or_else(|| {
-                if prefix.is_empty() { name } else { format!("{prefix}/{name}") }
+                if prefix.is_empty() {
+                    name
+                } else {
+                    format!("{prefix}/{name}")
+                }
             });
-            let link = pax_link.take().or(gnu_long_link.take()).unwrap_or_else(|| cstr(&h[157..257]));
+            let link = pax_link
+                .take()
+                .or(gnu_long_link.take())
+                .unwrap_or_else(|| cstr(&h[157..257]));
             let mode = parse_num(&h[100..108]) as u32;
             let uid = parse_num(&h[108..116]) as u32;
             let gid = parse_num(&h[116..124]) as u32;
@@ -300,11 +343,23 @@ impl<R: Read> TarReader<R> {
                     continue;
                 }
             };
-            let kind = if kind == Kind::File && path.ends_with('/') { Kind::Dir } else { kind };
+            let kind = if kind == Kind::File && path.ends_with('/') {
+                Kind::Dir
+            } else {
+                kind
+            };
             let data_size = if kind == Kind::File { size } else { 0 };
             self.remaining = data_size;
             self.padding = (BLOCK as u64 - data_size % BLOCK as u64) % BLOCK as u64;
-            return Ok(Some(Entry { path, kind, mode, size: data_size, link, uid, gid }));
+            return Ok(Some(Entry {
+                path,
+                kind,
+                mode,
+                size: data_size,
+                link,
+                uid,
+                gid,
+            }));
         }
     }
 
@@ -374,8 +429,12 @@ fn parse_pax(data: &[u8]) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut rest = data;
     while !rest.is_empty() {
-        let Some(sp) = rest.iter().position(|&c| c == b' ') else { break };
-        let Ok(len) = std::str::from_utf8(&rest[..sp]).unwrap_or("").parse::<usize>() else { break };
+        let Some(sp) = rest.iter().position(|&c| c == b' ') else {
+            break;
+        };
+        let Ok(len) = std::str::from_utf8(&rest[..sp]).unwrap_or("").parse::<usize>() else {
+            break;
+        };
         if len == 0 || len > rest.len() {
             break;
         }

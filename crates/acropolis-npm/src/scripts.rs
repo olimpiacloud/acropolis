@@ -23,7 +23,13 @@ impl Policy {
         match s.trim() {
             "" | "all" | "true" => Policy::All,
             "none" | "false" | "off" => Policy::None,
-            other => Policy::Only(other.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()),
+            other => Policy::Only(
+                other
+                    .split(',')
+                    .map(|x| x.trim().to_string())
+                    .filter(|x| !x.is_empty())
+                    .collect(),
+            ),
         }
     }
 
@@ -56,12 +62,20 @@ pub fn lifecycle_jobs(plan: &InstallPlan, root: &Path, policy: &Policy) -> Vec<S
             continue;
         }
         let dir = root.join(&p.path);
-        let Ok(text) = std::fs::read(dir.join("package.json")) else { continue };
-        let Ok(pj) = serde_json::from_slice::<Value>(&text) else { continue };
+        let Ok(text) = std::fs::read(dir.join("package.json")) else {
+            continue;
+        };
+        let Ok(pj) = serde_json::from_slice::<Value>(&text) else {
+            continue;
+        };
         let scripts: BTreeMap<String, String> = pj
             .get("scripts")
             .and_then(|s| s.as_object())
-            .map(|m| m.iter().filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string()))).collect())
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            })
             .unwrap_or_default();
         let mut commands = Vec::new();
         for stage in ["preinstall", "install", "postinstall"] {
@@ -73,7 +87,11 @@ pub fn lifecycle_jobs(plan: &InstallPlan, root: &Path, policy: &Policy) -> Vec<S
             commands.insert(0, ("install".to_string(), "node-gyp rebuild".to_string()));
         }
         if !commands.is_empty() {
-            out.push(ScriptJob { path: p.path.clone(), name: p.name.clone(), commands });
+            out.push(ScriptJob {
+                path: p.path.clone(),
+                name: p.name.clone(),
+                commands,
+            });
         }
     }
     out
@@ -89,7 +107,11 @@ pub fn policy_for(manager: &str, package_json: &Value, override_: Option<&str>) 
                 .get("pnpm")
                 .and_then(|p| p.get("onlyBuiltDependencies"))
                 .and_then(|o| o.as_array())
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect::<Vec<_>>());
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect::<Vec<_>>()
+                });
             match only {
                 Some(list) => Policy::Only(list),
                 None => Policy::All,

@@ -13,12 +13,21 @@ pub fn plan(app: &GoApp, env: &Env, name: &str) -> Result<Plan> {
     b.fact("package", app.package.clone());
     b.fact("cgo", if app.cgo { "enabled" } else { "disabled" });
     let base = if app.cgo { CGO_BASE } else { STATIC_BASE };
-    b.step("base", format!("resolve {base}"), Action::ResolveBase { image: base.into() }, &[]);
+    b.step(
+        "base",
+        format!("resolve {base}"),
+        Action::ResolveBase { image: base.into() },
+        &[],
+    );
     b.step("copy-base", "copy base layers", Action::CopyBase, &["base"]);
     b.step(
         "go",
         format!("go {}", app.go.spec),
-        Action::Toolchain { tool: "go".into(), spec: app.go.spec.clone(), parts: vec![] },
+        Action::Toolchain {
+            tool: "go".into(),
+            spec: app.go.spec.clone(),
+            parts: vec![],
+        },
         &[],
     );
     let vendored = app.dir.join("vendor").join("modules.txt").exists();
@@ -28,7 +37,9 @@ pub fn plan(app: &GoApp, env: &Env, name: &str) -> Result<Plan> {
         b.step(
             "modules",
             "fetch Go modules",
-            Action::GoModules { gosum_sha256: acropolis_store::sha256_bytes(&sum).hex() },
+            Action::GoModules {
+                gosum_sha256: acropolis_store::sha256_bytes(&sum).hex(),
+            },
             &[],
         );
         build_deps.push("modules");
@@ -44,22 +55,51 @@ pub fn plan(app: &GoApp, env: &Env, name: &str) -> Result<Plan> {
     if vendored {
         argv.push("-mod=vendor".to_string());
     }
-    argv.extend(["-trimpath".to_string(), "-ldflags=-s -w".to_string(), "-o".to_string(), "{work}/out/app".to_string()]);
+    argv.extend([
+        "-trimpath".to_string(),
+        "-ldflags=-s -w".to_string(),
+        "-o".to_string(),
+        "{work}/out/app".to_string(),
+    ]);
     argv.push(app.package.clone());
-    b.step("build", format!("go build {}", app.package), Action::Run { argv, env: run_env, network: false, cwd: "@app".into() }, &build_deps);
+    b.step(
+        "build",
+        format!("go build {}", app.package),
+        Action::Run {
+            argv,
+            env: run_env,
+            network: false,
+            cwd: "@app".into(),
+        },
+        &build_deps,
+    );
     b.step(
         "layer-app",
         "layer app source",
-        Action::Layer { dest: "app".into(), from: LayerFrom::AppSource { exclude: vec![] } },
+        Action::Layer {
+            dest: "app".into(),
+            from: LayerFrom::AppSource { exclude: vec![] },
+        },
         &[],
     );
     b.step(
         "layer-bin",
         "layer binary",
-        Action::Layer { dest: "app/out".into(), from: LayerFrom::WorkFile { path: "{work}/out/app".into(), mode: 0o755 } },
+        Action::Layer {
+            dest: "app/out".into(),
+            from: LayerFrom::WorkFile {
+                path: "{work}/out/app".into(),
+                mode: 0o755,
+            },
+        },
         &["build"],
     );
-    b.step("push", "push image", Action::Push, &["base", "copy-base", "layer-app", "layer-bin"]);
+    b.step(
+        "push",
+        "push image",
+        Action::Push,
+        &["base", "copy-base", "layer-app", "layer-bin"],
+    );
     b.plan.image.layers = vec!["layer-app".into(), "layer-bin".into()];
     b.plan.image.workdir = Some("/app".into());
     b.plan.image.cmd = Some(vec!["/app/out".into()]);

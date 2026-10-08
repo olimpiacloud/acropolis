@@ -72,5 +72,9 @@ pub fn host_platform() -> Platform {
         "aarch64" => "arm64",
         other => other,
     };
-    Platform { architecture: arch.to_string(), os: "linux".to_string(), variant: None }
+    Platform {
+        architecture: arch.to_string(),
+        os: "linux".to_string(),
+        variant: None,
+    }
 }

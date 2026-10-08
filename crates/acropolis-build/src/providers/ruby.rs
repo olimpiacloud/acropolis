@@ -23,16 +23,31 @@ pub fn version(dir: &Path, env: &Env) -> VersionSpec {
     if let Some(v) = tool_version(dir, "ruby") {
         return v;
     }
-    if let Some(l) = read(dir, ".ruby-version").lines().map(|l| l.trim()).find(|l| !l.is_empty()) {
-        return VersionSpec { spec: l.trim_start_matches("ruby-").to_string(), source: ".ruby-version".into() };
+    if let Some(l) = read(dir, ".ruby-version")
+        .lines()
+        .map(|l| l.trim())
+        .find(|l| !l.is_empty())
+    {
+        return VersionSpec {
+            spec: l.trim_start_matches("ruby-").to_string(),
+            source: ".ruby-version".into(),
+        };
     }
     for line in read(dir, "Gemfile").lines() {
         let l = line.trim();
         if let Some(rest) = l.strip_prefix("ruby ") {
             let v = rest.trim().trim_matches('"').trim_matches('\'');
-            let v = v.trim_start_matches("~>").trim_start_matches(">=").trim().trim_matches('"').trim_matches('\'');
+            let v = v
+                .trim_start_matches("~>")
+                .trim_start_matches(">=")
+                .trim()
+                .trim_matches('"')
+                .trim_matches('\'');
             if !v.is_empty() && v.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
-                return VersionSpec { spec: v.to_string(), source: "Gemfile".into() };
+                return VersionSpec {
+                    spec: v.to_string(),
+                    source: "Gemfile".into(),
+                };
             }
         }
     }
@@ -45,11 +60,17 @@ pub fn version(dir: &Path, env: &Env) -> VersionSpec {
         {
             let v: String = v.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
             if !v.is_empty() {
-                return VersionSpec { spec: v, source: "Gemfile.lock".into() };
+                return VersionSpec {
+                    spec: v,
+                    source: "Gemfile.lock".into(),
+                };
             }
         }
     }
-    VersionSpec { spec: DEFAULT_RUBY.into(), source: "default".into() }
+    VersionSpec {
+        spec: DEFAULT_RUBY.into(),
+        source: "default".into(),
+    }
 }
 
 fn bundler_version(dir: &Path) -> Option<String> {
@@ -109,13 +130,16 @@ fn image_for(spec: &str) -> String {
     if matches!(spec.trim(), "latest" | "*") {
         return "ruby:slim".into();
     }
-    let v: String = spec.trim().chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    let v: String = spec
+        .trim()
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
     let v = if v.is_empty() { DEFAULT_RUBY.to_string() } else { v };
     format!("ruby:{v}-slim")
 }
 
-const RAILS_SECRET_FALLBACK: &str =
-    r#"[ -n "$SECRET_KEY_BASE$RAILS_MASTER_KEY" ] || export SECRET_KEY_BASE="$(ruby -rsecurerandom -e 'print SecureRandom.hex(64)')""#;
+const RAILS_SECRET_FALLBACK: &str = r#"[ -n "$SECRET_KEY_BASE$RAILS_MASTER_KEY" ] || export SECRET_KEY_BASE="$(ruby -rsecurerandom -e 'print SecureRandom.hex(64)')""#;
 
 pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     let mut b = PlanBuilder::new(name, "ruby");
@@ -132,15 +156,33 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     if rails {
         b.fact("framework", "rails");
     }
-    b.step("base", format!("resolve {image}"), Action::ResolveBase { image: image.clone() }, &[]);
+    b.step(
+        "base",
+        format!("resolve {image}"),
+        Action::ResolveBase { image: image.clone() },
+        &[],
+    );
     b.step("copy-base", "copy base layers", Action::CopyBase, &["base"]);
-    b.step("source", "copy source", Action::CopySource { exclude: vec!["vendor/bundle".into(), "tmp".into(), "log/*.log".into()] }, &[]);
+    b.step(
+        "source",
+        "copy source",
+        Action::CopySource {
+            exclude: vec!["vendor/bundle".into(), "tmp".into(), "log/*.log".into()],
+        },
+        &[],
+    );
     let pg = has_gem(dir, "pg");
     let mysql = has_gem(dir, "mysql2");
-    let build_image = if image == "ruby:slim" { "ruby:latest".to_string() } else { image.trim_end_matches("-slim").to_string() };
+    let build_image = if image == "ruby:slim" {
+        "ruby:latest".to_string()
+    } else {
+        image.trim_end_matches("-slim").to_string()
+    };
     let mut commands: Vec<String> = Vec::new();
     if let Some(bv) = bundler_version(dir) {
-        commands.push(format!("(gem list -i bundler -v {bv} >/dev/null || gem install -N bundler -v {bv})"));
+        commands.push(format!(
+            "(gem list -i bundler -v {bv} >/dev/null || gem install -N bundler -v {bv})"
+        ));
     }
     commands.push("bundle install --jobs 4".into());
     let has_node = dir.join("package.json").exists();
@@ -150,7 +192,10 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     if let Some((c, _)) = env.config("BUILD_CMD") {
         commands.push(c);
     }
-    commands.push(crate::extend::scan_native_libs("/usr/local/bundle", crate::extend::NATIVE_DEBS));
+    commands.push(crate::extend::scan_native_libs(
+        "/usr/local/bundle",
+        crate::extend::NATIVE_DEBS,
+    ));
     let mut run_env = BTreeMap::new();
     for (k, v) in [
         ("BUNDLE_WITHOUT", "development:test"),
@@ -168,14 +213,41 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     b.step(
         "install",
         format!("bundle install (in {build_image})"),
-        Action::ImageRun { image: build_image.clone(), commands, env: run_env.clone(), network: true, mount_app: true, after: None, tools: vec![], lowers: vec![] },
+        Action::ImageRun {
+            image: build_image.clone(),
+            commands,
+            env: run_env.clone(),
+            network: true,
+            mount_app: true,
+            after: None,
+            tools: vec![],
+            lowers: vec![],
+        },
         &["source"],
     );
-    b.step("layer-app", "layer app", Action::Layer { dest: "app".into(), from: LayerFrom::WorkDir { path: ".".into(), exclude: vec![crate::extend::NATIVE_DEBS_FILE.into()] } }, &["install"]);
+    b.step(
+        "layer-app",
+        "layer app",
+        Action::Layer {
+            dest: "app".into(),
+            from: LayerFrom::WorkDir {
+                path: ".".into(),
+                exclude: vec![crate::extend::NATIVE_DEBS_FILE.into()],
+            },
+        },
+        &["install"],
+    );
     b.step(
         "layer-gems",
         "layer gems (/usr/local/bundle)",
-        Action::Layer { dest: "".into(), from: LayerFrom::Upper { step: "install".into(), include: vec!["usr/local/bundle".into()], exclude: vec!["usr/local/bundle/cache".into()] } },
+        Action::Layer {
+            dest: "".into(),
+            from: LayerFrom::Upper {
+                step: "install".into(),
+                include: vec!["usr/local/bundle".into()],
+                exclude: vec!["usr/local/bundle/cache".into()],
+            },
+        },
         &["install"],
     );
     let mut runtime_pkgs = vec!["libjemalloc2"];
@@ -208,7 +280,11 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
         "layer runtime libraries",
         Action::Layer {
             dest: "".into(),
-            from: LayerFrom::Upper { step: "runtime-libs".into(), include: vec![], exclude: vec!["var/cache".into(), "var/log".into(), "root".into()] },
+            from: LayerFrom::Upper {
+                step: "runtime-libs".into(),
+                include: vec![],
+                exclude: vec!["var/cache".into(), "var/log".into(), "root".into()],
+            },
         },
         &["runtime-libs"],
     );
@@ -232,13 +308,36 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
         "layer native gem libraries",
         Action::Layer {
             dest: "".into(),
-            from: LayerFrom::Upper { step: "native-libs".into(), include: vec![], exclude: vec!["var/cache".into(), "var/log".into(), "root".into()] },
+            from: LayerFrom::Upper {
+                step: "native-libs".into(),
+                include: vec![],
+                exclude: vec!["var/cache".into(), "var/log".into(), "root".into()],
+            },
         },
         &["native-libs"],
     );
-    b.step("push", "push image", Action::Push, &["base", "copy-base", "layer-libs", "layer-native-libs", "layer-gems", "layer-app"]);
-    b.plan.warnings.push("gems are installed with network access inside the base image".into());
-    b.plan.image.layers = vec!["layer-libs".into(), "layer-native-libs".into(), "layer-gems".into(), "layer-app".into()];
+    b.step(
+        "push",
+        "push image",
+        Action::Push,
+        &[
+            "base",
+            "copy-base",
+            "layer-libs",
+            "layer-native-libs",
+            "layer-gems",
+            "layer-app",
+        ],
+    );
+    b.plan
+        .warnings
+        .push("gems are installed with network access inside the base image".into());
+    b.plan.image.layers = vec![
+        "layer-libs".into(),
+        "layer-native-libs".into(),
+        "layer-gems".into(),
+        "layer-app".into(),
+    ];
     b.plan.image.workdir = Some("/app".into());
     let mut img_env: Vec<(String, String)> = run_env
         .iter()
@@ -250,7 +349,10 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     img_env.push(("RAILS_LOG_TO_STDOUT".into(), "enabled".into()));
     img_env.push(("RAILS_SERVE_STATIC_FILES".into(), "true".into()));
     b.plan.image.env = img_env;
-    let start = if rails && !dir.join("config/master.key").exists() && !dir.join("config/credentials/production.key").exists() {
+    let start = if rails
+        && !dir.join("config/master.key").exists()
+        && !dir.join("config/credentials/production.key").exists()
+    {
         format!("{RAILS_SECRET_FALLBACK}; {start}")
     } else {
         start

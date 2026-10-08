@@ -48,7 +48,8 @@ fn s(v: &Value) -> Option<String> {
 }
 
 fn str_list(v: Option<&Value>) -> Option<Vec<String>> {
-    v.and_then(|v| v.as_sequence()).map(|seq| seq.iter().filter_map(s).collect())
+    v.and_then(|v| v.as_sequence())
+        .map(|seq| seq.iter().filter_map(s).collect())
 }
 
 fn dep_map(v: Option<&Value>) -> BTreeMap<String, String> {
@@ -128,7 +129,11 @@ impl PnpmLock {
                 Some(i) => key[..i].to_string(),
                 None => key.clone(),
             };
-            let m = meta.get(&base_key).or_else(|| meta.get(&key)).cloned().unwrap_or(Value::Null);
+            let m = meta
+                .get(&base_key)
+                .or_else(|| meta.get(&key))
+                .cloned()
+                .unwrap_or(Value::Null);
             let name = m.get("name").and_then(s).unwrap_or(name0);
             let version = m.get("version").and_then(s).unwrap_or(version0);
             let res = m.get("resolution");
@@ -163,7 +168,11 @@ impl PnpmLock {
             return None;
         }
         let r = reference.trim_start_matches('/');
-        let candidate = if r.starts_with(|c: char| c.is_ascii_digit()) { format!("{name}@{r}") } else { r.to_string() };
+        let candidate = if r.starts_with(|c: char| c.is_ascii_digit()) {
+            format!("{name}@{r}")
+        } else {
+            r.to_string()
+        };
         if self.packages.contains_key(&candidate) {
             return Some(candidate);
         }
@@ -218,17 +227,27 @@ impl PnpmLock {
                 }
             }
         }
-        let mut plan = InstallPlan { skipped_platform, ..Default::default() };
+        let mut plan = InstallPlan {
+            skipped_platform,
+            ..Default::default()
+        };
         let store_dir = |dp: &str| -> String {
             let p = &self.packages[dp];
-            format!("node_modules/.pnpm/{}/node_modules/{}", dep_path_to_filename(dp), p.name)
+            format!(
+                "node_modules/.pnpm/{}/node_modules/{}",
+                dep_path_to_filename(dp),
+                p.name
+            )
         };
         let mut hoisted: BTreeMap<String, String> = BTreeMap::new();
         for dp in &reachable {
             let p = &self.packages[dp];
             let path = store_dir(dp);
             let source = if let Some(dir) = &p.directory {
-                plan.links.push(Link { path: path.clone(), target: relative_link(Path::new(&path), Path::new(dir)) });
+                plan.links.push(Link {
+                    path: path.clone(),
+                    target: relative_link(Path::new(&path), Path::new(dir)),
+                });
                 None
             } else if let Some(g) = &p.git {
                 Some(Source::Git { url: g.clone() })
@@ -269,11 +288,17 @@ impl PnpmLock {
                 }
                 let link_path = format!("{parent_nm}/{alias}");
                 let target = store_dir(&c);
-                plan.links.push(Link { path: link_path, target: relative_link(Path::new(&format!("{parent_nm}/{alias}")), Path::new(&target)) });
+                plan.links.push(Link {
+                    path: link_path,
+                    target: relative_link(Path::new(&format!("{parent_nm}/{alias}")), Path::new(&target)),
+                });
                 bin_pkgs.push(target);
             }
             if !bin_pkgs.is_empty() {
-                plan.bin_dirs.push(BinDir { dir: format!("{path}/node_modules"), packages: bin_pkgs });
+                plan.bin_dirs.push(BinDir {
+                    dir: format!("{path}/node_modules"),
+                    packages: bin_pkgs,
+                });
             }
             let entry = hoisted.entry(p.name.clone()).or_insert_with(|| dp.clone());
             if version_key(&self.packages[entry.as_str()].version) < version_key(&p.version) {
@@ -283,13 +308,20 @@ impl PnpmLock {
         for (name, dp) in &hoisted {
             let link_path = format!("node_modules/.pnpm/node_modules/{name}");
             let target = store_dir(dp);
-            plan.links.push(Link { path: link_path.clone(), target: relative_link(Path::new(&link_path), Path::new(&target)) });
+            plan.links.push(Link {
+                path: link_path.clone(),
+                target: relative_link(Path::new(&link_path), Path::new(&target)),
+            });
         }
         for (ipath, imp) in &self.importers {
             if ipath != "." && !workspace_dirs.is_empty() && !workspace_dirs.iter().any(|w| w == ipath) {
                 continue;
             }
-            let nm = if ipath == "." { "node_modules".to_string() } else { format!("{ipath}/node_modules") };
+            let nm = if ipath == "." {
+                "node_modules".to_string()
+            } else {
+                format!("{ipath}/node_modules")
+            };
             let mut direct: Vec<(&String, &String)> = imp.deps.iter().collect();
             if opts.include_optional {
                 direct.extend(imp.optional_deps.iter());
@@ -301,9 +333,16 @@ impl PnpmLock {
             for (alias, r) in direct {
                 let link_path = format!("{nm}/{alias}");
                 if let Some(local) = r.strip_prefix("link:") {
-                    let base = if ipath == "." { String::new() } else { format!("{ipath}/") };
+                    let base = if ipath == "." {
+                        String::new()
+                    } else {
+                        format!("{ipath}/")
+                    };
                     let target_path = normalize(&format!("{base}{local}"));
-                    plan.links.push(Link { path: link_path.clone(), target: relative_link(Path::new(&link_path), Path::new(&target_path)) });
+                    plan.links.push(Link {
+                        path: link_path.clone(),
+                        target: relative_link(Path::new(&link_path), Path::new(&target_path)),
+                    });
                     plan.known_bins.entry(link_path.clone()).or_default();
                     bin_pkgs.push(link_path);
                     continue;
@@ -313,11 +352,17 @@ impl PnpmLock {
                     continue;
                 }
                 let target = store_dir(&dp);
-                plan.links.push(Link { path: link_path.clone(), target: relative_link(Path::new(&link_path), Path::new(&target)) });
+                plan.links.push(Link {
+                    path: link_path.clone(),
+                    target: relative_link(Path::new(&link_path), Path::new(&target)),
+                });
                 bin_pkgs.push(target);
             }
             if !bin_pkgs.is_empty() {
-                plan.bin_dirs.push(BinDir { dir: nm, packages: bin_pkgs });
+                plan.bin_dirs.push(BinDir {
+                    dir: nm,
+                    packages: bin_pkgs,
+                });
             }
         }
         plan.links.sort_by(|a, b| a.path.cmp(&b.path));
@@ -343,7 +388,12 @@ fn normalize(p: &str) -> String {
 fn version_key(v: &str) -> (u64, u64, u64, String) {
     let core = v.split(['-', '+', '(']).next().unwrap_or("");
     let mut it = core.split('.').map(|x| x.parse::<u64>().unwrap_or(0));
-    (it.next().unwrap_or(0), it.next().unwrap_or(0), it.next().unwrap_or(0), v.to_string())
+    (
+        it.next().unwrap_or(0),
+        it.next().unwrap_or(0),
+        it.next().unwrap_or(0),
+        v.to_string(),
+    )
 }
 
 pub fn dep_path_to_filename(dep_path: &str) -> String {
@@ -355,8 +405,16 @@ pub fn dep_path_to_filename(dep_path: &str) -> String {
             d.to_string()
         }
     };
-    let mut filename: String =
-        unescaped.chars().map(|c| if matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|') { '+' } else { c }).collect();
+    let mut filename: String = unescaped
+        .chars()
+        .map(|c| {
+            if matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+                '+'
+            } else {
+                c
+            }
+        })
+        .collect();
     if filename.contains('(') {
         if filename.ends_with(')') {
             filename.pop();
@@ -367,7 +425,11 @@ pub fn dep_path_to_filename(dep_path: &str) -> String {
     if filename.len() > max || (filename != filename.to_lowercase() && !filename.starts_with("file+")) {
         let hash = base32_md5(&filename);
         let keep = max - 27;
-        let cut = filename.char_indices().nth(keep).map(|(i, _)| i).unwrap_or(filename.len());
+        let cut = filename
+            .char_indices()
+            .nth(keep)
+            .map(|(i, _)| i)
+            .unwrap_or(filename.len());
         return format!("{}_{}", &filename[..cut], hash);
     }
     filename
@@ -395,10 +457,13 @@ fn base32_md5(s: &str) -> String {
 
 fn md5_digest(data: &[u8]) -> [u8; 16] {
     let s: [u32; 64] = [
-        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 4,
-        11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14,
+        20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6,
+        10, 15, 21,
     ];
-    let k: Vec<u32> = (0..64).map(|i| ((i as f64 + 1.0).sin().abs() * 4294967296.0) as u32).collect();
+    let k: Vec<u32> = (0..64)
+        .map(|i| ((i as f64 + 1.0).sin().abs() * 4294967296.0) as u32)
+        .collect();
     let (mut a0, mut b0, mut c0, mut d0) = (0x67452301u32, 0xefcdab89u32, 0x98badcfeu32, 0x10325476u32);
     let mut msg = data.to_vec();
     let bit_len = (data.len() as u64).wrapping_mul(8);
@@ -408,7 +473,9 @@ fn md5_digest(data: &[u8]) -> [u8; 16] {
     }
     msg.extend_from_slice(&bit_len.to_le_bytes());
     for chunk in msg.chunks(64) {
-        let m: Vec<u32> = (0..16).map(|i| u32::from_le_bytes([chunk[i * 4], chunk[i * 4 + 1], chunk[i * 4 + 2], chunk[i * 4 + 3]])).collect();
+        let m: Vec<u32> = (0..16)
+            .map(|i| u32::from_le_bytes([chunk[i * 4], chunk[i * 4 + 1], chunk[i * 4 + 2], chunk[i * 4 + 3]]))
+            .collect();
         let (mut a, mut b, mut c, mut d) = (a0, b0, c0, d0);
         for i in 0..64 {
             let (f, g) = match i / 16 {
@@ -437,8 +504,12 @@ fn md5_digest(data: &[u8]) -> [u8; 16] {
 }
 
 pub fn workspace_globs(app_dir: &Path) -> Vec<String> {
-    let Ok(text) = std::fs::read_to_string(app_dir.join("pnpm-workspace.yaml")) else { return Vec::new() };
-    let Ok(v) = serde_yaml::from_str::<Value>(&text) else { return Vec::new() };
+    let Ok(text) = std::fs::read_to_string(app_dir.join("pnpm-workspace.yaml")) else {
+        return Vec::new();
+    };
+    let Ok(v) = serde_yaml::from_str::<Value>(&text) else {
+        return Vec::new();
+    };
     str_list(v.get("packages")).unwrap_or_default()
 }
 
@@ -449,7 +520,10 @@ mod tests {
     #[test]
     fn md5_known() {
         assert_eq!(hex_of(&md5_digest(b"")), "d41d8cd98f00b204e9800998ecf8427e");
-        assert_eq!(hex_of(&md5_digest(b"The quick brown fox jumps over the lazy dog")), "9e107d9d372bb6826bd81d3542a419d6");
+        assert_eq!(
+            hex_of(&md5_digest(b"The quick brown fox jumps over the lazy dog")),
+            "9e107d9d372bb6826bd81d3542a419d6"
+        );
     }
 
     fn hex_of(b: &[u8]) -> String {
@@ -458,7 +532,10 @@ mod tests {
 
     #[test]
     fn filenames() {
-        assert_eq!(dep_path_to_filename("react-dom@18.3.1(react@18.3.1)"), "react-dom@18.3.1_react@18.3.1");
+        assert_eq!(
+            dep_path_to_filename("react-dom@18.3.1(react@18.3.1)"),
+            "react-dom@18.3.1_react@18.3.1"
+        );
         assert_eq!(dep_path_to_filename("/@babel/core@7.0.0"), "@babel+core@7.0.0");
         assert_eq!(
             dep_path_to_filename("@sveltejs/vite-plugin-svelte@5.0.3(svelte@5.20.2)(vite@6.2.0)"),
@@ -471,14 +548,28 @@ mod tests {
         let text = "lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      pkg-a:\n        specifier: workspace:*\n        version: link:packages/pkg-a\n  packages/pkg-a:\n    dependencies:\n      abbrev:\n        specifier: ^3.0.0\n        version: 3.0.1\npackages:\n  abbrev@3.0.1:\n    resolution: {integrity: sha512-AO2ac6pjRB3SJmGJo+v5/aK6Omggp6fsLrs6wN9bd35ulu4cCwaAU9+7ZhXjeqHVkaHThLuzH0nZr0YpCDhygg==}\nsnapshots:\n  abbrev@3.0.1: {}\n";
         let lock = PnpmLock::parse(text).unwrap();
         let plan = lock
-            .install_plan(&InstallOptions { include_dev: true, include_optional: true, platform: Default::default() }, &[])
+            .install_plan(
+                &InstallOptions {
+                    include_dev: true,
+                    include_optional: true,
+                    platform: Default::default(),
+                },
+                &[],
+            )
             .unwrap();
         assert_eq!(plan.packages.len(), 1);
-        assert_eq!(plan.packages[0].path, "node_modules/.pnpm/abbrev@3.0.1/node_modules/abbrev");
+        assert_eq!(
+            plan.packages[0].path,
+            "node_modules/.pnpm/abbrev@3.0.1/node_modules/abbrev"
+        );
         let paths: Vec<&str> = plan.links.iter().map(|l| l.path.as_str()).collect();
         assert!(paths.contains(&"node_modules/pkg-a"));
         assert!(paths.contains(&"packages/pkg-a/node_modules/abbrev"));
-        let l = plan.links.iter().find(|l| l.path == "packages/pkg-a/node_modules/abbrev").unwrap();
+        let l = plan
+            .links
+            .iter()
+            .find(|l| l.path == "packages/pkg-a/node_modules/abbrev")
+            .unwrap();
         assert_eq!(l.target, "../../../node_modules/.pnpm/abbrev@3.0.1/node_modules/abbrev");
     }
 }

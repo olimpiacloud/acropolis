@@ -98,7 +98,11 @@ pub struct LayerOptions {
 
 impl Default for LayerOptions {
     fn default() -> Self {
-        LayerOptions { compression: Compression::Gzip, level: 0, threads: 0 }
+        LayerOptions {
+            compression: Compression::Gzip,
+            level: 0,
+            threads: 0,
+        }
     }
 }
 
@@ -264,7 +268,12 @@ impl Write for LayerBuilder<'_> {
     }
 }
 
-pub fn from_fragments(store: &Store, comment: impl Into<String>, fragments: Vec<Vec<u8>>, opts: LayerOptions) -> Result<Layer> {
+pub fn from_fragments(
+    store: &Store,
+    comment: impl Into<String>,
+    fragments: Vec<Vec<u8>>,
+    opts: LayerOptions,
+) -> Result<Layer> {
     let mut b = LayerBuilder::new(store, comment, opts)?;
     for f in fragments {
         b.write_all(&f)?;

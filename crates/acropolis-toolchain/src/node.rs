@@ -49,11 +49,17 @@ pub async fn resolve(fetcher: &Fetcher, spec: &str) -> Result<String> {
             })
             .filter_map(|e| Version::parse(e.version.trim_start_matches('v')).ok())
             .max();
-        return best.map(|v| v.to_string()).ok_or_else(|| anyhow!("no Node version matches {spec}"));
+        return best
+            .map(|v| v.to_string())
+            .ok_or_else(|| anyhow!("no Node version matches {spec}"));
     }
-    let versions: Vec<Version> =
-        index.iter().filter_map(|e| Version::parse(e.version.trim_start_matches('v')).ok()).collect();
-    best_match(spec, versions.iter()).map(|v| v.to_string()).ok_or_else(|| anyhow!("no Node version matches {spec:?}"))
+    let versions: Vec<Version> = index
+        .iter()
+        .filter_map(|e| Version::parse(e.version.trim_start_matches('v')).ok())
+        .collect();
+    best_match(spec, versions.iter())
+        .map(|v| v.to_string())
+        .ok_or_else(|| anyhow!("no Node version matches {spec:?}"))
 }
 
 #[derive(Clone, Copy, Debug, Default)]

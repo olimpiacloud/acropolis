@@ -5,10 +5,26 @@ use std::io::{BufReader, BufWriter, Write};
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
-const SKIP: &[&str] = &[".lock", "src", "nm-prev", ".src-old-*", ".nm-old-*", "*.staging-*", "*.stale"];
+const SKIP: &[&str] = &[
+    ".lock",
+    "src",
+    "nm-prev",
+    ".src-old-*",
+    ".nm-old-*",
+    "*.staging-*",
+    "*.stale",
+];
 
 pub fn sanitize_key(key: &str) -> String {
-    key.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
+    key.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 pub fn app_dir(home: &Path, key: &str) -> PathBuf {
@@ -17,7 +33,11 @@ pub fn app_dir(home: &Path, key: &str) -> PathBuf {
 
 fn lock(dir: &Path) -> Result<File> {
     std::fs::create_dir_all(dir)?;
-    let f = File::options().create(true).truncate(false).write(true).open(dir.join(".lock"))?;
+    let f = File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join(".lock"))?;
     if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         bail!("the cache of {} is in use by a running build", dir.display());
     }
@@ -30,11 +50,19 @@ pub fn export(home: &Path, key: &str, out: &Path) -> Result<u64> {
         bail!("no cache for {key}");
     }
     let _lock = lock(&dir)?;
-    let entries = crate::source::walk(&dir, &Ignore::new(&SKIP.iter().map(|s| s.to_string()).collect::<Vec<_>>()))?;
+    let entries = crate::source::walk(
+        &dir,
+        &Ignore::new(&SKIP.iter().map(|s| s.to_string()).collect::<Vec<_>>()),
+    )?;
     let tmp = out.with_extension(format!("tmp-{}", std::process::id()));
-    let file = BufWriter::with_capacity(1 << 20, File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?);
+    let file = BufWriter::with_capacity(
+        1 << 20,
+        File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?,
+    );
     let mut enc = zstd::stream::write::Encoder::new(file, 3)?;
-    let threads = std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(1);
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get() as u32)
+        .unwrap_or(1);
     let _ = enc.multithread(threads);
     crate::source::stream_tree_into(&dir, &entries, "", false, &mut enc)?;
     enc.write_all(&[0u8; 1024])?;
@@ -48,7 +76,10 @@ pub fn import(home: &Path, key: &str, input: &Path) -> Result<u64> {
     let _lock = lock(&dir)?;
     let staging = dir.with_extension(format!("import-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&staging);
-    let reader = zstd::stream::read::Decoder::new(BufReader::with_capacity(1 << 20, File::open(input).with_context(|| format!("opening {}", input.display()))?))?;
+    let reader = zstd::stream::read::Decoder::new(BufReader::with_capacity(
+        1 << 20,
+        File::open(input).with_context(|| format!("opening {}", input.display()))?,
+    ))?;
     let n = acropolis_oci::unpack::unpack_for_overlay(reader, &staging)?;
     for e in std::fs::read_dir(&staging)? {
         let e = e?;
@@ -90,7 +121,10 @@ mod tests {
         import(&b, "tenant/app", &file).unwrap();
         let got = app_dir(&b, "tenant/app");
         assert_eq!(std::fs::read(got.join("gocache/x/obj")).unwrap(), b"compiled");
-        assert_eq!(std::fs::read_link(got.join("gocache/link")).unwrap(), PathBuf::from("x/obj"));
+        assert_eq!(
+            std::fs::read_link(got.join("gocache/link")).unwrap(),
+            PathBuf::from("x/obj")
+        );
         assert!(!got.join("src").exists());
         let _ = std::fs::remove_dir_all(&base);
     }

@@ -1,8 +1,8 @@
 pub mod bun;
 pub mod hoist;
 pub mod install;
-pub mod patch;
 pub mod lockfile;
+pub mod patch;
 pub mod pnpm;
 pub mod resolve;
 pub mod scripts;

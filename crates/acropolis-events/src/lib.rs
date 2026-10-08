@@ -1,23 +1,62 @@
 use serde::Serialize;
 use std::io::Write;
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
-    BuildStarted { app: String },
-    PlanReady { hash: String, steps: usize },
-    StepStarted { id: String, name: String },
-    StepFinished { id: String, name: String, ms: u64 },
-    StepFailed { id: String, name: String, error: String },
-    Log { step: String, line: String },
-    Downloaded { what: String, bytes: u64, ms: u64 },
-    Uploaded { what: String, bytes: u64, skipped: bool },
-    ImagePushed { reference: String, digest: String },
-    BuildFinished { ms: u64, image: Option<String>, digest: Option<String> },
-    BuildFailed { ms: u64, class: String, exit_code: i32, error: String },
+    BuildStarted {
+        app: String,
+    },
+    PlanReady {
+        hash: String,
+        steps: usize,
+    },
+    StepStarted {
+        id: String,
+        name: String,
+    },
+    StepFinished {
+        id: String,
+        name: String,
+        ms: u64,
+    },
+    StepFailed {
+        id: String,
+        name: String,
+        error: String,
+    },
+    Log {
+        step: String,
+        line: String,
+    },
+    Downloaded {
+        what: String,
+        bytes: u64,
+        ms: u64,
+    },
+    Uploaded {
+        what: String,
+        bytes: u64,
+        skipped: bool,
+    },
+    ImagePushed {
+        reference: String,
+        digest: String,
+    },
+    BuildFinished {
+        ms: u64,
+        image: Option<String>,
+        digest: Option<String>,
+    },
+    BuildFailed {
+        ms: u64,
+        class: String,
+        exit_code: i32,
+        error: String,
+    },
     Stats(Stats),
 }
 
@@ -40,7 +79,10 @@ pub fn set_build_id(id: impl Into<String>) {
 
 pub fn build_id() -> &'static str {
     BUILD_ID.get_or_init(|| {
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
         format!("{:x}{:06x}", now, std::process::id())
     })
 }
@@ -48,7 +90,12 @@ pub fn build_id() -> &'static str {
 fn self_peak_rss() -> u64 {
     std::fs::read_to_string("/proc/self/status")
         .ok()
-        .and_then(|t| t.lines().find_map(|l| l.strip_prefix("VmHWM:").and_then(|v| v.trim().trim_end_matches("kB").trim().parse::<u64>().ok())))
+        .and_then(|t| {
+            t.lines().find_map(|l| {
+                l.strip_prefix("VmHWM:")
+                    .and_then(|v| v.trim().trim_end_matches("kB").trim().parse::<u64>().ok())
+            })
+        })
         .unwrap_or(0)
         * 1024
 }
@@ -118,8 +165,18 @@ pub fn emit(event: Event) {
                 #[serde(flatten)]
                 event: &'a Event,
             }
-            let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-            let line = serde_json::to_string(&Line { v: SCHEMA_VERSION, build_id: build_id(), ts, t: elapsed_ms(), event: &event }).unwrap_or_default();
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            let line = serde_json::to_string(&Line {
+                v: SCHEMA_VERSION,
+                build_id: build_id(),
+                ts,
+                t: elapsed_ms(),
+                event: &event,
+            })
+            .unwrap_or_default();
             let _g = e.out.lock();
             let mut err = std::io::stderr().lock();
             let _ = writeln!(err, "{line}");
@@ -190,8 +247,16 @@ pub struct StepGuard {
 }
 
 pub fn step(id: impl Into<String>, name: impl Into<String>) -> StepGuard {
-    let g = StepGuard { id: id.into(), name: name.into(), start: Instant::now(), done: false };
-    emit(Event::StepStarted { id: g.id.clone(), name: g.name.clone() });
+    let g = StepGuard {
+        id: id.into(),
+        name: name.into(),
+        start: Instant::now(),
+        done: false,
+    };
+    emit(Event::StepStarted {
+        id: g.id.clone(),
+        name: g.name.clone(),
+    });
     g
 }
 
@@ -207,7 +272,11 @@ impl StepGuard {
 
     pub fn fail(mut self, error: &dyn std::fmt::Display) {
         self.done = true;
-        emit(Event::StepFailed { id: self.id.clone(), name: self.name.clone(), error: error.to_string() });
+        emit(Event::StepFailed {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            error: error.to_string(),
+        });
     }
 
     pub fn id(&self) -> &str {
@@ -218,11 +287,18 @@ impl StepGuard {
 impl Drop for StepGuard {
     fn drop(&mut self) {
         if !self.done {
-            emit(Event::StepFailed { id: self.id.clone(), name: self.name.clone(), error: "aborted".into() });
+            emit(Event::StepFailed {
+                id: self.id.clone(),
+                name: self.name.clone(),
+                error: "aborted".into(),
+            });
         }
     }
 }
 
 pub fn log(step: &str, line: impl Into<String>) {
-    emit(Event::Log { step: step.to_string(), line: line.into() });
+    emit(Event::Log {
+        step: step.to_string(),
+        line: line.into(),
+    });
 }

@@ -24,9 +24,7 @@ impl Reference {
             _ => (rest, None),
         };
         let (registry, repository) = match name.split_once('/') {
-            Some((first, remainder))
-                if first.contains('.') || first.contains(':') || first == "localhost" =>
-            {
+            Some((first, remainder)) if first.contains('.') || first.contains(':') || first == "localhost" => {
                 (first.to_string(), remainder.to_string())
             }
             _ => ("docker.io".to_string(), name.to_string()),
@@ -36,12 +34,25 @@ impl Reference {
         } else {
             repository
         };
-        let tag = if tag.is_none() && digest.is_none() { Some("latest".to_string()) } else { tag };
-        Ok(Reference { registry, repository, tag, digest })
+        let tag = if tag.is_none() && digest.is_none() {
+            Some("latest".to_string())
+        } else {
+            tag
+        };
+        Ok(Reference {
+            registry,
+            repository,
+            tag,
+            digest,
+        })
     }
 
     pub fn api_host(&self) -> &str {
-        if self.registry == "docker.io" { "registry-1.docker.io" } else { &self.registry }
+        if self.registry == "docker.io" {
+            "registry-1.docker.io"
+        } else {
+            &self.registry
+        }
     }
 
     pub fn reference(&self) -> &str {
@@ -49,7 +60,10 @@ impl Reference {
     }
 
     pub fn with_digest(&self, digest: &str) -> Reference {
-        Reference { digest: Some(digest.to_string()), ..self.clone() }
+        Reference {
+            digest: Some(digest.to_string()),
+            ..self.clone()
+        }
     }
 
     pub fn insecure(&self) -> bool {

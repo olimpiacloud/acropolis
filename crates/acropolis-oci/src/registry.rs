@@ -92,20 +92,38 @@ impl Registry {
 
     fn mark_down(&self, host: &str) -> bool {
         if host == "registry-1.docker.io" && !self.hub_down.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            acropolis_events::log("registry", format!("registry-1.docker.io is unreachable or rate limited, falling back to {HUB_FALLBACK} (content is verified by digest)"));
+            acropolis_events::log(
+                "registry",
+                format!(
+                    "registry-1.docker.io is unreachable or rate limited, falling back to {HUB_FALLBACK} (content is verified by digest)"
+                ),
+            );
             return true;
         }
         host == "registry-1.docker.io"
     }
 
     fn hedge_target(&self, r: &Reference) -> Option<Reference> {
-        if r.registry != "docker.io" || self.mirrors.contains_key("docker.io") || self.hub_down.load(std::sync::atomic::Ordering::Relaxed) {
+        if r.registry != "docker.io"
+            || self.mirrors.contains_key("docker.io")
+            || self.hub_down.load(std::sync::atomic::Ordering::Relaxed)
+        {
             return None;
         }
-        Some(Reference { registry: HUB_FALLBACK.to_string(), ..r.clone() })
+        Some(Reference {
+            registry: HUB_FALLBACK.to_string(),
+            ..r.clone()
+        })
     }
 
-    async fn hedged<T, P, S, F>(&self, alt: Option<Reference>, delay_ms: u64, what: &str, primary: P, secondary: F) -> Result<T>
+    async fn hedged<T, P, S, F>(
+        &self,
+        alt: Option<Reference>,
+        delay_ms: u64,
+        what: &str,
+        primary: P,
+        secondary: F,
+    ) -> Result<T>
     where
         P: std::future::Future<Output = Result<T>>,
         S: std::future::Future<Output = Result<T>>,
@@ -117,7 +135,10 @@ impl Registry {
             res = &mut primary => return res,
             _ = tokio::time::sleep(Duration::from_millis(delay_ms)) => {}
         }
-        acropolis_events::log("registry", format!("{what} from docker.io is slow after {delay_ms} ms, racing {HUB_FALLBACK}"));
+        acropolis_events::log(
+            "registry",
+            format!("{what} from docker.io is slow after {delay_ms} ms, racing {HUB_FALLBACK}"),
+        );
         let secondary = secondary(alt);
         tokio::pin!(secondary);
         tokio::select! {
@@ -150,7 +171,11 @@ impl Registry {
                 "registry-1.docker.io".into(),
             ]
         } else {
-            vec![r.registry.clone(), format!("https://{}", r.registry), format!("http://{}", r.registry)]
+            vec![
+                r.registry.clone(),
+                format!("https://{}", r.registry),
+                format!("http://{}", r.registry),
+            ]
         };
         keys.iter().find_map(|k| self.creds.get(k).cloned())
     }
@@ -179,7 +204,10 @@ impl Registry {
                 let header = match self.authenticate(r, challenge, &key.1).await {
                     Ok(h) => h,
                     Err(e) => {
-                        let net = e.downcast_ref::<reqwest::Error>().map(|re| re.is_connect() || re.is_timeout()).unwrap_or(false);
+                        let net = e
+                            .downcast_ref::<reqwest::Error>()
+                            .map(|re| re.is_connect() || re.is_timeout())
+                            .unwrap_or(false);
                         if net && self.mark_down(&key.0) {
                             return Err(anyhow!(Unreachable(key.0.clone())));
                         }
@@ -202,7 +230,10 @@ impl Registry {
             let res = req.send().await;
             let elapsed = started.elapsed().as_millis();
             if elapsed > SLOW_REQUEST_MS {
-                acropolis_events::log("registry", format!("slow request to {} ({}): {elapsed} ms", key.0, key.1));
+                acropolis_events::log(
+                    "registry",
+                    format!("slow request to {} ({}): {elapsed} ms", key.0, key.1),
+                );
             }
             match res {
                 Ok(resp) if resp.status() == StatusCode::UNAUTHORIZED && !authed => {
@@ -247,7 +278,9 @@ impl Registry {
             return Ok(format!("Basic {enc}"));
         }
         let params = parse_challenge(challenge);
-        let realm = params.get("realm").ok_or_else(|| anyhow!("no realm in challenge {challenge:?}"))?;
+        let realm = params
+            .get("realm")
+            .ok_or_else(|| anyhow!("no realm in challenge {challenge:?}"))?;
         let mut url = url::Url::parse(realm)?;
         {
             let mut q = url.query_pairs_mut();
@@ -275,11 +308,21 @@ impl Registry {
     }
 
     pub async fn get_manifest(&self, r: &Reference, reference: &str) -> Result<(Bytes, String, String)> {
-        let delay = if reference.starts_with("sha256:") { HEDGE_DIGEST_MS } else { HEDGE_TAG_MS };
+        let delay = if reference.starts_with("sha256:") {
+            HEDGE_DIGEST_MS
+        } else {
+            HEDGE_TAG_MS
+        };
         let what = format!("manifest {}:{reference}", r.repository);
         let alt = self.hedge_target(r);
-        self.hedged(alt, delay, &what, self.get_manifest_retry(r, reference), |rr| async move { self.get_manifest_retry(&rr, reference).await })
-            .await
+        self.hedged(
+            alt,
+            delay,
+            &what,
+            self.get_manifest_retry(r, reference),
+            |rr| async move { self.get_manifest_retry(&rr, reference).await },
+        )
+        .await
     }
 
     async fn get_manifest_retry(&self, r: &Reference, reference: &str) -> Result<(Bytes, String, String)> {
@@ -297,7 +340,10 @@ impl Registry {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = capped_text(resp).await;
-            bail!("GET manifest {r}: {status} {}", body.chars().take(200).collect::<String>());
+            bail!(
+                "GET manifest {r}: {status} {}",
+                body.chars().take(200).collect::<String>()
+            );
         }
         let mt = resp
             .headers()
@@ -334,7 +380,13 @@ impl Registry {
     pub async fn with_config(&self, reference: Reference, manifest: Manifest, digest: String) -> Result<ResolvedImage> {
         let config_raw = self.get_blob_bytes(&reference, &manifest.config.digest).await?;
         let config: serde_json::Value = serde_json::from_slice(&config_raw).context("parsing image config")?;
-        Ok(ResolvedImage { reference, manifest, manifest_digest: digest, config_raw, config })
+        Ok(ResolvedImage {
+            reference,
+            manifest,
+            manifest_digest: digest,
+            config_raw,
+            config,
+        })
     }
 
     pub async fn resolve_manifest(&self, r: &Reference, platform: &Platform) -> Result<(Reference, Manifest, String)> {
@@ -372,8 +424,14 @@ impl Registry {
     pub async fn get_blob_bytes(&self, r: &Reference, digest: &str) -> Result<Bytes> {
         let what = format!("blob {}@{}", r.repository, &digest[..digest.len().min(19)]);
         let alt = self.hedge_target(r);
-        self.hedged(alt, HEDGE_DIGEST_MS, &what, self.get_blob_bytes_once(r, digest), |rr| async move { self.get_blob_bytes_once(&rr, digest).await })
-            .await
+        self.hedged(
+            alt,
+            HEDGE_DIGEST_MS,
+            &what,
+            self.get_blob_bytes_once(r, digest),
+            |rr| async move { self.get_blob_bytes_once(&rr, digest).await },
+        )
+        .await
     }
 
     async fn get_blob_bytes_once(&self, r: &Reference, digest: &str) -> Result<Bytes> {
@@ -395,7 +453,8 @@ impl Registry {
 
     async fn start_upload(&self, r: &Reference, query: &str) -> Result<Response> {
         let url = format!("{}/v2/{}/blobs/uploads/{}", self.base(r), r.repository, query);
-        self.send(r, "pull,push", |c| c.post(&url).header(CONTENT_LENGTH, "0")).await
+        self.send(r, "pull,push", |c| c.post(&url).header(CONTENT_LENGTH, "0"))
+            .await
     }
 
     fn location(&self, r: &Reference, resp: &Response) -> Result<String> {
@@ -437,7 +496,10 @@ impl Registry {
         if !resp.status().is_success() {
             let status = resp.status();
             let text = capped_text(resp).await;
-            bail!("uploading {digest} to {r}: {status} {}", text.chars().take(300).collect::<String>());
+            bail!(
+                "uploading {digest} to {r}: {status} {}",
+                text.chars().take(300).collect::<String>()
+            );
         }
         acropolis_events::add_uploaded(size);
         Ok(())
@@ -448,7 +510,8 @@ impl Registry {
             return Ok(false);
         }
         let size = data.len() as u64;
-        self.put_upload(r, digest, size, || reqwest::Body::from(data.clone())).await?;
+        self.put_upload(r, digest, size, || reqwest::Body::from(data.clone()))
+            .await?;
         Ok(true)
     }
 
@@ -479,7 +542,11 @@ impl Registry {
             return Ok(false);
         }
         if src.registry == dst.registry && src.repository != dst.repository {
-            if self.mount_blob(dst, &desc.digest, &src.repository).await.unwrap_or(false) {
+            if self
+                .mount_blob(dst, &desc.digest, &src.repository)
+                .await
+                .unwrap_or(false)
+            {
                 return Ok(false);
             }
         }
@@ -531,7 +598,11 @@ impl Registry {
                 .and_then(|v| v.to_str().ok())
                 .ok_or_else(|| anyhow!("redirect without Location for {digest}"))?
                 .to_string();
-            let loc = if loc.starts_with("http") { loc } else { format!("{}{}", self.base(r), loc) };
+            let loc = if loc.starts_with("http") {
+                loc
+            } else {
+                format!("{}{}", self.base(r), loc)
+            };
             return Ok((loc, reqwest::header::HeaderMap::new()));
         }
         if !status.is_success() {
@@ -565,7 +636,14 @@ impl Registry {
         }
         let size = desc.size;
         let seg = self.seg.clone();
-        let download = acropolis_fetch::segmented::download_sources(&seg, primary, alternate, size, acropolis_fetch::segmented::Policy::default(), Tx(tx));
+        let download = acropolis_fetch::segmented::download_sources(
+            &seg,
+            primary,
+            alternate,
+            size,
+            acropolis_fetch::segmented::Policy::default(),
+            Tx(tx),
+        );
         let cell = Mutex::new(Some(rx));
         let upload = self.put_upload(dst, &desc.digest, desc.size, || {
             let rx = cell.lock().unwrap().take();
@@ -592,12 +670,17 @@ impl Registry {
         let url = format!("{}/v2/{}/manifests/{}", self.base(r), r.repository, reference);
         let mt = HeaderValue::from_str(media_type)?;
         let resp = self
-            .send(r, "pull,push", |c| c.put(&url).header(CONTENT_TYPE, mt.clone()).body(body.clone()))
+            .send(r, "pull,push", |c| {
+                c.put(&url).header(CONTENT_TYPE, mt.clone()).body(body.clone())
+            })
             .await?;
         if !resp.status().is_success() {
             let status = resp.status();
             let text = capped_text(resp).await;
-            bail!("PUT manifest {r}: {status} {}", text.chars().take(300).collect::<String>());
+            bail!(
+                "PUT manifest {r}: {status} {}",
+                text.chars().take(300).collect::<String>()
+            );
         }
         acropolis_events::add_uploaded(body.len() as u64);
         Ok(acropolis_store::sha256_bytes(&body).to_oci())
@@ -623,7 +706,10 @@ pub fn select_platform<'a>(ms: &'a [Descriptor], p: &Platform) -> Option<&'a Des
         })
         .collect();
     if let Some(v) = &p.variant {
-        if let Some(d) = matching.iter().find(|d| d.platform.as_ref().and_then(|q| q.variant.as_ref()) == Some(v)) {
+        if let Some(d) = matching
+            .iter()
+            .find(|d| d.platform.as_ref().and_then(|q| q.variant.as_ref()) == Some(v))
+        {
             return Some(d);
         }
     }
@@ -687,7 +773,13 @@ fn load_docker_creds() -> HashMap<String, Basic> {
                 && let Ok(s) = String::from_utf8(dec)
                 && let Some((u, p)) = s.split_once(':')
             {
-                out.insert(k.clone(), Basic { user: u.to_string(), pass: p.to_string() });
+                out.insert(
+                    k.clone(),
+                    Basic {
+                        user: u.to_string(),
+                        pass: p.to_string(),
+                    },
+                );
             }
         }
     }

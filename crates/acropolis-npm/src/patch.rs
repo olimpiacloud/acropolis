@@ -30,17 +30,32 @@ fn parse(diff: &str) -> Result<Vec<FilePatch>> {
     while i < lines.len() {
         let line = lines[i];
         if let Some(old) = line.strip_prefix("--- ") {
-            let new = lines.get(i + 1).and_then(|l| l.strip_prefix("+++ ")).ok_or_else(|| anyhow!("patch: `---` without `+++` at line {}", i + 1))?;
-            out.push(FilePatch { old_path: strip_prefix(old), new_path: strip_prefix(new), hunks: Vec::new() });
+            let new = lines
+                .get(i + 1)
+                .and_then(|l| l.strip_prefix("+++ "))
+                .ok_or_else(|| anyhow!("patch: `---` without `+++` at line {}", i + 1))?;
+            out.push(FilePatch {
+                old_path: strip_prefix(old),
+                new_path: strip_prefix(new),
+                hunks: Vec::new(),
+            });
             i += 2;
             continue;
         }
         if let Some(rest) = line.strip_prefix("@@ ") {
-            let file = out.last_mut().ok_or_else(|| anyhow!("patch: hunk before any file header"))?;
+            let file = out
+                .last_mut()
+                .ok_or_else(|| anyhow!("patch: hunk before any file header"))?;
             let ranges = rest.split(" @@").next().unwrap_or("");
             let mut parts = ranges.split_whitespace();
-            let old_range = parts.next().and_then(|r| r.strip_prefix('-')).ok_or_else(|| anyhow!("patch: bad hunk header {line:?}"))?;
-            let new_range = parts.next().and_then(|r| r.strip_prefix('+')).ok_or_else(|| anyhow!("patch: bad hunk header {line:?}"))?;
+            let old_range = parts
+                .next()
+                .and_then(|r| r.strip_prefix('-'))
+                .ok_or_else(|| anyhow!("patch: bad hunk header {line:?}"))?;
+            let new_range = parts
+                .next()
+                .and_then(|r| r.strip_prefix('+'))
+                .ok_or_else(|| anyhow!("patch: bad hunk header {line:?}"))?;
             let count = |r: &str| -> Result<(usize, usize)> {
                 let mut it = r.split(',');
                 let start = it.next().unwrap_or("0").parse::<usize>()?;
@@ -49,10 +64,17 @@ fn parse(diff: &str) -> Result<Vec<FilePatch>> {
             };
             let (old_start, old_len) = count(old_range)?;
             let (_, new_len) = count(new_range)?;
-            let mut hunk = Hunk { old_start, old: Vec::new(), new: Vec::new(), new_no_eol: false };
+            let mut hunk = Hunk {
+                old_start,
+                old: Vec::new(),
+                new: Vec::new(),
+                new_no_eol: false,
+            };
             i += 1;
             let mut last = ' ';
-            while i < lines.len() && (hunk.old.len() < old_len || hunk.new.len() < new_len || lines[i].starts_with('\\')) {
+            while i < lines.len()
+                && (hunk.old.len() < old_len || hunk.new.len() < new_len || lines[i].starts_with('\\'))
+            {
                 let l = lines[i];
                 match l.chars().next() {
                     Some(' ') => {
@@ -115,7 +137,9 @@ fn apply_file(root: &Path, f: &FilePatch) -> Result<()> {
             bail!("patch touches unsafe path {p:?}");
         }
     }
-    let Some(target) = f.new_path.as_ref().or(f.old_path.as_ref()) else { return Ok(()) };
+    let Some(target) = f.new_path.as_ref().or(f.old_path.as_ref()) else {
+        return Ok(());
+    };
     let path = root.join(target);
     if f.new_path.is_none() {
         let _ = std::fs::remove_file(&path);
@@ -134,7 +158,8 @@ fn apply_file(root: &Path, f: &FilePatch) -> Result<()> {
     let mut no_eol = !had_eol && !source.is_empty();
     for h in &f.hunks {
         let hint = (h.old_start.max(1) as isize - 1 + offset).max(0) as usize;
-        let pos = find(&lines, &h.old, hint).ok_or_else(|| anyhow!("patch: hunk at line {} does not apply to {target}", h.old_start))?;
+        let pos = find(&lines, &h.old, hint)
+            .ok_or_else(|| anyhow!("patch: hunk at line {} does not apply to {target}", h.old_start))?;
         lines.splice(pos..pos + h.old.len(), h.new.iter().cloned());
         offset += h.new.len() as isize - h.old.len() as isize;
         if pos + h.new.len() == lines.len() {
@@ -182,7 +207,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("dist")).unwrap();
         let body: String = (1..=30).map(|i| format!("line {i}\n")).collect();
-        std::fs::write(dir.join("dist/index.js"), body.replace("line 20\n", "defaultValue: x,\n")).unwrap();
+        std::fs::write(
+            dir.join("dist/index.js"),
+            body.replace("line 20\n", "defaultValue: x,\n"),
+        )
+        .unwrap();
         let diff = "diff --git a/dist/index.js b/dist/index.js\nindex 1..2 100644\n--- a/dist/index.js\n+++ b/dist/index.js\n@@ -17,7 +17,7 @@ ctx\n line 17\n line 18\n line 19\n-defaultValue: x,\n+value: x ?? \"\",\n line 21\n line 22\n line 23\ndiff --git a/new.txt b/new.txt\nnew file mode 100644\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+hello\n\\ No newline at end of file\n";
         assert_eq!(apply(diff, &dir).unwrap(), 2);
         let out = std::fs::read_to_string(dir.join("dist/index.js")).unwrap();
@@ -196,7 +225,10 @@ mod tests {
 
     #[test]
     fn package_specs() {
-        assert_eq!(targets("@radix-ui/react-select@2.3.2"), ("@radix-ui/react-select".into(), Some("2.3.2".into())));
+        assert_eq!(
+            targets("@radix-ui/react-select@2.3.2"),
+            ("@radix-ui/react-select".into(), Some("2.3.2".into()))
+        );
         assert_eq!(targets("lodash"), ("lodash".into(), None));
         assert_eq!(targets("@scope/pkg"), ("@scope/pkg".into(), None));
     }

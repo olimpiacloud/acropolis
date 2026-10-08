@@ -9,7 +9,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("integrity mismatch for {what}: expected {expected}, got {actual}")]
-    IntegrityMismatch { what: String, expected: String, actual: String },
+    IntegrityMismatch {
+        what: String,
+        expected: String,
+        actual: String,
+    },
     #[error("invalid integrity string {0:?}")]
     InvalidIntegrity(String),
     #[error(transparent)]
@@ -55,7 +59,10 @@ impl Integrity {
     }
 
     pub fn sha256(digest: [u8; 32]) -> Self {
-        Integrity { algo: Algo::Sha256, digest: digest.to_vec() }
+        Integrity {
+            algo: Algo::Sha256,
+            digest: digest.to_vec(),
+        }
     }
 
     pub fn parse_sri(s: &str) -> Result<Self> {
@@ -110,7 +117,11 @@ impl Integrity {
     }
 
     pub fn to_sri(&self) -> String {
-        format!("{}-{}", self.algo.name(), base64::engine::general_purpose::STANDARD.encode(&self.digest))
+        format!(
+            "{}-{}",
+            self.algo.name(),
+            base64::engine::general_purpose::STANDARD.encode(&self.digest)
+        )
     }
 }
 
@@ -183,7 +194,10 @@ impl Store {
         let root = root.into();
         fs::create_dir_all(root.join("blobs"))?;
         fs::create_dir_all(root.join("tmp"))?;
-        Ok(Store { root, seq: AtomicU64::new(0) })
+        Ok(Store {
+            root,
+            seq: AtomicU64::new(0),
+        })
     }
 
     pub fn root(&self) -> &Path {
@@ -212,18 +226,28 @@ impl Store {
             let s = fs::read_to_string(side).ok()?;
             Integrity::parse_hex(Algo::Sha256, &s).ok()?
         };
-        Some(StoredBlob { path, integrity: i.clone(), sha256, size: meta.len() })
+        Some(StoredBlob {
+            path,
+            integrity: i.clone(),
+            sha256,
+            size: meta.len(),
+        })
     }
 
     pub fn temp_path(&self, tag: &str) -> PathBuf {
         let n = self.seq.fetch_add(1, Ordering::Relaxed);
-        self.root.join("tmp").join(format!("{}-{}-{}", std::process::id(), n, tag))
+        self.root
+            .join("tmp")
+            .join(format!("{}-{}-{}", std::process::id(), n, tag))
     }
 
     pub fn writer(&self, what: impl Into<String>, expected: Option<Integrity>) -> Result<BlobWriter<'_>> {
         let tmp = self.temp_path("blob");
         let file = File::create(&tmp)?;
-        let extra = expected.as_ref().filter(|e| e.algo != Algo::Sha256).map(|e| Hasher::new(e.algo));
+        let extra = expected
+            .as_ref()
+            .filter(|e| e.algo != Algo::Sha256)
+            .map(|e| Hasher::new(e.algo));
         Ok(BlobWriter {
             store: self,
             what: what.into(),
@@ -310,7 +334,12 @@ impl BlobWriter<'_> {
         }
         fs::rename(&self.tmp, &path)?;
         acropolis_events::add_written(self.size);
-        Ok(StoredBlob { path, integrity: key, sha256, size: self.size })
+        Ok(StoredBlob {
+            path,
+            integrity: key,
+            sha256,
+            size: self.size,
+        })
     }
 }
 
@@ -330,7 +359,11 @@ pub struct HashingReader<R> {
 
 impl<R: Read> HashingReader<R> {
     pub fn new(inner: R, algo: Algo) -> Self {
-        HashingReader { inner, hasher: Hasher::new(algo), count: 0 }
+        HashingReader {
+            inner,
+            hasher: Hasher::new(algo),
+            count: 0,
+        }
     }
 
     pub fn finish(self) -> (Integrity, u64, R) {
@@ -355,11 +388,19 @@ pub struct HashingWriter<W> {
 
 impl<W: Write> HashingWriter<W> {
     pub fn new(inner: W) -> Self {
-        HashingWriter { inner, hasher: sha2::Sha256::new(), count: 0 }
+        HashingWriter {
+            inner,
+            hasher: sha2::Sha256::new(),
+            count: 0,
+        }
     }
 
     pub fn finish(self) -> (Integrity, u64, W) {
-        (Integrity::new(Algo::Sha256, self.hasher.finalize().to_vec()), self.count, self.inner)
+        (
+            Integrity::new(Algo::Sha256, self.hasher.finalize().to_vec()),
+            self.count,
+            self.inner,
+        )
     }
 
     pub fn count(&self) -> u64 {
@@ -389,7 +430,11 @@ mod tests {
         let i = hash_bytes(Algo::Sha512, b"hello");
         let s = i.to_sri();
         assert_eq!(Integrity::parse_sri(&s).unwrap(), i);
-        let multi = format!("sha1-{} {}", base64::engine::general_purpose::STANDARD.encode([0u8; 20]), s);
+        let multi = format!(
+            "sha1-{} {}",
+            base64::engine::general_purpose::STANDARD.encode([0u8; 20]),
+            s
+        );
         assert_eq!(Integrity::parse_sri(&multi).unwrap().algo, Algo::Sha512);
     }
 

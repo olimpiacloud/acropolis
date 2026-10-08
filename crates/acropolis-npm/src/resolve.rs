@@ -1,5 +1,8 @@
 use crate::hoist::{Graph, PkgId, hoist};
-use crate::install::{BinDir, InstallOptions, InstallPackage, InstallPlan, Link, Source, parent_node_modules, platform_matches, relative_link};
+use crate::install::{
+    BinDir, InstallOptions, InstallPackage, InstallPlan, Link, Source, parent_node_modules, platform_matches,
+    relative_link,
+};
 use crate::lockfile::bins_of;
 use acropolis_fetch::Fetcher;
 use acropolis_store::Integrity;
@@ -37,7 +40,10 @@ fn pick_version(packument: &Value, range: &str) -> Option<String> {
     }
     let mut best: Option<&Version> = None;
     for v in &versions {
-        let allowed = v.pre.is_empty() || reqs.iter().any(|r| r.matches(v) && r.comparators.iter().any(|c| !c.pre.is_empty()));
+        let allowed = v.pre.is_empty()
+            || reqs
+                .iter()
+                .any(|r| r.matches(v) && r.comparators.iter().any(|c| !c.pre.is_empty()));
         if allowed && reqs.iter().any(|r| r.matches(v)) && best.map(|b| v > b).unwrap_or(true) {
             best = Some(v);
         }
@@ -53,20 +59,35 @@ pub struct Resolver<'a> {
 
 impl<'a> Resolver<'a> {
     pub fn new(fetcher: &'a Fetcher, registry: Option<&str>) -> Self {
-        Resolver { fetcher, registry: registry.unwrap_or(REGISTRY).trim_end_matches('/').to_string(), packuments: HashMap::new() }
+        Resolver {
+            fetcher,
+            registry: registry.unwrap_or(REGISTRY).trim_end_matches('/').to_string(),
+            packuments: HashMap::new(),
+        }
     }
 
     async fn load(&mut self, names: Vec<String>) -> Result<()> {
-        let missing: Vec<String> = names.into_iter().filter(|n| !self.packuments.contains_key(n)).collect::<HashSet<_>>().into_iter().collect();
+        let missing: Vec<String> = names
+            .into_iter()
+            .filter(|n| !self.packuments.contains_key(n))
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
         let mut headers = HeaderMap::new();
-        headers.insert(ACCEPT, HeaderValue::from_static("application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8"));
+        headers.insert(
+            ACCEPT,
+            HeaderValue::from_static("application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8"),
+        );
         let fetcher = self.fetcher;
         let registry = self.registry.clone();
         let futs = missing.iter().map(|n| {
             let url = format!("{}/{}", registry, escape_name(n));
             let headers = headers.clone();
             async move {
-                let b = fetcher.bytes_with(&url, &headers).await.with_context(|| format!("fetching metadata for {n}"))?;
+                let b = fetcher
+                    .bytes_with(&url, &headers)
+                    .await
+                    .with_context(|| format!("fetching metadata for {n}"))?;
                 let v: Value = serde_json::from_slice(&b).with_context(|| format!("parsing metadata for {n}"))?;
                 Ok::<_, anyhow::Error>((n.clone(), v))
             }
@@ -78,12 +99,18 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
-    pub async fn resolve(&mut self, root_specs: &[(String, String)], opts: &InstallOptions) -> Result<(Graph, HashMap<PkgId, Value>)> {
+    pub async fn resolve(
+        &mut self,
+        root_specs: &[(String, String)],
+        opts: &InstallOptions,
+    ) -> Result<(Graph, HashMap<PkgId, Value>)> {
         let mut graph = Graph::default();
         let mut metas: HashMap<PkgId, Value> = HashMap::new();
         let mut resolved_cache: HashMap<(String, String), Option<PkgId>> = HashMap::new();
-        let mut wave: Vec<(Option<PkgId>, String, String, bool)> =
-            root_specs.iter().map(|(n, r)| (None, n.clone(), r.clone(), false)).collect();
+        let mut wave: Vec<(Option<PkgId>, String, String, bool)> = root_specs
+            .iter()
+            .map(|(n, r)| (None, n.clone(), r.clone(), false))
+            .collect();
         let mut visited: HashSet<PkgId> = HashSet::new();
         while !wave.is_empty() {
             let names: Vec<String> = wave.iter().map(|(_, n, r, _)| real_name(n, r).0).collect();
@@ -123,7 +150,11 @@ impl<'a> Resolver<'a> {
                         graph.roots.insert(alias.clone(), id.clone());
                     }
                     Some(p) => {
-                        graph.deps.entry(p.clone()).or_default().insert(alias.clone(), id.clone());
+                        graph
+                            .deps
+                            .entry(p.clone())
+                            .or_default()
+                            .insert(alias.clone(), id.clone());
                     }
                 }
                 if visited.insert(id.clone()) {
@@ -134,7 +165,12 @@ impl<'a> Resolver<'a> {
                         }
                         if let Some(m) = meta.get(k).and_then(|d| d.as_object()) {
                             for (dn, dr) in m {
-                                next.push((Some(id.clone()), dn.clone(), dr.as_str().unwrap_or("*").to_string(), opt));
+                                next.push((
+                                    Some(id.clone()),
+                                    dn.clone(),
+                                    dr.as_str().unwrap_or("*").to_string(),
+                                    opt,
+                                ));
                             }
                         }
                     }
@@ -185,7 +221,11 @@ pub fn root_specs(pj: &Value, opts: &InstallOptions, skip: &HashSet<String>) -> 
                 if r.starts_with("workspace:") || r.starts_with("file:") || r.starts_with("link:") {
                     continue;
                 }
-                if r.starts_with("git") || r.contains("github:") || r.starts_with("http") || (r.contains('/') && !r.starts_with("npm:")) {
+                if r.starts_with("git")
+                    || r.contains("github:")
+                    || r.starts_with("http")
+                    || (r.contains('/') && !r.starts_with("npm:"))
+                {
                     bail!("dependency {n}@{r} needs a lockfile: git and URL dependencies are not resolved without one");
                 }
                 out.push((n.clone(), r.to_string()));
@@ -203,7 +243,11 @@ pub async fn plan_without_lockfile(
 ) -> Result<InstallPlan> {
     let ws_names: BTreeMap<String, String> = workspaces
         .iter()
-        .filter_map(|(dir, p)| p.get("name").and_then(|n| n.as_str()).map(|n| (n.to_string(), dir.clone())))
+        .filter_map(|(dir, p)| {
+            p.get("name")
+                .and_then(|n| n.as_str())
+                .map(|n| (n.to_string(), dir.clone()))
+        })
         .collect();
     let skip: HashSet<String> = ws_names.keys().cloned().collect();
     let mut specs = root_specs(pj, opts, &skip)?;
@@ -220,10 +264,18 @@ pub async fn plan_without_lockfile(
         let name = meta.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
         let version = meta.get("version").and_then(|n| n.as_str()).unwrap_or("").to_string();
         let dist = meta.get("dist").ok_or_else(|| anyhow!("{} has no dist", id.0))?;
-        let url = dist.get("tarball").and_then(|t| t.as_str()).ok_or_else(|| anyhow!("{} has no tarball", id.0))?.to_string();
+        let url = dist
+            .get("tarball")
+            .and_then(|t| t.as_str())
+            .ok_or_else(|| anyhow!("{} has no tarball", id.0))?
+            .to_string();
         let integrity = match dist.get("integrity").and_then(|i| i.as_str()) {
             Some(i) => Some(Integrity::parse_sri(i)?),
-            None => dist.get("shasum").and_then(|s| s.as_str()).map(|s| Integrity::parse_hex(acropolis_store::Algo::Sha1, s)).transpose()?,
+            None => dist
+                .get("shasum")
+                .and_then(|s| s.as_str())
+                .map(|s| Integrity::parse_hex(acropolis_store::Algo::Sha1, s))
+                .transpose()?,
         };
         if let Some((nm, _)) = parent_node_modules(path) {
             bin_dirs.entry(nm.to_string()).or_default().push(path.clone());
@@ -241,9 +293,15 @@ pub async fn plan_without_lockfile(
     }
     for (name, dir) in &ws_names {
         let path = format!("node_modules/{name}");
-        plan.links.push(Link { path: path.clone(), target: relative_link(Path::new(&path), Path::new(dir)) });
+        plan.links.push(Link {
+            path: path.clone(),
+            target: relative_link(Path::new(&path), Path::new(dir)),
+        });
     }
-    plan.bin_dirs = bin_dirs.into_iter().map(|(dir, packages)| BinDir { dir, packages }).collect();
+    plan.bin_dirs = bin_dirs
+        .into_iter()
+        .map(|(dir, packages)| BinDir { dir, packages })
+        .collect();
     Ok(plan)
 }
 
@@ -262,6 +320,9 @@ mod tests {
         assert_eq!(pick_version(&p, "next").unwrap(), "2.0.0-rc.1");
         assert_eq!(pick_version(&p, "").unwrap(), "1.2.0");
         assert!(pick_version(&p, "^3").is_none());
-        assert_eq!(real_name("str", "npm:string-width@^4"), ("string-width".to_string(), "^4".to_string()));
+        assert_eq!(
+            real_name("str", "npm:string-width@^4"),
+            ("string-width".to_string(), "^4".to_string())
+        );
     }
 }
