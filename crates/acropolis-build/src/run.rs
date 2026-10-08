@@ -819,6 +819,9 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             let types = *types_only;
             let n = tokio::task::spawn_blocking(move || acropolis_npm::install::materialize_with(&s2.plan, &s2.tarballs, &r2, types)).await??;
             acropolis_events::log(&step.id, format!("{:.1} MB written", n as f64 / 1e6));
+            for line in apply_patched_dependencies(&ctx.opts.app_dir, &state.plan, &root)? {
+                acropolis_events::log(&step.id, line);
+            }
             if manager == "pnpm" && !root.join("node_modules/.modules.yaml").exists() {
                 std::fs::create_dir_all(root.join("node_modules"))?;
                 std::fs::write(
@@ -1215,6 +1218,55 @@ fn check_package_urls(plan: &InstallPlan, env: &crate::Env) -> Result<()> {
         }
     }
     Ok(())
+}
+
+pub fn patched_dependencies(app_dir: &Path) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    if let Ok(pj) = crate::detect::read_package_json(app_dir) {
+        for v in [pj.get("patchedDependencies"), pj.get("pnpm").and_then(|p| p.get("patchedDependencies"))].into_iter().flatten() {
+            if let Some(m) = v.as_object() {
+                out.extend(m.iter().filter_map(|(k, v)| v.as_str().map(|f| (k.clone(), f.to_string()))));
+            }
+        }
+    }
+    if let Ok(text) = std::fs::read_to_string(app_dir.join("pnpm-workspace.yaml")) {
+        let mut inside = false;
+        for line in text.lines() {
+            if !line.starts_with(' ') && !line.starts_with('\t') {
+                inside = line.trim_end() == "patchedDependencies:";
+                continue;
+            }
+            if inside && let Some((k, v)) = line.trim().split_once(": ") {
+                out.push((k.trim_matches(['"', '\'']).to_string(), v.trim().trim_matches(['"', '\'']).to_string()));
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn apply_patched_dependencies(app_dir: &Path, plan: &InstallPlan, root: &Path) -> Result<Vec<String>> {
+    let mut log = Vec::new();
+    for (spec, file) in patched_dependencies(app_dir) {
+        let rel = clean_relative(&file)?;
+        let diff = std::fs::read_to_string(app_dir.join(rel)).with_context(|| format!("reading patch {file} for {spec}"))?;
+        let (name, version) = acropolis_npm::patch::targets(&spec);
+        let mut applied = 0;
+        for p in plan.packages.iter().filter(|p| p.name == name && version.as_ref().is_none_or(|v| *v == p.version)) {
+            let dir = root.join(&p.path);
+            if dir.is_dir() {
+                acropolis_npm::patch::apply(&diff, &dir).with_context(|| format!("applying {file} to {}", p.path))?;
+                applied += 1;
+            }
+        }
+        if applied == 0 {
+            log.push(format!("warning: patch {file} matches no installed {spec}"));
+        } else {
+            log.push(format!("patched {spec} ({applied} copies) with {file}"));
+        }
+    }
+    Ok(log)
 }
 
 fn keep_packages(mut plan: InstallPlan, full: InstallPlan, keep: &[String]) -> InstallPlan {

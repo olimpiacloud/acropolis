@@ -1,6 +1,7 @@
 pub mod bun;
 pub mod hoist;
 pub mod install;
+pub mod patch;
 pub mod lockfile;
 pub mod pnpm;
 pub mod resolve;

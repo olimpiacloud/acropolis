@@ -127,3 +127,8 @@ Cada entrada: qué se probó, qué número dio, qué quedó y qué se descartó.
 
 - `static-web-server` pesa 3,8 MB contra 24,9 MB de `caddy:2-alpine`, pero no tiene el fallback `{path}.html` que usa el Caddyfile (Next con `output: 'export'` sin `trailingSlash` y Astro generan `about.html`) ni lee `PORT` sin shell. Cambiarlo rompería rutas que hoy andan para ahorrar ~20 MB en imágenes que ya son chicas. Se descartó.
 - Turbopack en Next 15 queda opt-in (`ACROPOLIS_NEXT_TURBOPACK=1`, solo 15.5+ con build `next build`): con `--turbopack` una función `webpack()` de la config se ignora con un warning y plugins como `DefinePlugin` desaparecen sin error. Next 16 ya usa Turbopack por defecto.
+
+## D21. `patchedDependencies` (bun y pnpm)
+
+- Encontrado al medir real-app: el instalador propio ignoraba `patchedDependencies`, así que la imagen salía con el paquete sin parchear y sin ningún error. `bun install` y `pnpm install` (lo que corre Railpack) sí aplican el parche.
+- Quedó: después de materializar `node_modules` se aplican los parches de `package.json` (`patchedDependencies` y `pnpm.patchedDependencies`) y de `pnpm-workspace.yaml`, con un aplicador de diffs propio (los builders pueden no tener `patch` ni `git`), a cada copia instalada del paquete y versión. El contenido de los parches entra en el hash del paso de instalación, así que cambiar un parche invalida la caché de `node_modules`. Si hay parches, la capa de dependencias de producción se arma desde un árbol instalado y no directo desde los tarballs.

@@ -126,7 +126,7 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
                 Action::NpmFetch { manager: "npm".into(), lockfile: "package-lock.json".into(), lockfile_sha256: acropolis_store::sha256_bytes(&lock).hex(), dev: true, workspaces: vec![], keep: vec![] },
                 &[],
             );
-            b.step("install", "install node_modules", Action::NpmInstall { dev: true, target: "src".into(), scripts: String::new(), manager: "npm".into(), types_only: false }, &["npm-fetch", "source"]);
+            b.step("install", "install node_modules", Action::NpmInstall { dev: true, target: "src".into(), scripts: String::new(), manager: "npm".into(), types_only: false, patches: String::new() }, &["npm-fetch", "source"]);
             let mut aenv = BTreeMap::new();
             aenv.insert("NODE_ENV".to_string(), "production".to_string());
             aenv.insert("PATH".to_string(), "/app/node_modules/.bin:/opt/acropolis/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string());

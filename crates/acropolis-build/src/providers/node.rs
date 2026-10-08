@@ -564,8 +564,32 @@ fn nx_next_app(app: &NodeApp, env: &Env) -> Option<(String, String)> {
     if apps.len() == 1 { apps.pop() } else { None }
 }
 
+fn patches_hash(root: &std::path::Path) -> String {
+    let list = crate::run::patched_dependencies(root);
+    if list.is_empty() {
+        return String::new();
+    }
+    let mut buf = Vec::new();
+    for (spec, file) in &list {
+        buf.extend_from_slice(spec.as_bytes());
+        buf.push(0);
+        buf.extend_from_slice(&std::fs::read(root.join(file)).unwrap_or_default());
+        buf.push(0);
+    }
+    acropolis_store::sha256_bytes(&buf).hex()
+}
+
 pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
     let mut p = plan_inner(app, env, name)?;
+    let hash = patches_hash(&app.root);
+    if !hash.is_empty() {
+        for s in p.steps.iter_mut() {
+            if let Action::NpmInstall { patches, .. } = &mut s.action {
+                *patches = hash.clone();
+            }
+        }
+        p.finalize();
+    }
     if let Some(rel) = &app.member {
         apply_member(&mut p, app, rel);
     }
@@ -772,6 +796,11 @@ fn plan_inner(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
             policy.describe()
         ));
     }
+    let patch_hash = patches_hash(&app.root);
+    let patched = !patch_hash.is_empty();
+    if patched {
+        b.fact("patched-dependencies", crate::run::patched_dependencies(&app.root).into_iter().map(|(k, _)| k).collect::<Vec<_>>().join(", "));
+    }
     let glibc_new = acropolis_cargo_glibc_newer_than_bookworm();
     let old_node = acropolis_semver::fuzzy_version(&app.node.spec).split('.').next().and_then(|m| m.parse::<u32>().ok()).is_some_and(|m| m < 20);
     let variant = if prod_needs_scripts && glibc_new && !old_node { "trixie-slim" } else { "bookworm-slim" };
@@ -835,7 +864,7 @@ fn plan_inner(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
                 Action::NpmFetch { manager: manager.into(), lockfile: lockfile.clone(), lockfile_sha256: lock_sha, dev: false, workspaces: vec![], keep: vec![] },
                 &[],
             );
-            prod_deps_layer(&mut b, app, manager, &policy, prod_needs_scripts, "npm-fetch", false);
+            prod_deps_layer(&mut b, app, manager, &policy, prod_needs_scripts || patched, "npm-fetch", false);
             b.step(
                 "layer-app",
                 "layer app source",
@@ -915,6 +944,7 @@ fn plan_inner(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
                     scripts: if dev_scripts { policy.describe() } else { String::new() },
                     manager: manager.into(),
                     types_only: false,
+                    patches: String::new(),
                 },
                 install_deps,
             );
@@ -1109,7 +1139,7 @@ fn plan_inner(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
                         Action::NpmFetch { manager: manager.into(), lockfile: lockfile.clone(), lockfile_sha256: String::new(), dev: false, workspaces: vec![], keep: runtime_dev_packages(app) },
                         &["npm-fetch"],
                     );
-                    prod_deps_layer(&mut b, app, manager, &policy, prod_needs_scripts, "npm-fetch-prod", true);
+                    prod_deps_layer(&mut b, app, manager, &policy, prod_needs_scripts || patched, "npm-fetch-prod", true);
                     b.step(
                         "layer-app",
                         "layer app + build output",
@@ -1432,7 +1462,7 @@ fn plan_native_spa(
         b.step(
             "install",
             "install node_modules",
-            Action::NpmInstall { dev: true, target: "src".into(), scripts: String::new(), manager: manager.into(), types_only: types_only_check(app, &checks) },
+            Action::NpmInstall { dev: true, target: "src".into(), scripts: String::new(), manager: manager.into(), types_only: types_only_check(app, &checks), patches: String::new() },
             &["npm-fetch", "source"],
         );
         let mut run_env = BTreeMap::new();
@@ -1760,7 +1790,7 @@ fn prod_deps_layer(
     b.step(
         "install-prod",
         "install production node_modules + scripts",
-        Action::NpmInstall { dev: false, target: "prod".into(), scripts: policy.describe(), manager: manager.into(), types_only: false },
+        Action::NpmInstall { dev: false, target: "prod".into(), scripts: policy.describe(), manager: manager.into(), types_only: false, patches: String::new() },
         &[fetch_step, "node"],
     );
     b.step(
