@@ -121,7 +121,7 @@
     "dest": "app",
     "from": {
      "exclude": [
-      ".acro-runtime-debs"
+      ".acropolis-runtime-debs"
      ],
      "path": ".",
      "type": "work-dir"

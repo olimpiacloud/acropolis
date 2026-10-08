@@ -121,7 +121,7 @@
    "action": {
     "after": null,
     "commands": [
-     ". /etc/os-release; case \"$VERSION_CODENAME\" in jessie|stretch|buster|bullseye) sed -i -e 's|deb.debian.org|archive.debian.org|g' -e 's|security.debian.org|archive.debian.org|g' -e '/-updates/d' /etc/apt/sources.list; echo 'Acquire::Check-Valid-Until \"false\";' > /etc/apt/apt.conf.d/99acro-archive ;; esac; apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libstdc++6 openssl libncurses6 ca-certificates && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb /var/log/apt /var/log/dpkg.log"
+     ". /etc/os-release; case \"$VERSION_CODENAME\" in jessie|stretch|buster|bullseye) sed -i -e 's|deb.debian.org|archive.debian.org|g' -e 's|security.debian.org|archive.debian.org|g' -e '/-updates/d' /etc/apt/sources.list; echo 'Acquire::Check-Valid-Until \"false\";' > /etc/apt/apt.conf.d/99acropolis-archive ;; esac; apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libstdc++6 openssl libncurses6 ca-certificates && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb /var/log/apt /var/log/dpkg.log"
     ],
     "env": {},
     "image": "@base",

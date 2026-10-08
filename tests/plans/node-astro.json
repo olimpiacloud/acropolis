@@ -169,7 +169,7 @@
   }
  ],
  "warnings": [
-  "install scripts of esbuild, sharp run with network access (policy: all); set ACRO_INSTALL_SCRIPTS=none to disable",
-  "the build step runs with network access like docker build; set ACRO_HERMETIC_BUILD=1 to run it without network"
+  "install scripts of esbuild, sharp run with network access (policy: all); set ACROPOLIS_INSTALL_SCRIPTS=none to disable",
+  "the build step runs with network access like docker build; set ACROPOLIS_HERMETIC_BUILD=1 to run it without network"
  ]
 }

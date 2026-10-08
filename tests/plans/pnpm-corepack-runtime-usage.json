@@ -203,6 +203,6 @@
  ],
  "warnings": [
   "no lockfile: dependencies are resolved from the npm registry at build time, so the build is not reproducible",
-  "install scripts of better-sqlite3 run with network access (policy: all); set ACRO_INSTALL_SCRIPTS=none to disable"
+  "install scripts of better-sqlite3 run with network access (policy: all); set ACROPOLIS_INSTALL_SCRIPTS=none to disable"
  ]
 }

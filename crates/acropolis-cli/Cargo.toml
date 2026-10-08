@@ -1,0 +1,25 @@
+[package]
+name = "acropolis-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "acropolis"
+path = "src/main.rs"
+
+[dependencies]
+acropolis-events.workspace = true
+acropolis-oci.workspace = true
+acropolis-store.workspace = true
+acropolis-fetch.workspace = true
+acropolis-build = { path = "../acropolis-build" }
+acropolis-exec = { path = "../acropolis-exec" }
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+libc.workspace = true
+json5.workspace = true

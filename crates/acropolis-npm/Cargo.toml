@@ -1,0 +1,28 @@
+[package]
+name = "acropolis-npm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+acropolis-events.workspace = true
+acropolis-store.workspace = true
+acropolis-fetch.workspace = true
+acropolis-oci.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+futures.workspace = true
+flate2.workspace = true
+zstd.workspace = true
+rayon.workspace = true
+libc.workspace = true
+serde_yaml = "0.9"
+json5.workspace = true
+acropolis-semver = { path = "../acropolis-semver" }
+semver.workspace = true
+reqwest.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

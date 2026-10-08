@@ -1,0 +1,35 @@
+[package]
+name = "acropolis-build"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+acropolis-events.workspace = true
+acropolis-store.workspace = true
+acropolis-fetch.workspace = true
+acropolis-oci.workspace = true
+acropolis-npm = { path = "../acropolis-npm" }
+acropolis-gomod = { path = "../acropolis-gomod" }
+acropolis-cargo = { path = "../acropolis-cargo" }
+acropolis-semver = { path = "../acropolis-semver" }
+acropolis-bundle = { path = "../acropolis-bundle" }
+acropolis-toolchain = { path = "../acropolis-toolchain" }
+acropolis-exec = { path = "../acropolis-exec" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+futures.workspace = true
+rayon.workspace = true
+json5.workspace = true
+serde_yaml = "0.9"
+reqwest.workspace = true
+hex.workspace = true
+bytes.workspace = true
+libc.workspace = true
+zstd.workspace = true
+flate2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

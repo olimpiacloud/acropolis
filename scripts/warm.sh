@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
-A=${ACRO:-$(cd "$(dirname "$0")/.." && pwd)/target/release/acro}
+A=${ACROPOLIS:-$(cd "$(dirname "$0")/.." && pwd)/target/release/acropolis}
 H=/tmp/warm/home
 for app in "$@"; do
   rm -rf "/tmp/warm/$app" "$H"

@@ -1,7 +1,7 @@
 {
  "app": "node-vite-vanilla",
  "facts": {
-  "bundler": "acro (rolldown, lazy install)",
+  "bundler": "acropolis (rolldown, lazy install)",
   "framework": "vite",
   "node": "lts (default)",
   "package-manager": "bun",

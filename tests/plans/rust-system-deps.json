@@ -62,7 +62,7 @@
      "cargo build --release --locked --bin rust-open-ssl"
     ],
     "env": {
-     "CARGO_HOME": "/app/.acro-cargo"
+     "CARGO_HOME": "/app/.acropolis-cargo"
     },
     "image": "rust:1.85.1-bookworm",
     "kind": "image-run",

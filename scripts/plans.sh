@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -uo pipefail
 cd "$(dirname "$0")/.."
-EXAMPLES="${EXAMPLES:-${ACRO_EXT:-/root/personal/acro-ext}/railpack/examples}"
-BIN="${BIN:-target/fast/acro}"
+EXAMPLES="${EXAMPLES:-${ACROPOLIS_EXT:-/root/personal/acropolis-ext}/railpack/examples}"
+BIN="${BIN:-target/fast/acropolis}"
 DIR=tests/plans
 mode="${1:-check}"
 mkdir -p "$DIR"
@@ -11,7 +11,7 @@ total=0
 for ex in $(ls "$EXAMPLES"); do
   [ -d "$EXAMPLES/$ex" ] || continue
   total=$((total + 1))
-  out=$("$BIN" --home /tmp/acro-plans-home plan "$EXAMPLES/$ex" --json 2>&1 | python3 -c '
+  out=$("$BIN" --home /tmp/acropolis-plans-home plan "$EXAMPLES/$ex" --json 2>&1 | python3 -c '
 import json, sys
 text = sys.stdin.read()
 try:

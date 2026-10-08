@@ -3,20 +3,20 @@
 version = 4
 
 [[package]]
-name = "acro-build"
+name = "acropolis-build"
 version = "0.1.0"
 dependencies = [
- "acro-bundle",
- "acro-cargo",
- "acro-events",
- "acro-exec",
- "acro-fetch",
- "acro-gomod",
- "acro-npm",
- "acro-oci",
- "acro-semver",
- "acro-store",
- "acro-toolchain",
+ "acropolis-bundle",
+ "acropolis-cargo",
+ "acropolis-events",
+ "acropolis-exec",
+ "acropolis-fetch",
+ "acropolis-gomod",
+ "acropolis-npm",
+ "acropolis-oci",
+ "acropolis-semver",
+ "acropolis-store",
+ "acropolis-toolchain",
  "anyhow",
  "bytes",
  "flate2",
@@ -35,12 +35,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "acro-bundle"
+name = "acropolis-bundle"
 version = "0.1.0"
 dependencies = [
- "acro-fetch",
- "acro-npm",
- "acro-oci",
+ "acropolis-fetch",
+ "acropolis-npm",
+ "acropolis-oci",
  "anyhow",
  "arcstr",
  "base64 0.22.1",
@@ -55,13 +55,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "acro-cargo"
+name = "acropolis-cargo"
 version = "0.1.0"
 dependencies = [
- "acro-events",
- "acro-fetch",
- "acro-store",
- "acro-toolchain",
+ "acropolis-events",
+ "acropolis-fetch",
+ "acropolis-store",
+ "acropolis-toolchain",
  "anyhow",
  "flate2",
  "futures",
@@ -76,15 +76,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "acro-cli"
+name = "acropolis-cli"
 version = "0.1.0"
 dependencies = [
- "acro-build",
- "acro-events",
- "acro-exec",
- "acro-fetch",
- "acro-oci",
- "acro-store",
+ "acropolis-build",
+ "acropolis-events",
+ "acropolis-exec",
+ "acropolis-fetch",
+ "acropolis-oci",
+ "acropolis-store",
  "anyhow",
  "clap",
  "json5",
@@ -96,7 +96,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "acro-events"
+name = "acropolis-events"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -104,10 +104,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "acro-exec"
+name = "acropolis-exec"
 version = "0.1.0"
 dependencies = [
- "acro-events",
+ "acropolis-events",
  "anyhow",
  "futures",
  "libc",
@@ -115,11 +115,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "acro-fetch"
+name = "acropolis-fetch"
 version = "0.1.0"
 dependencies = [
- "acro-events",
- "acro-store",
+ "acropolis-events",
+ "acropolis-store",
  "anyhow",
  "bytes",
  "futures",
@@ -130,12 +130,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "acro-gomod"
+name = "acropolis-gomod"
 version = "0.1.0"
 dependencies = [
- "acro-events",
- "acro-fetch",
- "acro-store",
+ "acropolis-events",
+ "acropolis-fetch",
+ "acropolis-store",
  "anyhow",
  "base64 0.22.1",
  "bytes",
@@ -147,14 +147,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "acro-npm"
+name = "acropolis-npm"
 version = "0.1.0"
 dependencies = [
- "acro-events",
- "acro-fetch",
- "acro-oci",
- "acro-semver",
- "acro-store",
+ "acropolis-events",
+ "acropolis-fetch",
+ "acropolis-oci",
+ "acropolis-semver",
+ "acropolis-store",
  "anyhow",
  "flate2",
  "futures",
@@ -172,12 +172,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "acro-oci"
+name = "acropolis-oci"
 version = "0.1.0"
 dependencies = [
- "acro-events",
- "acro-fetch",
- "acro-store",
+ "acropolis-events",
+ "acropolis-fetch",
+ "acropolis-store",
  "anyhow",
  "base64 0.22.1",
  "bytes",
@@ -197,17 +197,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "acro-semver"
+name = "acropolis-semver"
 version = "0.1.0"
 dependencies = [
  "semver",
 ]
 
 [[package]]
-name = "acro-store"
+name = "acropolis-store"
 version = "0.1.0"
 dependencies = [
- "acro-events",
+ "acropolis-events",
  "base64 0.22.1",
  "hex",
  "libc",
@@ -218,15 +218,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "acro-toolchain"
+name = "acropolis-toolchain"
 version = "0.1.0"
 dependencies = [
- "acro-events",
- "acro-fetch",
- "acro-gomod",
- "acro-oci",
- "acro-semver",
- "acro-store",
+ "acropolis-events",
+ "acropolis-fetch",
+ "acropolis-gomod",
+ "acropolis-oci",
+ "acropolis-semver",
+ "acropolis-store",
  "anyhow",
  "flate2",
  "liblzma",

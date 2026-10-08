@@ -149,7 +149,7 @@
    "action": {
     "after": null,
     "commands": [
-     ". /etc/os-release; case \"$VERSION_CODENAME\" in jessie|stretch|buster|bullseye) sed -i -e 's|deb.debian.org|archive.debian.org|g' -e 's|security.debian.org|archive.debian.org|g' -e '/-updates/d' /etc/apt/sources.list; echo 'Acquire::Check-Valid-Until \"false\";' > /etc/apt/apt.conf.d/99acro-archive ;; esac; apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends xvfb libasound2 libatk1.0-0 libc6 libcairo2 libcups2 libdbus-1-3 libexpat1 libfontconfig1 libgbm1 libgcc1 libgdk-pixbuf-2.0-0 libglib2.0-0 libgtk-3-0 libnspr4 libpango-1.0-0 libpangocairo-1.0-0 libstdc++6 libx11-6 libx11-xcb1 libxcb1 libxcomposite1 libxcursor1 libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 libxss1 libxtst6 ca-certificates fonts-liberation libnss3 lsb-release xdg-utils wget && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb /var/log/apt /var/log/dpkg.log"
+     ". /etc/os-release; case \"$VERSION_CODENAME\" in jessie|stretch|buster|bullseye) sed -i -e 's|deb.debian.org|archive.debian.org|g' -e 's|security.debian.org|archive.debian.org|g' -e '/-updates/d' /etc/apt/sources.list; echo 'Acquire::Check-Valid-Until \"false\";' > /etc/apt/apt.conf.d/99acropolis-archive ;; esac; apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends xvfb libasound2 libatk1.0-0 libc6 libcairo2 libcups2 libdbus-1-3 libexpat1 libfontconfig1 libgbm1 libgcc1 libgdk-pixbuf-2.0-0 libglib2.0-0 libgtk-3-0 libnspr4 libpango-1.0-0 libpangocairo-1.0-0 libstdc++6 libx11-6 libx11-xcb1 libxcb1 libxcomposite1 libxcursor1 libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 libxss1 libxtst6 ca-certificates fonts-liberation libnss3 lsb-release xdg-utils wget && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb /var/log/apt /var/log/dpkg.log"
     ],
     "env": {},
     "image": "node:lts-trixie-slim",
@@ -199,6 +199,6 @@
   }
  ],
  "warnings": [
-  "install scripts of puppeteer run with network access (policy: all); set ACRO_INSTALL_SCRIPTS=none to disable"
+  "install scripts of puppeteer run with network access (policy: all); set ACROPOLIS_INSTALL_SCRIPTS=none to disable"
  ]
 }

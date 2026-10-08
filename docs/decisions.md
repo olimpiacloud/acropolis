@@ -82,7 +82,7 @@ Cada entrada: qué se probó, qué número dio, qué quedó y qué se descartó.
   - CSS: Rolldown ya no empaqueta CSS. Los `.css` importados se recolectan en el orden de módulos de los chunks y se procesan con lightningcss (minify, `@import` inline, `url()` a `/assets/<nombre>-<hash>`).
   - Assets como Vite: archivo con hash bajo `/assets/` o data URL si pesa menos de 4 KB; imports absolutos contra `public/`.
   - Si el resolver propio no puede (campo `browser` como objeto, etc.) extrae el paquete completo y deja resolver a Rolldown.
-- Se activa solo si `vite.config` no tiene más plugins que `@vitejs/plugin-react(-swc)`, no hay PostCSS/Tailwind y el script de build es `[tsc ... &&] vite build`. `ACRO_BUNDLER=vite` fuerza el camino de Vite.
+- Se activa solo si `vite.config` no tiene más plugins que `@vitejs/plugin-react(-swc)`, no hay PostCSS/Tailwind y el script de build es `[tsc ... &&] vite build`. `ACROPOLIS_BUNDLER=vite` fuerza el camino de Vite.
 - El type-check (`tsc -b`) se conserva: corre en paralelo con el bundle sobre la instalación completa; el build falla si falla.
 - Medido (5 vCPU, frío):
   - Vite + React: el bundle baja 3 de 174 paquetes (1,4 MB) y tarda 0,43–0,49 s; build total 3,5–4,0 s contra 9,1 s con Vite.

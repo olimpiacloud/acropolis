@@ -201,6 +201,6 @@
   }
  ],
  "warnings": [
-  "install scripts of bcrypt, better-sqlite3, canvas, sharp run with network access (policy: bcrypt,better-sqlite3,canvas,sharp); set ACRO_INSTALL_SCRIPTS=none to disable"
+  "install scripts of bcrypt, better-sqlite3, canvas, sharp run with network access (policy: bcrypt,better-sqlite3,canvas,sharp); set ACROPOLIS_INSTALL_SCRIPTS=none to disable"
  ]
 }

@@ -168,6 +168,6 @@
   }
  ],
  "warnings": [
-  "playwright is a production dependency: set ACRO_NODE_PLAYWRIGHT_INSTALL=1 to install its headless browser"
+  "playwright is a production dependency: set ACROPOLIS_NODE_PLAYWRIGHT_INSTALL=1 to install its headless browser"
  ]
 }

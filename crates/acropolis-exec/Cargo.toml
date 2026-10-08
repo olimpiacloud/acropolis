@@ -1,0 +1,12 @@
+[package]
+name = "acropolis-exec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+acropolis-events.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+libc.workspace = true
+futures.workspace = true

@@ -166,7 +166,7 @@
     ],
     "env": {
      "NODE_ENV": "production",
-     "PATH": "/app/node_modules/.bin:/opt/acro/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+     "PATH": "/app/node_modules/.bin:/opt/acropolis/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     },
     "image": "@base",
     "kind": "image-run",
@@ -211,7 +211,7 @@
     "from": {
      "files": {
       "Caddyfile": "{\n\tadmin off\n\tpersist_config off\n\tauto_https off\n\t{$CADDY_GLOBAL_OPTIONS}\n\tlog {\n\t\tformat json\n\t\toutput stderr\n\t}\n\tfrankenphp {\n\t\t{$FRANKENPHP_CONFIG}\n\t}\n}\n\n{$CADDY_EXTRA_CONFIG}\n\n:{$PORT:80} {\n\troot * /app/public\n\tencode zstd br gzip\n\tfile_server {\n\t\thide .git\n\t\thide .env*\n\t}\n\t{$CADDY_SERVER_EXTRA_DIRECTIVES}\n\tphp_server\n}\n",
-      "start-container.sh": "#!/bin/sh\nset -e\nif [ \"$IS_LARAVEL\" = \"true\" ]; then\n  if [ \"$ACRO_SKIP_MIGRATIONS\" != \"true\" ] && [ \"$RAILPACK_SKIP_MIGRATIONS\" != \"true\" ]; then\n    php artisan migrate --force\n  fi\n  php artisan storage:link || true\n  php artisan optimize:clear\n  php artisan optimize\nfi\nexec docker-php-entrypoint --config /Caddyfile --adapter caddyfile 2>&1\n"
+      "start-container.sh": "#!/bin/sh\nset -e\nif [ \"$IS_LARAVEL\" = \"true\" ]; then\n  if [ \"$ACROPOLIS_SKIP_MIGRATIONS\" != \"true\" ] && [ \"$RAILPACK_SKIP_MIGRATIONS\" != \"true\" ]; then\n    php artisan migrate --force\n  fi\n  php artisan storage:link || true\n  php artisan optimize:clear\n  php artisan optimize\nfi\nexec docker-php-entrypoint --config /Caddyfile --adapter caddyfile 2>&1\n"
      },
      "type": "inline"
     },

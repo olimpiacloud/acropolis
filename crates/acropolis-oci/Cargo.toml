@@ -1,0 +1,28 @@
+[package]
+name = "acropolis-oci"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+acropolis-events.workspace = true
+acropolis-store.workspace = true
+acropolis-fetch.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tokio-util = { version = "0.7", features = ["io"] }
+reqwest.workspace = true
+bytes.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+flate2.workspace = true
+zstd.workspace = true
+base64.workspace = true
+url.workspace = true
+libc.workspace = true
+rayon.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

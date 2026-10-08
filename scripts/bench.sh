@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-EXT="${ACRO_EXT:-/root/personal/acro-ext}"
-UNIT=acro-bench
+EXT="${ACROPOLIS_EXT:-/root/personal/acropolis-ext}"
+UNIT=acropolis-bench
 
 label() {
   python3 - "$@" <<'PY'
@@ -14,8 +14,8 @@ for path in sys.argv[1:]:
         if not line.strip():
             continue
         r = json.loads(line)
-        if r["tool"] == "acro":
-            r["tool"] = f"acro@{name}"
+        if r["tool"] in ("acropolis", "acro"):
+            r["tool"] = f"acropolis@{name}"
         out.append(json.dumps(r))
 print("\n".join(out))
 PY
@@ -24,15 +24,15 @@ PY
 case "${1:-}" in
   report)
     shift
-    [ $# -gt 0 ] || set -- bench/results/baseline-2cpu-91378f6.jsonl $(ls -t bench/results/acro-*.jsonl 2>/dev/null | head -1)
+    [ $# -gt 0 ] || set -- bench/results/baseline-2cpu-91378f6.jsonl $(ls -t bench/results/acropolis-*.jsonl 2>/dev/null | head -1)
     tmp=$(mktemp --suffix=.jsonl)
     label "$@" > "$tmp"
-    target/"${PROFILE:-release}"/acro report "$tmp" 2>/dev/null || target/fast/acro report "$tmp"
+    target/"${PROFILE:-release}"/acropolis report "$tmp" 2>/dev/null || target/fast/acropolis report "$tmp"
     rm -f "$tmp"
     exit 0 ;;
   status)
     systemctl is-active "$UNIT" || true
-    tail -3 "$(ls -t /tmp/acro-bench-*.log | head -1)" 2>/dev/null || true
+    tail -3 "$(ls -t /tmp/acropolis-bench-*.log | head -1)" 2>/dev/null || true
     exit 0 ;;
 esac
 
@@ -44,22 +44,22 @@ PROFILE="${PROFILE:-release}" scripts/build.sh
 rev=$(git rev-parse --short HEAD)
 git diff --quiet HEAD -- crates Cargo.toml Cargo.lock || rev="$rev-dirty"
 stamp=$(date +%Y%m%d-%H%M%S)
-prev=$(ls -t "$EXT"/bin/acro-bench-* 2>/dev/null | head -1 || true)
-bin="$EXT/bin/acro-bench-$rev-$stamp"
-cp target/"${PROFILE:-release}"/acro "$bin"
-ls -t "$EXT"/bin/acro-bench-* 2>/dev/null | tail -n +5 | xargs -r rm -f || true
-tools="${TOOLS:-acro}"
-out="bench/results/acro-$rev-$stamp.jsonl"
+prev=$(ls -t "$EXT"/bin/acropolis-bench-* 2>/dev/null | head -1 || true)
+bin="$EXT/bin/acropolis-bench-$rev-$stamp"
+cp target/"${PROFILE:-release}"/acropolis "$bin"
+ls -t "$EXT"/bin/acropolis-bench-* 2>/dev/null | tail -n +5 | xargs -r rm -f || true
+tools="${TOOLS:-acropolis}"
+out="bench/results/acropolis-$rev-$stamp.jsonl"
 if [ "${AB:-0}" = 1 ]; then
   base="${AB_BASE:-$prev}"
-  [ -n "$base" ] || { echo "AB=1 needs a previous acro-bench binary in $EXT/bin (or AB_BASE=path)" >&2; exit 1; }
-  plabel=$(basename "$base" | sed -E 's/^acro-bench-//')
-  tools="acro@$plabel=$base,acro@$rev-$stamp=$bin"
+  [ -n "$base" ] || { echo "AB=1 needs a previous acropolis-bench binary in $EXT/bin (or AB_BASE=path)" >&2; exit 1; }
+  plabel=$(basename "$base" | sed -E 's/^acropolis-bench-//')
+  tools="acropolis@$plabel=$base,acropolis@$rev-$stamp=$bin"
   out="bench/results/ab-$plabel-vs-$rev-$stamp.jsonl"
-elif [ "$tools" != acro ]; then
+elif [ "$tools" != acropolis ]; then
   out="bench/results/full-${SCENARIO:-both}-$rev-$stamp.jsonl"
 fi
-log="/tmp/acro-bench-$stamp.log"
+log="/tmp/acropolis-bench-$stamp.log"
 
 systemd-run --quiet --collect --unit "$UNIT" -p OOMPolicy=continue \
   --working-directory="$PWD" --setenv=PATH="$PATH" --setenv=HOME="$HOME" \

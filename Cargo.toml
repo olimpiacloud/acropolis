@@ -10,10 +10,10 @@ license = "Apache-2.0 OR MIT"
 rust-version = "1.90"
 
 [workspace.dependencies]
-acro-events = { path = "crates/acro-events" }
-acro-store = { path = "crates/acro-store" }
-acro-fetch = { path = "crates/acro-fetch" }
-acro-oci = { path = "crates/acro-oci" }
+acropolis-events = { path = "crates/acropolis-events" }
+acropolis-store = { path = "crates/acropolis-store" }
+acropolis-fetch = { path = "crates/acropolis-fetch" }
+acropolis-oci = { path = "crates/acropolis-oci" }
 anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

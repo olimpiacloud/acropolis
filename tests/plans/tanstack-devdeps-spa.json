@@ -169,6 +169,6 @@
  ],
  "warnings": [
   "no lockfile: dependencies are resolved from the npm registry at build time, so the build is not reproducible",
-  "the build step runs with network access like docker build; set ACRO_HERMETIC_BUILD=1 to run it without network"
+  "the build step runs with network access like docker build; set ACROPOLIS_HERMETIC_BUILD=1 to run it without network"
  ]
 }

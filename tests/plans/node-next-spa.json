@@ -89,10 +89,10 @@
     ],
     "cwd": ".",
     "env": {
-     "ACRO_NFT_CACHE": "{src}/.next/cache/acro-nft-analysis.json",
+     "ACROPOLIS_NFT_CACHE": "{src}/.next/cache/acropolis-nft-analysis.json",
      "NEXT_TELEMETRY_DISABLED": "1",
      "NODE_ENV": "production",
-     "NODE_OPTIONS": "--require {work}/acro-nft-cache.js",
+     "NODE_OPTIONS": "--require {work}/acropolis-nft-cache.js",
      "npm_lifecycle_event": "build",
      "npm_package_name": "node-next-spa"
     },
@@ -171,7 +171,7 @@
   }
  ],
  "warnings": [
-  "install scripts of sharp run with network access (policy: all); set ACRO_INSTALL_SCRIPTS=none to disable",
-  "the build step runs with network access like docker build; set ACRO_HERMETIC_BUILD=1 to run it without network"
+  "install scripts of sharp run with network access (policy: all); set ACROPOLIS_INSTALL_SCRIPTS=none to disable",
+  "the build step runs with network access like docker build; set ACROPOLIS_HERMETIC_BUILD=1 to run it without network"
  ]
 }

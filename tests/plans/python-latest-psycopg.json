@@ -88,7 +88,7 @@
     "commands": [
      "dpkg -s libpq-dev >/dev/null 2>&1 || (apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libpq-dev >/dev/null)",
      "uv sync --locked --no-dev --no-editable",
-     "{ find /app/.venv /opt/uv-python -name '*.so*' -type f 2>/dev/null | xargs -r ldd 2>/dev/null | awk '/=> \\//{print $3}' | sort -u | while read -r f; do dpkg -S \"$f\" 2>/dev/null || dpkg -S \"$(readlink -f \"$f\")\" 2>/dev/null || dpkg -S \"/usr$f\" 2>/dev/null; done | cut -d: -f1 | sort -u > /app/.acro-runtime-debs; true; }"
+     "{ find /app/.venv /opt/uv-python -name '*.so*' -type f 2>/dev/null | xargs -r ldd 2>/dev/null | awk '/=> \\//{print $3}' | sort -u | while read -r f; do dpkg -S \"$f\" 2>/dev/null || dpkg -S \"$(readlink -f \"$f\")\" 2>/dev/null || dpkg -S \"/usr$f\" 2>/dev/null; done | cut -d: -f1 | sort -u > /app/.acropolis-runtime-debs; true; }"
     ],
     "env": {
      "PIP_DISABLE_PIP_VERSION_CHECK": "1",
@@ -122,7 +122,7 @@
     "dest": "app",
     "from": {
      "exclude": [
-      ".acro-runtime-debs"
+      ".acropolis-runtime-debs"
      ],
      "path": ".",
      "type": "work-dir"
@@ -164,7 +164,7 @@
    "action": {
     "after": null,
     "commands": [
-     "m=''; for p in $(cat /app/.acro-runtime-debs 2>/dev/null); do case \" libpq5 \" in *\" $p \"*) continue;; esac; dpkg -s \"$p\" >/dev/null 2>&1 || m=\"$m $p\"; done; if [ -n \"$m\" ]; then echo \"installing runtime libraries:$m\"; . /etc/os-release; case \"$VERSION_CODENAME\" in jessie|stretch|buster|bullseye) sed -i -e 's|deb.debian.org|archive.debian.org|g' -e 's|security.debian.org|archive.debian.org|g' -e '/-updates/d' /etc/apt/sources.list; echo 'Acquire::Check-Valid-Until \"false\";' > /etc/apt/apt.conf.d/99acro-archive ;; esac; apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $m >/dev/null && rm -rf /var/lib/apt/lists/*; fi"
+     "m=''; for p in $(cat /app/.acropolis-runtime-debs 2>/dev/null); do case \" libpq5 \" in *\" $p \"*) continue;; esac; dpkg -s \"$p\" >/dev/null 2>&1 || m=\"$m $p\"; done; if [ -n \"$m\" ]; then echo \"installing runtime libraries:$m\"; . /etc/os-release; case \"$VERSION_CODENAME\" in jessie|stretch|buster|bullseye) sed -i -e 's|deb.debian.org|archive.debian.org|g' -e 's|security.debian.org|archive.debian.org|g' -e '/-updates/d' /etc/apt/sources.list; echo 'Acquire::Check-Valid-Until \"false\";' > /etc/apt/apt.conf.d/99acropolis-archive ;; esac; apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $m >/dev/null && rm -rf /var/lib/apt/lists/*; fi"
     ],
     "env": {},
     "image": "python:3-slim-bookworm",
@@ -204,7 +204,7 @@
    "action": {
     "after": null,
     "commands": [
-     ". /etc/os-release; case \"$VERSION_CODENAME\" in jessie|stretch|buster|bullseye) sed -i -e 's|deb.debian.org|archive.debian.org|g' -e 's|security.debian.org|archive.debian.org|g' -e '/-updates/d' /etc/apt/sources.list; echo 'Acquire::Check-Valid-Until \"false\";' > /etc/apt/apt.conf.d/99acro-archive ;; esac; apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libpq5 && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb /var/log/apt /var/log/dpkg.log"
+     ". /etc/os-release; case \"$VERSION_CODENAME\" in jessie|stretch|buster|bullseye) sed -i -e 's|deb.debian.org|archive.debian.org|g' -e 's|security.debian.org|archive.debian.org|g' -e '/-updates/d' /etc/apt/sources.list; echo 'Acquire::Check-Valid-Until \"false\";' > /etc/apt/apt.conf.d/99acropolis-archive ;; esac; apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libpq5 && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb /var/log/apt /var/log/dpkg.log"
     ],
     "env": {},
     "image": "python:3-slim-bookworm",
