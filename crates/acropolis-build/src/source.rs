@@ -12,6 +12,7 @@ pub enum EntryKind {
     Dir,
     File { size: u64, exec: bool },
     Symlink(String),
+    Hardlink { target: String, exec: bool },
 }
 
 #[derive(Clone, Debug)]
@@ -20,13 +21,16 @@ pub struct SourceEntry {
     pub kind: EntryKind,
 }
 
+type Inodes = std::collections::HashMap<(u64, u64), String>;
+
 pub fn walk(root: &Path, ignore: &Ignore) -> Result<Vec<SourceEntry>> {
     let mut out = Vec::new();
-    walk_dir(root, root, "", ignore, &mut out)?;
+    let mut inodes = Inodes::new();
+    walk_dir(root, root, "", ignore, &mut out, &mut inodes)?;
     Ok(out)
 }
 
-fn walk_dir(root: &Path, dir: &Path, prefix: &str, ignore: &Ignore, out: &mut Vec<SourceEntry>) -> Result<()> {
+fn walk_dir(root: &Path, dir: &Path, prefix: &str, ignore: &Ignore, out: &mut Vec<SourceEntry>, inodes: &mut Inodes) -> Result<()> {
     let mut names: Vec<(String, std::fs::Metadata)> = Vec::new();
     for e in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let e = e?;
@@ -48,7 +52,7 @@ fn walk_dir(root: &Path, dir: &Path, prefix: &str, ignore: &Ignore, out: &mut Ve
             if !excluded {
                 out.push(SourceEntry { rel: rel.clone(), kind: EntryKind::Dir });
             }
-            walk_dir(root, &path, &rel, ignore, out)?;
+            walk_dir(root, &path, &rel, ignore, out, inodes)?;
             if excluded && out.len() > before {
                 out.insert(before, SourceEntry { rel: rel.clone(), kind: EntryKind::Dir });
             }
@@ -58,6 +62,14 @@ fn walk_dir(root: &Path, dir: &Path, prefix: &str, ignore: &Ignore, out: &mut Ve
             let target = std::fs::read_link(&path)?.to_string_lossy().into_owned();
             out.push(SourceEntry { rel, kind: EntryKind::Symlink(target) });
         } else if ft.is_file() {
+            if meta.nlink() > 1 {
+                if let Some(first) = inodes.get(&(meta.dev(), meta.ino())) {
+                    let exec = meta.permissions().mode() & 0o111 != 0;
+                    out.push(SourceEntry { rel, kind: EntryKind::Hardlink { target: first.clone(), exec } });
+                    continue;
+                }
+                inodes.insert((meta.dev(), meta.ino()), rel.clone());
+            }
             let exec = meta.permissions().mode() & 0o111 != 0;
             out.push(SourceEntry { rel, kind: EntryKind::File { size: meta.size(), exec } });
         }
@@ -139,6 +151,10 @@ pub fn stream_tree(root: &Path, entries: &[SourceEntry], prefix: &str, with_ance
                 match &e.kind {
                     EntryKind::Dir => tw.dir(&dest, 0o755)?,
                     EntryKind::Symlink(t) => tw.symlink(&dest, t)?,
+                    EntryKind::Hardlink { target, exec } => {
+                        let to = if prefix.is_empty() { target.clone() } else { format!("{prefix}/{target}") };
+                        tw.hardlink_mode(&dest, &to, if *exec { 0o755 } else { 0o644 })?
+                    }
                     EntryKind::File { size, exec } => {
                         let mut f = std::fs::File::open(root.join(&e.rel))
                             .with_context(|| format!("opening {}", root.join(&e.rel).display()))?;
@@ -198,11 +214,21 @@ pub fn copy_tree(src: &Path, dst: &Path, ignore: &Ignore) -> Result<u64> {
                     std::fs::copy(src.join(&e.rel), &to)?;
                     Ok(*size)
                 }
+                EntryKind::Hardlink { .. } => Ok(0),
             }
         })
         .collect();
     for r in results {
         bytes += r?;
+    }
+    for e in &entries {
+        if let EntryKind::Hardlink { target: first, .. } = &e.kind {
+            let to = dst.join(&e.rel);
+            let _ = std::fs::remove_file(&to);
+            if std::fs::hard_link(dst.join(first), &to).is_err() {
+                std::fs::copy(dst.join(first), &to)?;
+            }
+        }
     }
     acropolis_events::add_written(bytes);
     Ok(bytes)
@@ -230,6 +256,7 @@ pub fn stream_upper<W: std::io::Write>(upper: &Path, prefix: &str, include: &[St
         };
         n > 0 && buf[0] == b'y'
     }
+    #[allow(clippy::too_many_arguments)]
     fn walk_upper<W: std::io::Write>(
         root: &Path,
         dir: &Path,
@@ -239,6 +266,7 @@ pub fn stream_upper<W: std::io::Write>(upper: &Path, prefix: &str, include: &[St
         include: &[String],
         exclude: &[String],
         skip: &[&str],
+        inodes: &mut Inodes,
     ) -> Result<()> {
         let mut names: Vec<_> = std::fs::read_dir(dir)?.filter_map(|e| e.ok()).map(|e| e.file_name()).collect();
         names.sort();
@@ -269,18 +297,65 @@ pub fn stream_upper<W: std::io::Write>(upper: &Path, prefix: &str, include: &[St
                     tw.set_owner(0, 0);
                     tw.file_bytes(&format!("{dest}/.wh..wh..opq"), 0o644, b"")?;
                 }
-                walk_upper(root, &full, &r, tw, prefix, include, exclude, skip)?;
+                walk_upper(root, &full, &r, tw, prefix, include, exclude, skip, inodes)?;
             } else if ft.is_symlink() {
                 let t = std::fs::read_link(&full)?.to_string_lossy().into_owned();
                 tw.symlink(&dest, &t)?;
             } else if ft.is_file() {
+                if meta.nlink() > 1 {
+                    if let Some(first) = inodes.get(&(meta.dev(), meta.ino())) {
+                        tw.hardlink_mode(&dest, first, meta.permissions().mode() & 0o7777)?;
+                        continue;
+                    }
+                    inodes.insert((meta.dev(), meta.ino()), dest.clone());
+                }
                 let mut f = std::fs::File::open(&full)?;
                 tw.file_reader(&dest, meta.permissions().mode() & 0o7777, meta.size(), &mut f)?;
             }
         }
         Ok(())
     }
-    walk_upper(upper, upper, "", &mut tw, prefix, include, exclude, &skip_always)?;
+    let mut inodes = Inodes::new();
+    walk_upper(upper, upper, "", &mut tw, prefix, include, exclude, &skip_always, &mut inodes)?;
     tw.set_owner(0, 0);
     Ok(())
+}
+
+#[cfg(test)]
+mod hardlink_tests {
+    use super::*;
+    use acropolis_oci::tar::{Kind, TarReader};
+
+    #[test]
+    fn hardlinks_are_stored_once() {
+        let dir = std::env::temp_dir().join(format!("acropolis-hardlinks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("dri")).unwrap();
+        std::fs::write(dir.join("dri/a.so"), vec![7u8; 100_000]).unwrap();
+        std::fs::set_permissions(dir.join("dri/a.so"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::hard_link(dir.join("dri/a.so"), dir.join("dri/b.so")).unwrap();
+        let entries = walk(&dir, &Ignore::new(&[])).unwrap();
+        let mut out = Vec::new();
+        stream_tree_into(&dir, &entries, "usr/lib", true, &mut out).unwrap();
+        out.extend_from_slice(&[0u8; 1024]);
+        let mut tr = TarReader::new(std::io::Cursor::new(out.clone()));
+        let mut kinds = Vec::new();
+        while let Some(e) = tr.next_entry().unwrap() {
+            kinds.push((e.path.clone(), e.kind, e.link.clone()));
+        }
+        assert!(kinds.iter().any(|(p, k, _)| p == "usr/lib/dri/a.so" && *k == Kind::File));
+        assert!(kinds.iter().any(|(p, k, l)| p == "usr/lib/dri/b.so" && *k == Kind::Hardlink && l == "usr/lib/dri/a.so"));
+        let mut tr = TarReader::new(std::io::Cursor::new(out.clone()));
+        while let Some(e) = tr.next_entry().unwrap() {
+            if e.kind == Kind::Hardlink {
+                assert_eq!(e.mode & 0o777, 0o755);
+            }
+        }
+        assert!(out.len() < 150_000);
+        let copy = dir.with_extension("copy");
+        copy_tree(&dir, &copy, &Ignore::new(&[])).unwrap();
+        assert_eq!(std::fs::metadata(copy.join("dri/b.so")).unwrap().nlink(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&copy);
+    }
 }

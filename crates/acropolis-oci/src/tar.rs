@@ -129,6 +129,10 @@ impl<W: Write> TarWriter<W> {
         self.header(Kind::Hardlink, path, 0o644, 0, target)
     }
 
+    pub fn hardlink_mode(&mut self, path: &str, target: &str, mode: u32) -> io::Result<()> {
+        self.header(Kind::Hardlink, path, mode, 0, target)
+    }
+
     pub fn file_bytes(&mut self, path: &str, mode: u32, data: &[u8]) -> io::Result<()> {
         self.header(Kind::File, path, mode, data.len() as u64, "")?;
         self.out.write_all(data)?;
