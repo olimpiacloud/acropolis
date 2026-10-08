@@ -63,6 +63,8 @@ fn is_simple_command(s: &str) -> bool {
     let first = s.split_whitespace().next().unwrap_or("");
     !s.trim().is_empty()
         && !first.contains('=')
+        && !first.contains('/')
+        && !first.ends_with(".sh")
         && s.chars().all(|c| c.is_ascii_alphanumeric() || " ._-/:@%+,".contains(c))
 }
 
@@ -771,7 +773,8 @@ fn plan_inner(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
         ));
     }
     let glibc_new = acropolis_cargo_glibc_newer_than_bookworm();
-    let variant = if prod_needs_scripts && glibc_new { "trixie-slim" } else { "bookworm-slim" };
+    let old_node = acropolis_semver::fuzzy_version(&app.node.spec).split('.').next().and_then(|m| m.parse::<u32>().ok()).is_some_and(|m| m < 20);
+    let variant = if prod_needs_scripts && glibc_new && !old_node { "trixie-slim" } else { "bookworm-slim" };
     let base_image = node_base_tag(&app.node.spec).map(|t| t.replace("bookworm-slim", variant));
     let distroless = distroless_eligible(app, env, &rt, prod_needs_scripts);
     let bun_only = bun_only_runtime(app, env, &rt, prod_needs_scripts);
@@ -1793,6 +1796,13 @@ mod tests {
         assert_eq!(cfg("const url = 'http://x.dev/output'; export default {}"), None);
         assert_eq!(cfg("export default { outputFileTracingRoot: x, output:\"export\" }"), Some("export".into()));
         assert_eq!(cfg("export default { outputFileTracingIncludes: {} }"), None);
+    }
+
+    #[test]
+    fn scripts_run_through_the_shell() {
+        assert_eq!(command_argv("./start.sh"), vec!["/bin/sh", "-c", "./start.sh"]);
+        assert_eq!(command_argv("bin/server --port 3000")[0], "/bin/sh");
+        assert_eq!(command_argv("node server.js"), vec!["node", "server.js"]);
     }
 
     #[test]

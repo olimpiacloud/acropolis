@@ -211,6 +211,34 @@ fn dotnet(dir: &Path, env: &Env) -> Result<ImageBuild> {
     })
 }
 
+fn gradle_java(dir: &Path) -> Option<String> {
+    let build = ["build.gradle", "build.gradle.kts"].iter().map(|f| read(dir, f)).collect::<String>();
+    for pat in ["JavaLanguageVersion.of(", "JavaVersion.VERSION_", "sourceCompatibility = '", "sourceCompatibility = \"", "sourceCompatibility = "] {
+        if let Some(rest) = build.split(pat).nth(1) {
+            let v: String = rest.trim_start_matches("1_").trim_start_matches("1.").chars().take_while(|c| c.is_ascii_digit()).collect();
+            if !v.is_empty() {
+                return Some(v);
+            }
+        }
+    }
+    let props = read(dir, "gradle/wrapper/gradle-wrapper.properties");
+    let version = props.split("gradle-").nth(1)?.split(['-', '/']).next()?.to_string();
+    let mut it = version.split('.').map(|x| x.parse::<u32>().unwrap_or(0));
+    let v = (it.next().unwrap_or(0), it.next().unwrap_or(0));
+    Some(
+        if v >= (8, 5) {
+            "21"
+        } else if v >= (7, 3) {
+            "17"
+        } else if v >= (5, 0) {
+            "11"
+        } else {
+            "8"
+        }
+        .to_string(),
+    )
+}
+
 fn java(dir: &Path, env: &Env) -> Result<ImageBuild> {
     let pom = read(dir, "pom.xml");
     let gradle = dir.join("gradlew").exists();
@@ -222,6 +250,7 @@ fn java(dir: &Path, env: &Env) -> Result<ImageBuild> {
         .map(|(v, _)| v)
         .or_else(|| env.vars.get("ACROPOLIS_JAVA_PACKAGE").map(|v| v.chars().filter(|c| c.is_ascii_digit() || *c == '.').collect::<String>().split('.').next().unwrap_or("21").to_string()))
         .or(from_pom)
+        .or_else(|| gradle_java(dir))
         .unwrap_or_else(|| "21".into());
     let jdk = if jdk.is_empty() { "21".to_string() } else { jdk };
     let (build_image, commands, cmd) = if gradle {

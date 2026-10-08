@@ -524,6 +524,8 @@ pub fn detect_go(dir: &Path, env: &Env) -> Result<GoApp> {
     };
     let package = if let Some((p, _)) = env.config("GO_BIN") {
         format!("./cmd/{p}")
+    } else if gomod.is_none() && !dir.join("go.work").exists() && dir.join("main.go").exists() {
+        "main.go".to_string()
     } else if has_go_files(dir) {
         ".".to_string()
     } else if let Some(cmd) = first_dir(&dir.join("cmd")) {
