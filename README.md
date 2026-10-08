@@ -1,5 +1,7 @@
 # Acropolis
 
+![Acropolis: una acrópolis que se arma por capas frente a la bahía de Buenos Aires](docs/assets/acropolis-banner.jpg)
+
 Acropolis toma el código de una app y devuelve una imagen OCI lista para correr, sin Dockerfile y sin daemon. Detecta el lenguaje y el framework, baja toolchains y dependencias verificadas, compila y arma la imagen. Es un único binario en Rust (`acropolis`) y es el builder de [Olimpia](https://olimpia.dev).
 
 ```
