@@ -296,7 +296,7 @@ impl Registry {
             .await?;
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = capped_text(resp).await;
             bail!("GET manifest {r}: {status} {}", body.chars().take(200).collect::<String>());
         }
         let mt = resp
@@ -420,7 +420,7 @@ impl Registry {
         let resp = self.start_upload(r, "").await?;
         if resp.status() != StatusCode::ACCEPTED && !resp.status().is_success() {
             let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
+            let text = capped_text(resp).await;
             bail!("starting upload to {r}: {status} {text}");
         }
         let loc = self.location(r, &resp)?;
@@ -436,7 +436,7 @@ impl Registry {
             .await?;
         if !resp.status().is_success() {
             let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
+            let text = capped_text(resp).await;
             bail!("uploading {digest} to {r}: {status} {}", text.chars().take(300).collect::<String>());
         }
         acropolis_events::add_uploaded(size);
@@ -596,7 +596,7 @@ impl Registry {
             .await?;
         if !resp.status().is_success() {
             let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
+            let text = capped_text(resp).await;
             bail!("PUT manifest {r}: {status} {}", text.chars().take(300).collect::<String>());
         }
         acropolis_events::add_uploaded(body.len() as u64);
@@ -713,4 +713,15 @@ mod tests {
         assert_eq!(m["realm"], "https://auth.docker.io/token");
         assert_eq!(m["service"], "registry.docker.io");
     }
+}
+
+async fn capped_text(mut resp: reqwest::Response) -> String {
+    let mut raw = Vec::new();
+    while raw.len() < 8192 {
+        match tokio::time::timeout(std::time::Duration::from_secs(10), resp.chunk()).await {
+            Ok(Ok(Some(c))) => raw.extend_from_slice(&c),
+            _ => break,
+        }
+    }
+    String::from_utf8_lossy(&raw).into_owned()
 }

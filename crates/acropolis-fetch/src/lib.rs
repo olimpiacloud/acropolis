@@ -13,6 +13,7 @@ pub mod segmented;
 
 const MAX_ATTEMPTS: u32 = 5;
 const STALL: Duration = Duration::from_secs(6);
+const MAX_BUFFERED: u64 = 256 << 20;
 const HEDGE_AFTER: Duration = Duration::from_millis(1500);
 
 enum Probe {
@@ -128,7 +129,15 @@ impl Fetcher {
         let status = r.status();
         if !status.is_success() {
             let retry = retryable(status);
-            let body = r.text().await.unwrap_or_default();
+            let mut r = r;
+            let mut raw = Vec::new();
+            while raw.len() < 4096 {
+                match tokio::time::timeout(STALL, r.chunk()).await {
+                    Ok(Ok(Some(c))) => raw.extend_from_slice(&c),
+                    _ => break,
+                }
+            }
+            let body = String::from_utf8_lossy(&raw).into_owned();
             let err = anyhow!("GET {url}: {status} {}", body.chars().take(300).collect::<String>());
             return Err(if retry { err.context(Retryable) } else { err.context(Fatal) });
         }
@@ -150,6 +159,9 @@ impl Fetcher {
             let Some(chunk) = chunk else { break };
             acropolis_events::add_downloaded(chunk.len() as u64);
             buf.extend_from_slice(&chunk);
+            if buf.len() as u64 > MAX_BUFFERED {
+                return Err(anyhow!("GET {url}: response without a length grew past {} MB", MAX_BUFFERED >> 20).context(Fatal));
+            }
         }
         if len > 0 && buf.len() as u64 != len {
             return Err(anyhow!("short body: {} of {len} bytes", buf.len()).context(Retryable));

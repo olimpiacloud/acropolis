@@ -347,7 +347,10 @@ pub async fn execute(plan: Plan, opts: BuildOptions, exec: Arc<dyn Executor>) ->
     });
     let secs = |name: &str| opts.env.config(name).and_then(|(v, _)| v.parse::<u64>().ok()).filter(|s| *s > 0).map(std::time::Duration::from_secs);
     let step_timeout = secs("STEP_TIMEOUT");
-    let build_timeout = secs("BUILD_TIMEOUT");
+    let build_timeout = match opts.env.config("BUILD_TIMEOUT").map(|(v, _)| v) {
+        Some(v) if v.trim() == "0" => None,
+        _ => secs("BUILD_TIMEOUT").or(Some(std::time::Duration::from_secs(3600))),
+    };
     let mut futs: HashMap<String, StepFuture> = HashMap::new();
     let mut order = Vec::new();
     for step in &plan.steps {
