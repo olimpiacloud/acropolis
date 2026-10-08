@@ -7,7 +7,7 @@
   "cmd": [
    "/bin/sh",
    "-c",
-   "./build/erlang-shipment/entrypoint.sh run"
+   "exec ./build/erlang-shipment/entrypoint.sh run"
   ],
   "entrypoint": [],
   "env": [],

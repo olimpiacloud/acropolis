@@ -4,7 +4,8 @@
   "framework": "tanstackstart",
   "node": "lts (default)",
   "package-manager": "npm",
-  "runtime": "node server (built)"
+  "runtime": "node server (built)",
+  "runtime-base": "distroless node (busybox shell)"
  },
  "image": {
   "cmd": [
@@ -22,7 +23,7 @@
    ],
    [
     "PATH",
-    "/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    "/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/busybox"
    ],
    [
     "npm_config_user_agent",
@@ -38,6 +39,7 @@
    ]
   ],
   "layers": [
+   "layer-shim",
    "layer-deps",
    "layer-app"
   ],
@@ -122,12 +124,13 @@
   },
   {
    "action": {
-    "image": "node:lts-bookworm-slim",
-    "kind": "resolve-base"
+    "kind": "resolve-node-base",
+    "spec": "lts",
+    "variant": "distroless"
    },
    "deps": [],
    "id": "base",
-   "name": "resolve node:lts-bookworm-slim"
+   "name": "resolve node lts runtime (distroless)"
   },
   {
    "action": {
@@ -138,6 +141,20 @@
    ],
    "id": "copy-base",
    "name": "copy base layers"
+  },
+  {
+   "action": {
+    "dest": "",
+    "from": {
+     "type": "node-shim"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "layer-shim",
+   "name": "layer sh, env and node links"
   },
   {
    "action": {
@@ -195,7 +212,8 @@
     "base",
     "copy-base",
     "layer-deps",
-    "layer-app"
+    "layer-app",
+    "layer-shim"
    ],
    "id": "push",
    "name": "push image"

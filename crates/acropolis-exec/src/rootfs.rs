@@ -4,7 +4,6 @@ use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
 #[derive(Clone, Debug)]
@@ -54,11 +53,33 @@ fn check(rc: libc::c_int) -> std::io::Result<()> {
 
 fn enter(p: &Prepared) -> std::io::Result<()> {
     unsafe {
-        let mut flags = libc::CLONE_NEWNS | libc::CLONE_NEWUTS | libc::CLONE_NEWIPC;
+        let mut flags = libc::CLONE_NEWNS | libc::CLONE_NEWUTS | libc::CLONE_NEWIPC | libc::CLONE_NEWPID;
         if !p.network {
             flags |= libc::CLONE_NEWNET;
         }
         check(libc::unshare(flags))?;
+        let pid = libc::fork();
+        if pid < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if pid > 0 {
+            if libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32) != 0 {
+                for fd in 3..4096 {
+                    libc::close(fd);
+                }
+            }
+            let mut status: libc::c_int = 0;
+            while libc::waitpid(pid, &mut status, 0) < 0 {
+                if *libc::__errno_location() != libc::EINTR {
+                    libc::_exit(70);
+                }
+            }
+            if libc::WIFEXITED(status) {
+                libc::_exit(libc::WEXITSTATUS(status));
+            }
+            libc::_exit(128 + libc::WTERMSIG(status));
+        }
+        libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
         check(libc::mount(std::ptr::null(), c"/".as_ptr(), std::ptr::null(), libc::MS_REC | libc::MS_PRIVATE, std::ptr::null()))?;
         check(libc::mount(
             c"overlay".as_ptr(),
@@ -67,7 +88,13 @@ fn enter(p: &Prepared) -> std::io::Result<()> {
             0,
             p.overlay_opts.as_ptr() as *const libc::c_void,
         ))?;
-        check(libc::mount(c"/proc".as_ptr(), p.proc_target.as_ptr(), std::ptr::null(), libc::MS_BIND | libc::MS_REC, std::ptr::null()))?;
+        check(libc::mount(
+            c"proc".as_ptr(),
+            p.proc_target.as_ptr(),
+            c"proc".as_ptr(),
+            libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
+            std::ptr::null(),
+        ))?;
         check(libc::mount(
             c"tmpfs".as_ptr(),
             p.dev_target.as_ptr(),
@@ -109,13 +136,13 @@ fn enter(p: &Prepared) -> std::io::Result<()> {
         for (host, guest, ro) in &p.binds {
             check(libc::mount(host.as_ptr(), guest.as_ptr(), std::ptr::null(), libc::MS_BIND | libc::MS_REC, std::ptr::null()))?;
             if *ro {
-                let _ = libc::mount(
+                check(libc::mount(
                     std::ptr::null(),
                     guest.as_ptr(),
                     std::ptr::null(),
                     libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY,
                     std::ptr::null(),
-                );
+                ))?;
             }
         }
         check(libc::chroot(p.merged.as_ptr()))?;
@@ -217,31 +244,8 @@ pub async fn run(spec: RootfsRun) -> Result<Vec<String>> {
         c.pre_exec(move || enter(&prepared));
     }
     let mut child = c.spawn().with_context(|| format!("starting {} in image rootfs", spec.argv[0]))?;
-    let _group = crate::ProcessGroup::of(&child);
-    let tail = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::<String>::new()));
-    let mut tasks = Vec::new();
-    let streams: Vec<Box<dyn tokio::io::AsyncRead + Unpin + Send>> =
-        vec![Box::new(child.stdout.take().unwrap()), Box::new(child.stderr.take().unwrap())];
-    for s in streams {
-        let tail = tail.clone();
-        let step = spec.step.clone();
-        tasks.push(tokio::spawn(async move {
-            let mut lines = BufReader::new(s).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                acropolis_events::log(&step, line.clone());
-                let mut t = tail.lock().unwrap();
-                t.push_back(line);
-                if t.len() > 40 {
-                    t.pop_front();
-                }
-            }
-        }));
-    }
-    let status = child.wait().await?;
-    for t in tasks {
-        let _ = t.await;
-    }
-    let tail: Vec<String> = tail.lock().unwrap().iter().cloned().collect();
+    let group = crate::ProcessGroup::of(&child);
+    let (status, tail) = crate::wait_with_output(&spec.step, &mut child, group).await?;
     for b in &spec.binds {
         let target = spec.upper.join(b.guest.trim_start_matches('/'));
         if b.host.is_file() {
@@ -251,7 +255,7 @@ pub async fn run(spec: RootfsRun) -> Result<Vec<String>> {
         }
     }
     if !status.success() {
-        bail!("`{}` failed with {status}\n{}", spec.argv.join(" "), tail.join("\n"));
+        return Err(crate::CommandFailed::new(&spec.argv, status, tail).into());
     }
     Ok(tail)
 }

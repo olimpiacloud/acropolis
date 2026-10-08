@@ -2,15 +2,16 @@
  "app": "node-next",
  "facts": {
   "framework": "next",
-  "install-scripts": "sharp",
+  "next-output": "standalone (set by acropolis; ACROPOLIS_NEXT_STANDALONE=0 to keep next start)",
   "node": "lts (default)",
   "package-manager": "npm",
-  "runtime": "node server (built)"
+  "runtime": "next standalone server",
+  "runtime-base": "distroless node (busybox shell)"
  },
  "image": {
   "cmd": [
-   "next",
-   "start"
+   "node",
+   "server.js"
   ],
   "entrypoint": [],
   "env": [
@@ -19,8 +20,12 @@
     "production"
    ],
    [
-    "PATH",
-    "/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    "PORT",
+    "3000"
+   ],
+   [
+    "HOSTNAME",
+    "0.0.0.0"
    ],
    [
     "npm_config_user_agent",
@@ -36,10 +41,14 @@
    ]
   ],
   "layers": [
-   "layer-deps",
-   "layer-app"
+   "layer-shim",
+   "layer-files",
+   "layer-server",
+   "layer-static"
   ],
-  "ports": [],
+  "ports": [
+   3000
+  ],
   "user": null,
   "workdir": "/app"
  },
@@ -48,10 +57,7 @@
   {
    "action": {
     "kind": "toolchain",
-    "parts": [
-     "npm",
-     "headers"
-    ],
+    "parts": [],
     "spec": "lts",
     "tool": "node"
    },
@@ -87,13 +93,12 @@
     "dev": true,
     "kind": "npm-install",
     "manager": "npm",
-    "scripts": "all",
+    "scripts": "",
     "target": "src"
    },
    "deps": [
     "npm-fetch",
-    "source",
-    "node"
+    "source"
    ],
    "id": "install",
    "name": "install node_modules"
@@ -108,6 +113,7 @@
     "cwd": ".",
     "env": {
      "ACROPOLIS_NFT_CACHE": "{src}/.next/cache/acropolis-nft-analysis.json",
+     "NEXT_PRIVATE_STANDALONE": "1",
      "NEXT_TELEMETRY_DISABLED": "1",
      "NODE_ENV": "production",
      "NODE_OPTIONS": "--require {work}/acropolis-nft-cache.js",
@@ -126,12 +132,13 @@
   },
   {
    "action": {
-    "image": "node:lts-trixie-slim",
-    "kind": "resolve-base"
+    "kind": "resolve-node-base",
+    "spec": "lts",
+    "variant": "distroless"
    },
    "deps": [],
    "id": "base",
-   "name": "resolve node:lts-trixie-slim"
+   "name": "resolve node lts runtime (distroless)"
   },
   {
    "action": {
@@ -145,53 +152,17 @@
   },
   {
    "action": {
-    "dev": false,
-    "keep": [
-     "typescript"
-    ],
-    "kind": "npm-fetch",
-    "lockfile": "package-lock.json",
-    "lockfile_sha256": "",
-    "manager": "npm"
-   },
-   "deps": [
-    "npm-fetch"
-   ],
-   "id": "npm-fetch-prod",
-   "name": "select production packages"
-  },
-  {
-   "action": {
-    "dev": false,
-    "kind": "npm-install",
-    "manager": "npm",
-    "scripts": "all",
-    "target": "prod"
-   },
-   "deps": [
-    "npm-fetch-prod",
-    "node"
-   ],
-   "id": "install-prod",
-   "name": "install production node_modules + scripts"
-  },
-  {
-   "action": {
-    "dest": "app",
+    "dest": "",
     "from": {
-     "exclude": [
-      "package.json"
-     ],
-     "path": "@work/prod",
-     "type": "work-dir"
+     "type": "node-shim"
     },
     "kind": "layer"
    },
    "deps": [
-    "install-prod"
+    "base"
    ],
-   "id": "layer-deps",
-   "name": "layer node_modules (production)"
+   "id": "layer-shim",
+   "name": "layer sh, env and node links"
   },
   {
    "action": {
@@ -199,7 +170,9 @@
     "from": {
      "exclude": [
       "**/node_modules",
-      ".next/cache"
+      ".next",
+      ".git",
+      "public"
      ],
      "path": ".",
      "type": "work-dir"
@@ -209,8 +182,48 @@
    "deps": [
     "build"
    ],
-   "id": "layer-app",
-   "name": "layer app + build output"
+   "id": "layer-files",
+   "name": "layer app files"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "exclude": [],
+     "path": ".next/standalone",
+     "type": "work-dir"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "build"
+   ],
+   "id": "layer-server",
+   "name": "layer .next/standalone"
+  },
+  {
+   "action": {
+    "dest": "app",
+    "from": {
+     "items": [
+      [
+       "public",
+       "public"
+      ],
+      [
+       ".next/static",
+       ".next/static"
+      ]
+     ],
+     "type": "paths"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "build"
+   ],
+   "id": "layer-static",
+   "name": "layer .next/static + public"
   },
   {
    "action": {
@@ -219,15 +232,16 @@
    "deps": [
     "base",
     "copy-base",
-    "layer-deps",
-    "layer-app"
+    "layer-server",
+    "layer-static",
+    "layer-files",
+    "layer-shim"
    ],
    "id": "push",
    "name": "push image"
   }
  ],
  "warnings": [
-  "install scripts of sharp run with network access (policy: all); set ACROPOLIS_INSTALL_SCRIPTS=none to disable",
   "the build step runs with network access like docker build; set ACROPOLIS_HERMETIC_BUILD=1 to run it without network"
  ]
 }

@@ -1,3 +1,4 @@
+pub mod cache;
 pub mod config;
 pub mod detect;
 pub mod errors;
@@ -30,6 +31,9 @@ pub fn plan_app(dir: &Path, env: &Env) -> Result<Plan> {
         config::apply(&cfg, &mut env)?;
     }
     let mut plan = plan_provider(dir, &env)?;
+    if env.vars.contains_key("ACROPOLIS_CUSTOM_STEPS") || env.config("DEPLOY_APT_PACKAGES").is_some() {
+        providers::node::demote_distroless(&mut plan);
+    }
     extend::apply_all(&mut plan, &env)?;
     Ok(plan)
 }
@@ -124,12 +128,12 @@ fn apply_mise_extras(plan: &mut Plan, dir: &Path, env: &Env) {
     if !matches!(plan.provider.as_str(), "node" | "python" | "ruby") {
         return;
     }
-    let base = match plan.step("base").map(|s| &s.action) {
+    let mut base = match plan.step("base").map(|s| &s.action) {
         Some(plan::Action::ResolveBase { image }) => image.clone(),
         Some(plan::Action::ResolveNodeBase { .. }) => "node:".to_string(),
         _ => return,
     };
-    if base.contains("distroless") || base.contains("alpine") || base.starts_with("caddy") {
+    if !providers::node::is_slim_runtime(plan) && (base.contains("distroless") || base.contains("alpine") || base.starts_with("caddy")) {
         return;
     }
     let mut extra_path: Vec<&str> = Vec::new();
@@ -148,6 +152,16 @@ fn apply_mise_extras(plan: &mut Plan, dir: &Path, env: &Env) {
         };
         if provided {
             continue;
+        }
+        if added.is_empty() && providers::node::is_slim_runtime(plan) {
+            providers::node::demote_distroless(plan);
+            base = match plan.step("base").map(|s| &s.action) {
+                Some(plan::Action::ResolveBase { image }) => image.clone(),
+                _ => "node:".to_string(),
+            };
+            if tool == "node" && base.starts_with("node:") {
+                continue;
+            }
         }
         let spec = if spec == "latest" { String::new() } else { spec };
         let toolchain = if tool == "python" { "python-standalone" } else { tool };
@@ -205,6 +219,9 @@ fn apply_mise_extras(plan: &mut Plan, dir: &Path, env: &Env) {
 }
 
 fn apply_runtime_packages(plan: &mut Plan, env: &Env) -> Result<()> {
+    if plan.facts.contains_key("runtime-packages") || env.config("DEPLOY_APT_PACKAGES").is_some() {
+        providers::node::demote_distroless(plan);
+    }
     let Some(pkgs) = plan.facts.get("runtime-packages").cloned() else { return apply_deploy_apt(plan, env) };
     let mut env2 = env.clone();
     let cur = env2.config("DEPLOY_APT_PACKAGES").map(|(v, _)| v).unwrap_or_default();

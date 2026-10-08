@@ -5,6 +5,41 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 pub const NODE_PATH_ENV: &str = "/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+pub const DISTROLESS: &str = "distroless";
+pub const DISTROLESS_NODE_MAJORS: &[u32] = &[22, 24, 26];
+const NO_GYP_SCRIPTS: &[&str] = &[
+    "esbuild",
+    "sharp",
+    "@swc/core",
+    "core-js",
+    "core-js-pure",
+    "protobufjs",
+    "nx",
+    "prisma",
+    "@prisma/client",
+    "@prisma/engines",
+    "@biomejs/biome",
+    "@tailwindcss/oxide",
+    "lefthook",
+    "husky",
+    "simple-git-hooks",
+    "unrs-resolver",
+    "msw",
+    "es5-ext",
+    "@scarf/scarf",
+    "styled-components",
+    "spawn-sync",
+    "cypress",
+    "puppeteer",
+    "playwright",
+    "workerd",
+    "@sentry/cli",
+    "vue-demi",
+    "@nestjs/core",
+    "turbo",
+];
+const BUN_BASE: &str = "gcr.io/distroless/cc-debian12:debug";
+const SHIM: &str = "layer-shim";
 pub const CADDY_IMAGE: &str = "caddy:2-alpine";
 
 pub fn node_base_tag(spec: &str) -> Option<String> {
@@ -112,15 +147,176 @@ fn vite_out_dir(app: &NodeApp) -> String {
     "dist".into()
 }
 
+fn strip_js_comments(text: &str) -> String {
+    let mut out: Vec<u8> = Vec::with_capacity(text.len());
+    let b = text.as_bytes();
+    let mut i = 0;
+    let mut quote: Option<u8> = None;
+    while i < b.len() {
+        let c = b[i];
+        if let Some(q) = quote {
+            out.push(c);
+            if c == b'\\' && i + 1 < b.len() {
+                out.push(b[i + 1]);
+                i += 2;
+                continue;
+            }
+            if c == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        if c == b'/' && b.get(i + 1) == Some(&b'/') {
+            while i < b.len() && b[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if c == b'/' && b.get(i + 1) == Some(&b'*') {
+            i += 2;
+            while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                i += 1;
+            }
+            i += 2;
+            continue;
+        }
+        if matches!(c, b'"' | b'\'' | b'`') {
+            quote = Some(c);
+        }
+        out.push(c);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn next_config(app: &NodeApp) -> Option<String> {
+    ["next.config.ts", "next.config.mts", "next.config.js", "next.config.mjs", "next.config.cjs"]
+        .iter()
+        .find_map(|f| std::fs::read_to_string(app.dir.join(f)).ok())
+        .map(|t| strip_js_comments(&t))
+}
+
+fn next_output(cfg: &str) -> Option<String> {
+    let bytes = cfg.as_bytes();
+    let mut from = 0;
+    while let Some(off) = cfg[from..].find("output") {
+        let idx = from + off;
+        from = idx + 6;
+        let before = idx.checked_sub(1).map(|i| bytes[i]);
+        if before.is_some_and(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'$' || c == b'.') {
+            continue;
+        }
+        let after = cfg[idx + 6..].trim_start();
+        let after = after.strip_prefix(['"', '\'']).map(str::trim_start).unwrap_or(after);
+        let Some(rest) = after.strip_prefix(':') else { continue };
+        let rest = rest.trim_start();
+        let q = rest.chars().next()?;
+        if !matches!(q, '"' | '\'' | '`') {
+            return Some(String::new());
+        }
+        return Some(rest[1..].split(q).next().unwrap_or("").to_string());
+    }
+    None
+}
+
 fn next_standalone(app: &NodeApp) -> bool {
-    for f in ["next.config.ts", "next.config.js", "next.config.mjs", "next.config.cjs"] {
-        if let Ok(text) = std::fs::read_to_string(app.dir.join(f))
-            && text.contains("standalone")
-        {
-            return true;
+    next_config(app).and_then(|c| next_output(&c)).as_deref() == Some("standalone")
+}
+
+fn next_major(app: &NodeApp) -> Option<u32> {
+    ["dependencies", "devDependencies"]
+        .iter()
+        .find_map(|k| app.package_json.get(k).and_then(|d| d.get("next")).and_then(|v| v.as_str()))
+        .and_then(|spec| spec.trim_start_matches(|c: char| !c.is_ascii_digit()).split('.').next().and_then(|m| m.parse::<u32>().ok()))
+}
+
+fn next_start_port(start: &str) -> Option<Option<String>> {
+    let mut words = start.split_whitespace();
+    if words.next()? != "next" || words.next()? != "start" {
+        return None;
+    }
+    let mut port = None;
+    while let Some(w) = words.next() {
+        match w {
+            "-p" | "--port" => port = Some(words.next()?.to_string()).filter(|p| !p.starts_with('$')),
+            "-H" | "--hostname" => {
+                words.next()?;
+            }
+            w if w.starts_with("--port=") => port = Some(w[7..].to_string()).filter(|p| !p.starts_with('$')),
+            _ => return None,
         }
     }
-    false
+    if port.as_deref().is_some_and(|p| !p.chars().all(|c| c.is_ascii_digit())) {
+        return None;
+    }
+    Some(port)
+}
+
+const NEXT_UNTRACEABLE: &[&str] = &[
+    "dd-trace",
+    "newrelic",
+    "@opentelemetry/auto-instrumentations-node",
+    "@sentry/profiling-node",
+    "geoip-lite",
+    "pdfkit",
+    "@grpc/proto-loader",
+    "pino",
+    "next-i18next",
+];
+
+fn sharp_prebuilt(plan: &acropolis_npm::InstallPlan, version: &str) -> bool {
+    let mut it = version.split(['.', '-']).map(|x| x.parse::<u32>().unwrap_or(0));
+    let (major, minor) = (it.next().unwrap_or(0), it.next().unwrap_or(0));
+    let cpu = acropolis_npm::Platform::default().cpu;
+    (major, minor) >= (0, 33)
+        && plan.packages.iter().any(|p| p.name == format!("@img/sharp-linux-{cpu}"))
+        && plan.packages.iter().any(|p| p.name == format!("@img/sharp-libvips-linux-{cpu}"))
+}
+
+fn next_turbopack(app: &NodeApp, env: &Env, build_cmd: &str) -> Option<String> {
+    if app.framework != Framework::Next || !env.flag("NEXT_TURBOPACK") || next_major(app) != Some(15) {
+        return None;
+    }
+    let minor = ["dependencies", "devDependencies"]
+        .iter()
+        .find_map(|k| app.package_json.get(k).and_then(|d| d.get("next")).and_then(|v| v.as_str()))
+        .and_then(|spec| spec.trim_start_matches(|c: char| !c.is_ascii_digit()).split('.').nth(1).and_then(|m| m.parse::<u32>().ok()))
+        .unwrap_or(0);
+    let words: Vec<&str> = build_cmd.split_whitespace().collect();
+    if minor < 5 || words.len() < 2 || words[0] != "next" || words[1] != "build" || words.iter().any(|w| *w == "--turbopack" || *w == "--turbo" || *w == "--webpack") {
+        return None;
+    }
+    if words[2..].iter().any(|w| !w.starts_with("--")) {
+        return None;
+    }
+    Some(format!("{build_cmd} --turbopack"))
+}
+
+fn force_next_standalone(app: &NodeApp, env: &Env) -> Option<Option<String>> {
+    if env.config("NEXT_STANDALONE").is_some_and(|(v, _)| v == "0" || v.eq_ignore_ascii_case("false"))
+        || env.config("RUNTIME_BASE").is_some_and(|(v, _)| v.eq_ignore_ascii_case("debian"))
+        || matches!(app.pm, PackageManager::YarnBerry)
+        || app.lockfile.as_deref() == Some("bun.lockb")
+        || NEXT_UNTRACEABLE.iter().any(|d| app.has_prod_dep(d))
+    {
+        return None;
+    }
+    match next_major(app) {
+        Some(m) if m >= 15 => {}
+        Some(13 | 14) if app.has_prod_dep("sharp") => {}
+        _ => return None,
+    }
+    let build = app.script("build").unwrap_or("");
+    let mut words = build.split_whitespace();
+    if words.next() != Some("next") || words.next() != Some("build") || words.any(|w| !w.starts_with("--")) {
+        return None;
+    }
+    let cfg = next_config(app).unwrap_or_default();
+    if next_output(&cfg).is_some() || ["distDir", "RuntimeConfig", "PHASE_"].iter().any(|k| cfg.contains(k)) {
+        return None;
+    }
+    next_start_port(app.script("start").unwrap_or("next start"))
 }
 
 fn nitro_start(start: Option<&str>) -> bool {
@@ -140,7 +336,7 @@ fn tanstack_nitro(app: &NodeApp) -> bool {
 enum Runtime {
     ServerNoBuild { start: String },
     ServerBuilt { start: String },
-    NextStandalone,
+    NextStandalone { forced: bool, port: Option<String> },
     Nitro,
     Spa { out: String },
 }
@@ -226,8 +422,8 @@ fn runtime(app: &NodeApp, env: &Env) -> Result<Runtime> {
                 return Ok(Runtime::Spa { out: config_string(&cfg, "outDir").unwrap_or_else(|| "dist".into()) });
             }
             Framework::Next if default_start(&["next start"]) => {
-                let cfg = read_first(app, &["next.config.ts", "next.config.js", "next.config.mjs"]);
-                if cfg.contains("output: 'export'") || cfg.contains("output: \"export\"") {
+                let cfg = next_config(app).unwrap_or_default();
+                if next_output(&cfg).as_deref() == Some("export") {
                     return Ok(Runtime::Spa { out: config_string(&cfg, "distDir").unwrap_or_else(|| "out".into()) });
                 }
             }
@@ -243,7 +439,10 @@ fn runtime(app: &NodeApp, env: &Env) -> Result<Runtime> {
         }
     }
     match app.framework {
-        Framework::Next if next_standalone(app) && has_build && !custom_start => return Ok(Runtime::NextStandalone),
+        Framework::Next if next_standalone(app) && has_build && !custom_start => return Ok(Runtime::NextStandalone { forced: false, port: None }),
+        Framework::Next if has_build && !custom_start && let Some(port) = force_next_standalone(app, env) => {
+            return Ok(Runtime::NextStandalone { forced: true, port });
+        }
         Framework::TanstackStart if tanstack_nitro(app) && nitro_start(app.script("start")) && has_build && !custom_start => {
             return Ok(Runtime::Nitro);
         }
@@ -466,6 +665,16 @@ fn apply_member(plan: &mut Plan, app: &NodeApp, rel: &str) {
             plan.image.layers.insert(pos, id);
         }
     }
+    if plan.facts.get("runtime").map(|r| r.as_str()) == Some("next standalone server") {
+        for s in plan.steps.iter_mut() {
+            if s.id == "layer-static"
+                && let Action::Layer { dest, .. } = &mut s.action
+            {
+                *dest = format!("app/{rel}");
+            }
+        }
+        whole_tree = true;
+    }
     if whole_tree && plan.image.workdir.as_deref() == Some("/app") {
         plan.image.workdir = Some(format!("/app/{rel}"));
     }
@@ -540,6 +749,7 @@ fn plan_inner(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
                             || (allowed_builds.is_empty() && acropolis_npm::scripts::BUN_DEFAULT_TRUSTED.contains(&p.name.as_str()))))
             })
             .filter(|p| policy.allows(&p.name))
+            .filter(|p| !(p.name == "sharp" && sharp_prebuilt(plan, &p.version)))
             .map(|p| p.name.clone())
             .collect()
     };
@@ -563,7 +773,31 @@ fn plan_inner(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
     let glibc_new = acropolis_cargo_glibc_newer_than_bookworm();
     let variant = if prod_needs_scripts && glibc_new { "trixie-slim" } else { "bookworm-slim" };
     let base_image = node_base_tag(&app.node.spec).map(|t| t.replace("bookworm-slim", variant));
+    let distroless = distroless_eligible(app, env, &rt, prod_needs_scripts);
+    let bun_only = bun_only_runtime(app, env, &rt, prod_needs_scripts);
     let node_base = |b: &mut PlanBuilder| -> Result<()> {
+        if bun_only {
+            b.step("base", format!("resolve {BUN_BASE}"), Action::ResolveBase { image: BUN_BASE.into() }, &[]);
+            b.step("copy-base", "copy base layers", Action::CopyBase, &["base"]);
+            b.step(SHIM, "layer sh and env links", Action::Layer { dest: String::new(), from: LayerFrom::NodeShim }, &["base"]);
+            b.fact("runtime-base", "distroless cc + bun (busybox shell)");
+            return Ok(());
+        }
+        if distroless {
+            b.step(
+                "base",
+                format!("resolve node {} runtime (distroless)", app.node.spec),
+                Action::ResolveNodeBase {
+                    spec: app.node.spec.clone(),
+                    variant: if variant == "trixie-slim" { format!("{DISTROLESS}-debian13") } else { DISTROLESS.into() },
+                },
+                &[],
+            );
+            b.step("copy-base", "copy base layers", Action::CopyBase, &["base"]);
+            b.step(SHIM, "layer sh, env and node links", Action::Layer { dest: String::new(), from: LayerFrom::NodeShim }, &["base"]);
+            b.fact("runtime-base", "distroless node (busybox shell)");
+            return Ok(());
+        }
         match base_image.clone() {
             Some(img) => b.step("base", format!("resolve {img}"), Action::ResolveBase { image: img }, &[]),
             None => b.step(
@@ -582,12 +816,15 @@ fn plan_inner(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
             let has_deps = ["dependencies", "optionalDependencies"]
                 .iter()
                 .any(|k| app.package_json.get(k).and_then(|d| d.as_object()).map(|m| !m.is_empty()).unwrap_or(false));
-            if uses_bun(&start) && !has_deps && !start.contains("node ") {
+            if uses_bun(&start) && !has_deps && !start.contains("node ") && !bun_only {
                 b.step("base", "resolve debian:bookworm-slim", Action::ResolveBase { image: "debian:bookworm-slim".into() }, &[]);
                 b.step("copy-base", "copy base layers", Action::CopyBase, &["base"]);
                 b.fact("runtime", "bun (no node)");
             } else {
                 node_base(&mut b)?;
+                if bun_only {
+                    b.fact("runtime", "bun (no node)");
+                }
             }
             b.step(
                 "npm-fetch",
@@ -628,6 +865,13 @@ fn plan_inner(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
                 .map(|(c, _)| c)
                 .or_else(|| script_chain(app, "build"))
                 .unwrap_or_default();
+            let build_cmd = match next_turbopack(app, env, &build_cmd) {
+                Some(cmd) => {
+                    b.fact("next-bundler", "turbopack (ACROPOLIS_NEXT_TURBOPACK=1)");
+                    cmd
+                }
+                None => build_cmd,
+            };
             if let Runtime::Spa { out } = &rt
                 && let Some(checks) = native_bundle_eligible(app, env, &build_cmd, &lockfile)
             {
@@ -635,13 +879,14 @@ fn plan_inner(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
             }
             let mut parts = vec![];
             let dev_opts = acropolis_npm::InstallOptions { include_dev: true, include_optional: true, platform: Default::default() };
-            let dev_scripts = unknown_scripts
-                || (!lockfile.is_empty() && !scripted(&crate::run::install_plan_for(manager, &app.root, &lockfile, &dev_opts)?).is_empty());
+            let dev_scripted = if lockfile.is_empty() { Vec::new() } else { scripted(&crate::run::install_plan_for(manager, &app.root, &lockfile, &dev_opts)?) };
+            let dev_scripts = unknown_scripts || !dev_scripted.is_empty();
             let dev_scripts = dev_scripts && policy != acropolis_npm::scripts::Policy::None;
             if uses_npm_cli(&build_cmd) || dev_scripts || prod_needs_scripts {
                 parts.push("npm".to_string());
             }
-            if dev_scripts || prod_needs_scripts {
+            let gyp_free = !unknown_scripts && dev_scripted.iter().chain(prod_scripts.iter()).all(|n| NO_GYP_SCRIPTS.contains(&n.as_str()));
+            if (dev_scripts || prod_needs_scripts) && !gyp_free {
                 parts.push("headers".to_string());
             }
             b.step(
@@ -682,6 +927,9 @@ fn plan_inner(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
                     run_env.insert(k.clone(), crate::env_ref(k, v));
                 }
             }
+            if matches!(rt, Runtime::NextStandalone { forced: true, .. }) {
+                run_env.insert("NEXT_PRIVATE_STANDALONE".to_string(), "1".to_string());
+            }
             let adapter_auto = app.framework == Framework::SvelteKit && app.has_dep("@sveltejs/adapter-auto");
             if adapter_auto {
                 run_env.insert("GCP_BUILDPACKS".to_string(), "true".to_string());
@@ -699,7 +947,12 @@ fn plan_inner(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
             if let Some(pkgs) = build_apt_packages(env) {
                 b.fact("build-apt-packages", pkgs);
             }
-            let build_deps: Vec<&str> = if uses_bun(&build_cmd) || app.pm == PackageManager::Bun {
+            let scripts_use_bun = app
+                .package_json
+                .get("scripts")
+                .and_then(|s| s.as_object())
+                .is_some_and(|m| m.values().filter_map(|v| v.as_str()).any(uses_bun));
+            let build_deps: Vec<&str> = if uses_bun(&build_cmd) || (app.pm == PackageManager::Bun && (scripts_use_bun || env.flag("BUN"))) {
                 let spec = bun_spec(app, env);
                 if b.plan.step("bun").is_none() {
                     b.step("bun", format!("bun {spec}"), Action::Toolchain { tool: "bun".into(), spec, parts: vec![] }, &[]);
@@ -734,8 +987,22 @@ fn plan_inner(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
                 &build_deps,
             );
             match rt {
-                Runtime::NextStandalone => {
+                Runtime::NextStandalone { forced, port } => {
                     node_base(&mut b)?;
+                    if forced {
+                        b.step(
+                            "layer-files",
+                            "layer app files",
+                            Action::Layer {
+                                dest: "app".into(),
+                                from: LayerFrom::WorkDir {
+                                    path: ".".into(),
+                                    exclude: vec!["**/node_modules".into(), ".next".into(), ".git".into(), "public".into()],
+                                },
+                            },
+                            &["build"],
+                        );
+                    }
                     b.step(
                         "layer-server",
                         "layer .next/standalone",
@@ -759,12 +1026,19 @@ fn plan_inner(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
                         },
                         &["build"],
                     );
-                    b.step("push", "push image", Action::Push, &["base", "copy-base", "layer-server", "layer-static"]);
-                    b.plan.image.layers = vec!["layer-server".into(), "layer-static".into()];
+                    let mut layers = vec!["layer-server".to_string(), "layer-static".to_string()];
+                    let mut push_deps = vec!["base", "copy-base", "layer-server", "layer-static"];
+                    if forced {
+                        layers.insert(0, "layer-files".into());
+                        push_deps.push("layer-files");
+                        b.fact("next-output", "standalone (set by acropolis; ACROPOLIS_NEXT_STANDALONE=0 to keep next start)");
+                    }
+                    b.step("push", "push image", Action::Push, &push_deps);
+                    b.plan.image.layers = layers;
                     b.plan.image.cmd = Some(vec!["node".into(), "server.js".into()]);
-                    image_env.push(("PORT".into(), "3000".into()));
+                    image_env.push(("PORT".into(), port.clone().unwrap_or_else(|| "3000".into())));
                     image_env.push(("HOSTNAME".into(), "0.0.0.0".into()));
-                    b.plan.image.ports = vec![3000];
+                    b.plan.image.ports = vec![port.as_deref().and_then(|p| p.parse().ok()).unwrap_or(3000)];
                     b.fact("runtime", "next standalone server");
                 }
                 Runtime::Nitro => {
@@ -877,7 +1151,27 @@ fn plan_inner(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
             b.plan.image.workdir = Some("/app".into());
         }
     }
+    if b.plan.step(SHIM).is_some() {
+        b.plan.image.layers.insert(0, SHIM.into());
+        if let Some(push) = b.plan.steps.iter_mut().find(|s| s.id == "push") {
+            push.deps.push(SHIM.into());
+        }
+        if let Some((_, v)) = image_env.iter_mut().find(|(k, _)| k == "PATH") {
+            v.push_str(":/busybox");
+        }
+    }
     add_package_manager(&mut b, app, env, &mut image_env);
+    if manager == "pnpm" && b.plan.step("build").is_some() {
+        if b.plan.step("pnpm").is_none() {
+            let spec = pnpm_spec(app);
+            b.step("pnpm", format!("pnpm {spec}"), Action::Toolchain { tool: "npm:pnpm".into(), spec, parts: vec![] }, &[]);
+        }
+        if let Some(build) = b.plan.steps.iter_mut().find(|s| s.id == "build")
+            && !build.deps.iter().any(|d| d == "pnpm")
+        {
+            build.deps.push("pnpm".into());
+        }
+    }
     browser_runtime(&mut b, app, env, &mut image_env);
     if app.framework == Framework::Astro {
         image_env.push(("HOST".into(), "0.0.0.0".into()));
@@ -1004,7 +1298,7 @@ fn plan_yarn_berry(app: &NodeApp, env: &Env, mut b: PlanBuilder) -> Result<Plan>
             }
             image_env.push(("PATH".into(), NODE_PATH_ENV.into()));
         }
-        Runtime::NextStandalone | Runtime::Nitro => bail!("yarn berry with this framework is not supported yet"),
+        Runtime::NextStandalone { .. } | Runtime::Nitro => bail!("yarn berry with this framework is not supported yet"),
     }
     image_env.push(("npm_config_user_agent".into(), format!("yarn/{yarn_version} npm/? node/v{} linux x64", app.node.spec)));
     image_env.push(("npm_lifecycle_event".into(), "start".into()));
@@ -1191,7 +1485,7 @@ fn pnpm_spec(app: &NodeApp) -> String {
 fn add_package_manager(b: &mut PlanBuilder, app: &NodeApp, env: &Env, image_env: &mut Vec<(String, String)>) {
     let _ = env;
     let uses_node_base = matches!(b.plan.step("base").map(|s| &s.action), Some(Action::ResolveNodeBase { .. }))
-        || matches!(b.plan.step("base").map(|s| &s.action), Some(Action::ResolveBase { image }) if image.starts_with("node:"));
+        || matches!(b.plan.step("base").map(|s| &s.action), Some(Action::ResolveBase { image }) if image.starts_with("node:") || image == BUN_BASE);
     if !uses_node_base {
         return;
     }
@@ -1310,6 +1604,117 @@ pub fn host_glibc() -> Option<(u32, u32)> {
     Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
 }
 
+fn slim_runtime_allowed(app: &NodeApp, env: &Env) -> bool {
+    !(env.config("RUNTIME_BASE").is_some_and(|(v, _)| v.eq_ignore_ascii_case("debian"))
+        || app.has_dep("puppeteer")
+        || app.has_prod_dep("playwright")
+        || env.config("DEPLOY_APT_PACKAGES").is_some()
+        || env.vars.contains_key("ACROPOLIS_CUSTOM_STEPS"))
+}
+
+fn bun_only_start(app: &NodeApp, start: &str, depth: usize) -> bool {
+    let words: Vec<&str> = start.split_whitespace().collect();
+    if depth > 4 || !is_simple_command(start) || words.first() != Some(&"bun") {
+        return false;
+    }
+    match words.get(1).copied() {
+        Some("run") => match words.get(2).and_then(|w| app.script(w)) {
+            Some(script) => bun_only_start(app, script, depth + 1),
+            None => words.get(2).is_some_and(|w| w.contains('.') || w.contains('/')),
+        },
+        Some(w) => !w.starts_with('-') && (w.contains('.') || w.contains('/')),
+        None => false,
+    }
+}
+
+fn bun_only_runtime(app: &NodeApp, env: &Env, rt: &Runtime, prod_needs_scripts: bool) -> bool {
+    let start = match rt {
+        Runtime::ServerBuilt { start } | Runtime::ServerNoBuild { start } => start,
+        _ => return false,
+    };
+    slim_runtime_allowed(app, env)
+        && !prod_needs_scripts
+        && !matches!(app.pm, PackageManager::Pnpm | PackageManager::Yarn1 | PackageManager::YarnBerry)
+        && bun_only_start(app, start, 0)
+}
+
+fn floating_node_spec(spec: &str) -> bool {
+    let s = spec.trim().trim_start_matches('v').to_ascii_lowercase();
+    if matches!(s.as_str(), "lts" | "lts/*" | "latest" | "current" | "node" | "*" | "") {
+        return true;
+    }
+    let major_only = |t: &str| {
+        let t = t.trim().trim_start_matches('v');
+        let mut parts = t.split('.');
+        let first = parts.next().unwrap_or("");
+        !first.is_empty() && first.chars().all(|c| c.is_ascii_digit()) && parts.all(|p| matches!(p, "x" | "X" | "*" | "0"))
+    };
+    if let Some(rest) = s.strip_prefix(">=") {
+        return major_only(rest);
+    }
+    if let Some(rest) = s.strip_prefix('^') {
+        return major_only(rest);
+    }
+    let mut parts = s.split('.');
+    let first = parts.next().unwrap_or("");
+    !first.is_empty() && first.chars().all(|c| c.is_ascii_digit()) && parts.all(|p| matches!(p, "x" | "*"))
+}
+
+fn distroless_eligible(app: &NodeApp, env: &Env, rt: &Runtime, prod_needs_scripts: bool) -> bool {
+    if !slim_runtime_allowed(app, env) || !floating_node_spec(&app.node.spec) {
+        return false;
+    }
+    match rt {
+        Runtime::Nitro | Runtime::NextStandalone { .. } => true,
+        Runtime::ServerBuilt { start } | Runtime::ServerNoBuild { start } => {
+            let first = start.split_whitespace().next().unwrap_or("");
+            !prod_needs_scripts
+                && is_simple_command(start)
+                && !uses_bun(start)
+                && !matches!(first, "npm" | "npx" | "yarn" | "pnpm" | "pnpx" | "corepack" | "sh" | "bash")
+        }
+        Runtime::Spa { .. } => false,
+    }
+}
+
+pub fn is_slim_runtime(plan: &Plan) -> bool {
+    match plan.step("base").map(|s| &s.action) {
+        Some(Action::ResolveNodeBase { variant, .. }) => variant.starts_with(DISTROLESS),
+        Some(Action::ResolveBase { image }) => image == BUN_BASE,
+        _ => false,
+    }
+}
+
+pub fn demote_distroless(plan: &mut Plan) {
+    let fact_spec = plan.facts.get("node").and_then(|f| f.split(" (").next()).unwrap_or("lts").to_string();
+    let Some(base) = plan.steps.iter_mut().find(|s| s.id == "base") else { return };
+    let spec = match &base.action {
+        Action::ResolveNodeBase { spec, variant } if variant.starts_with(DISTROLESS) => spec.clone(),
+        Action::ResolveBase { image } if image == BUN_BASE => fact_spec,
+        _ => return,
+    };
+    match node_base_tag(&spec) {
+        Some(image) => {
+            base.name = format!("resolve {image}");
+            base.action = Action::ResolveBase { image };
+        }
+        None => {
+            base.name = format!("resolve node {spec} base");
+            base.action = Action::ResolveNodeBase { spec, variant: "bookworm-slim".into() };
+        }
+    }
+    plan.steps.retain(|s| s.id != SHIM);
+    for s in plan.steps.iter_mut() {
+        s.deps.retain(|d| d != SHIM);
+    }
+    plan.image.layers.retain(|l| l != SHIM);
+    if let Some((_, v)) = plan.image.env.iter_mut().find(|(k, _)| k == "PATH") {
+        *v = v.trim_end_matches(":/busybox").to_string();
+    }
+    plan.facts.remove("runtime-base");
+    plan.finalize();
+}
+
 fn runtime_dev_packages(app: &NodeApp) -> Vec<String> {
     let ts_config = ["next.config.ts", "next.config.mts"].iter().any(|f| app.dir.join(f).exists());
     let next_major = ["dependencies", "devDependencies"]
@@ -1376,6 +1781,39 @@ pub fn spa_caddyfile(root: &str, fallback: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn next_output_detection() {
+        let cfg = |t: &str| next_output(&strip_js_comments(t));
+        assert_eq!(cfg("const c = { output: 'standalone' }"), Some("standalone".into()));
+        assert_eq!(cfg("const c = {\n  // output: \"standalone\",\n  reactStrictMode: true }"), None);
+        assert_eq!(cfg("/* output: 'export' */ module.exports = {}"), None);
+        assert_eq!(cfg("module.exports = { output: \"export\" }"), Some("export".into()));
+        assert_eq!(cfg("export default { output: process.env.X ? 'standalone' : undefined }"), Some(String::new()));
+        assert_eq!(cfg("const url = 'http://x.dev/output'; export default {}"), None);
+        assert_eq!(cfg("export default { outputFileTracingRoot: x, output:\"export\" }"), Some("export".into()));
+        assert_eq!(cfg("export default { outputFileTracingIncludes: {} }"), None);
+    }
+
+    #[test]
+    fn floating_specs() {
+        for s in ["22", "lts", "", ">=20", "^24", "^24.0.0", "24.x", "v22", ">=22.0.0"] {
+            assert!(floating_node_spec(s), "{s}");
+        }
+        for s in ["22.2.0", "24.16", "^24.15.0", ">=22.12", "~22.0", "22.11.0"] {
+            assert!(!floating_node_spec(s), "{s}");
+        }
+    }
+
+    #[test]
+    fn next_start_ports() {
+        assert_eq!(next_start_port("next start"), Some(None));
+        assert_eq!(next_start_port("next start -p 4000"), Some(Some("4000".into())));
+        assert_eq!(next_start_port("next start --port=8080 -H 0.0.0.0"), Some(Some("8080".into())));
+        assert_eq!(next_start_port("next start -p $PORT"), Some(None));
+        assert_eq!(next_start_port("node server.js"), None);
+        assert_eq!(next_start_port("next start --keepAliveTimeout 5000"), None);
+    }
 
     #[test]
     fn base_tags() {

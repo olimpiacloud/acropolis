@@ -4,7 +4,8 @@
   "framework": "none",
   "node": "20 (package.json engines.node)",
   "package-manager": "pnpm",
-  "runtime": "node server (built)"
+  "runtime": "node server (built)",
+  "runtime-base": "distroless node (busybox shell)"
  },
  "image": {
   "cmd": [
@@ -19,7 +20,7 @@
    ],
    [
     "PATH",
-    "/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    "/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/busybox"
    ],
    [
     "npm_config_verify_deps_before_run",
@@ -56,6 +57,7 @@
   ],
   "layers": [
    "layer-pm",
+   "layer-shim",
    "layer-deps",
    "layer-app"
   ],
@@ -116,36 +118,13 @@
   },
   {
    "action": {
-    "argv": [
-     "/bin/sh",
-     "-c",
-     "tsc"
-    ],
-    "cwd": ".",
-    "env": {
-     "NEXT_TELEMETRY_DISABLED": "1",
-     "NODE_ENV": "production",
-     "npm_lifecycle_event": "build",
-     "npm_package_name": "node-corepack"
-    },
-    "kind": "run",
-    "network": true
-   },
-   "deps": [
-    "node",
-    "install"
-   ],
-   "id": "build",
-   "name": "run tsc"
-  },
-  {
-   "action": {
-    "image": "node:20-bookworm-slim",
-    "kind": "resolve-base"
+    "kind": "resolve-node-base",
+    "spec": "20",
+    "variant": "distroless"
    },
    "deps": [],
    "id": "base",
-   "name": "resolve node:20-bookworm-slim"
+   "name": "resolve node 20 runtime (distroless)"
   },
   {
    "action": {
@@ -156,6 +135,20 @@
    ],
    "id": "copy-base",
    "name": "copy base layers"
+  },
+  {
+   "action": {
+    "dest": "",
+    "from": {
+     "type": "node-shim"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "layer-shim",
+   "name": "layer sh, env and node links"
   },
   {
    "action": {
@@ -188,6 +181,42 @@
   },
   {
    "action": {
+    "kind": "toolchain",
+    "parts": [],
+    "spec": "10.4.1",
+    "tool": "npm:pnpm"
+   },
+   "deps": [],
+   "id": "pnpm",
+   "name": "pnpm 10.4.1"
+  },
+  {
+   "action": {
+    "argv": [
+     "/bin/sh",
+     "-c",
+     "tsc"
+    ],
+    "cwd": ".",
+    "env": {
+     "NEXT_TELEMETRY_DISABLED": "1",
+     "NODE_ENV": "production",
+     "npm_lifecycle_event": "build",
+     "npm_package_name": "node-corepack"
+    },
+    "kind": "run",
+    "network": true
+   },
+   "deps": [
+    "node",
+    "install",
+    "pnpm"
+   ],
+   "id": "build",
+   "name": "run tsc"
+  },
+  {
+   "action": {
     "dest": "app",
     "from": {
      "exclude": [
@@ -204,17 +233,6 @@
    ],
    "id": "layer-app",
    "name": "layer app + build output"
-  },
-  {
-   "action": {
-    "kind": "toolchain",
-    "parts": [],
-    "spec": "10.4.1",
-    "tool": "npm:pnpm"
-   },
-   "deps": [],
-   "id": "pnpm",
-   "name": "pnpm 10.4.1"
   },
   {
    "action": {
@@ -240,6 +258,7 @@
     "copy-base",
     "layer-deps",
     "layer-app",
+    "layer-shim",
     "layer-pm"
    ],
    "id": "push",

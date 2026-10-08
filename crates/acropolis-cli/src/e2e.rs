@@ -382,14 +382,18 @@ fn run_case(cfg: &E2eConfig, example: &str, idx: usize, case: &TestCase) -> Case
     }
 
     cmd.arg("--home").arg(&home).arg("build").arg(&dir).arg("-t").arg(&tag);
+    let oci = std::env::var_os("E2E_OCI").map(|_| cfg.home.join(format!("oci-{example}-{idx}.tar")));
+    if let Some(o) = &oci {
+        cmd.arg("--oci").arg(o);
+    }
     for (k, v) in &case.envs {
         cmd.arg("-e").arg(format!("{k}={v}"));
     }
     if std::env::var_os("E2E_COLD").is_some() {
-        cmd.arg("-e").arg("ACROPOLIS_NO_CACHE=1");
+        cmd.env("ACROPOLIS_NO_CACHE", "1");
     } else {
-        cmd.arg("-e").arg(format!("ACROPOLIS_CACHE_KEY=e2e-{example}-{idx}"));
-        cmd.arg("-e").arg("ACROPOLIS_CACHE_SRC=0");
+        cmd.env("ACROPOLIS_CACHE_KEY", format!("e2e-{example}-{idx}"));
+        cmd.env("ACROPOLIS_CACHE_SRC", "0");
     }
     if let Some(c) = &case.config_file {
         cmd.arg("--config").arg(c);
@@ -404,6 +408,11 @@ fn run_case(cfg: &E2eConfig, example: &str, idx: usize, case: &TestCase) -> Case
     };
     r.build_s = start.elapsed().as_secs_f64();
     let _ = fs::write(&log_path, [out.stdout.as_slice(), out.stderr.as_slice()].concat());
+    if !out.status.success()
+        && let Some(o) = &oci
+    {
+        let _ = fs::remove_file(o);
+    }
     if cfg.isolated {
         let _ = fs::remove_dir_all(&home);
     }
@@ -438,7 +447,15 @@ fn run_case(cfg: &E2eConfig, example: &str, idx: usize, case: &TestCase) -> Case
     let name = format!("acropolis-e2e-run-{}-{}-{}", example.to_ascii_lowercase(), idx, std::process::id());
     let host = cfg.registry.replacen("localhost", "127.0.0.1", 1);
     r.image_mb = crate::bench::image_size_at(&host, tag.trim_start_matches(&format!("{}/", cfg.registry))).ok().map(|(mb, _)| (mb * 10.0).round() / 10.0);
-    let pulled = docker(&["pull", "-q", &tag]);
+    let pulled = match &oci {
+        Some(o) => {
+            remove_image(&tag);
+            let loaded = docker(&["load", "-i", &o.to_string_lossy()]);
+            let _ = fs::remove_file(o);
+            loaded.and_then(|out| if out.contains(&tag) { Ok(out) } else { Err(anyhow::anyhow!("docker load did not tag {tag}: {out}")) })
+        }
+        None => docker(&["pull", "-q", &tag]),
+    };
     let res = match pulled {
         Err(e) => Err(e),
         Ok(_) => match &case.http_check {

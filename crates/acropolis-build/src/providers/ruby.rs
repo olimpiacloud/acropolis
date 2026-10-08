@@ -255,7 +255,7 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     } else {
         start
     };
-    b.plan.image.cmd = Some(vec!["/bin/sh".into(), "-c".into(), start]);
+    b.plan.image.cmd = Some(super::shell_start(&start));
     b.plan.image.entrypoint = Some(vec![]);
     Ok(b.finish())
 }

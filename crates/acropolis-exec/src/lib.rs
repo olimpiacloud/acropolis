@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::BufReader;
 use tokio::process::Command;
 
 #[derive(Clone, Debug)]
@@ -20,6 +20,105 @@ pub struct Cmd {
 #[derive(Debug, Default)]
 pub struct Output {
     pub tail: Vec<String>,
+}
+
+#[derive(Debug)]
+pub struct CommandFailed {
+    pub command: String,
+    pub code: Option<i32>,
+    pub signal: Option<i32>,
+    pub status: String,
+    pub tail: Vec<String>,
+}
+
+impl std::fmt::Display for CommandFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "`{}` failed with {}\n{}", self.command, self.status, self.tail.join("\n"))
+    }
+}
+
+impl std::error::Error for CommandFailed {}
+
+impl CommandFailed {
+    pub fn new(argv: &[String], status: std::process::ExitStatus, tail: Vec<String>) -> Self {
+        use std::os::unix::process::ExitStatusExt;
+        CommandFailed { command: argv.join(" "), code: status.code(), signal: status.signal(), status: status.to_string(), tail }
+    }
+
+    pub fn killed(&self) -> bool {
+        self.signal == Some(libc::SIGKILL) || self.code == Some(137)
+    }
+}
+
+const MAX_LINE: usize = 64 * 1024;
+const MAX_STEP_LOG: u64 = 32 * 1024 * 1024;
+
+pub async fn collect_output<R: tokio::io::AsyncRead + Unpin>(step: &str, reader: R, tail: Arc<Mutex<VecDeque<String>>>) {
+    use tokio::io::AsyncReadExt;
+    let mut reader = BufReader::with_capacity(64 * 1024, reader);
+    let mut line: Vec<u8> = Vec::with_capacity(256);
+    let mut chunk = vec![0u8; 64 * 1024];
+    let mut logged: u64 = 0;
+    let mut truncated = false;
+    let emit = |bytes: &[u8], logged: &mut u64, truncated: &mut bool| {
+        let text = String::from_utf8_lossy(bytes).into_owned();
+        *logged += text.len() as u64 + 1;
+        if *logged <= MAX_STEP_LOG {
+            acropolis_events::log(step, text.clone());
+        } else if !*truncated {
+            *truncated = true;
+            acropolis_events::log(step, format!("[acropolis] log truncated after {} MB", MAX_STEP_LOG >> 20));
+        }
+        let mut t = tail.lock().unwrap_or_else(|e| e.into_inner());
+        t.push_back(text);
+        if t.len() > 40 {
+            t.pop_front();
+        }
+    };
+    loop {
+        let n = match reader.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        for &b in &chunk[..n] {
+            if b == b'\n' {
+                emit(&line, &mut logged, &mut truncated);
+                line.clear();
+            } else {
+                line.push(b);
+                if line.len() >= MAX_LINE {
+                    emit(&line, &mut logged, &mut truncated);
+                    line.clear();
+                }
+            }
+        }
+    }
+    if !line.is_empty() {
+        emit(&line, &mut logged, &mut truncated);
+    }
+}
+
+pub async fn wait_with_output(step: &str, child: &mut tokio::process::Child, group: ProcessGroup) -> Result<(std::process::ExitStatus, Vec<String>)> {
+    let tail: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
+    let mut tasks = Vec::new();
+    if let Some(out) = child.stdout.take() {
+        let (t, s) = (tail.clone(), step.to_string());
+        tasks.push(tokio::spawn(async move { collect_output(&s, out, t).await }));
+    }
+    if let Some(err) = child.stderr.take() {
+        let (t, s) = (tail.clone(), step.to_string());
+        tasks.push(tokio::spawn(async move { collect_output(&s, err, t).await }));
+    }
+    let status = child.wait().await?;
+    drop(group);
+    for t in tasks {
+        let abort = t.abort_handle();
+        if tokio::time::timeout(std::time::Duration::from_secs(2), t).await.is_err() {
+            abort.abort();
+        }
+    }
+    let tail: Vec<String> = tail.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect();
+    Ok((status, tail))
 }
 
 pub trait Executor: Send + Sync {
@@ -309,35 +408,10 @@ impl Executor for HostExecutor {
                 }
             }
             let mut child = c.spawn().map_err(|e| anyhow::anyhow!("spawning {}: {e}", cmd.argv[0]))?;
-            let _group = ProcessGroup::of(&child);
-            let tail: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
-            let mut tasks = Vec::new();
-            let streams: Vec<Box<dyn tokio::io::AsyncRead + Unpin + Send>> = vec![
-                Box::new(child.stdout.take().unwrap()),
-                Box::new(child.stderr.take().unwrap()),
-            ];
-            for s in streams {
-                let tail = tail.clone();
-                let step = cmd.step.clone();
-                tasks.push(tokio::spawn(async move {
-                    let mut lines = BufReader::new(s).lines();
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        acropolis_events::log(&step, line.clone());
-                        let mut t = tail.lock().unwrap();
-                        t.push_back(line);
-                        if t.len() > 40 {
-                            t.pop_front();
-                        }
-                    }
-                }));
-            }
-            let status = child.wait().await?;
-            for t in tasks {
-                let _ = t.await;
-            }
-            let tail: Vec<String> = tail.lock().unwrap().iter().cloned().collect();
+            let group = ProcessGroup::of(&child);
+            let (status, tail) = wait_with_output(&cmd.step, &mut child, group).await?;
             if !status.success() {
-                bail!("`{}` failed with {status}\n{}", cmd.argv.join(" "), tail.join("\n"));
+                return Err(CommandFailed::new(&cmd.argv, status, tail).into());
             }
             Ok(Output { tail })
         })
@@ -386,6 +460,31 @@ mod tests {
         assert_eq!(std::fs::read(store.join("blob")).unwrap(), b"original");
         assert!(e.run(sh("echo ok > out", &tmp)).await.is_ok());
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn background_children_do_not_hang_the_step() {
+        let tmp = std::env::temp_dir();
+        let e = HostExecutor { isolation: Isolation::None, readonly: Vec::new() };
+        let started = std::time::Instant::now();
+        let mut c = sh("sleep 600 & echo ok", &tmp);
+        c.network = true;
+        let out = e.run(c).await.unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert_eq!(out.tail, vec!["ok".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn huge_lines_are_split_and_failures_are_typed() {
+        let tmp = std::env::temp_dir();
+        let e = HostExecutor { isolation: Isolation::None, readonly: Vec::new() };
+        let mut c = sh("head -c 1000000 /dev/zero | tr '\\0' x; echo; exit 3", &tmp);
+        c.network = true;
+        let err = e.run(c).await.unwrap_err();
+        let cf = err.downcast_ref::<CommandFailed>().unwrap();
+        assert_eq!(cf.code, Some(3));
+        assert!(cf.tail.iter().all(|l| l.len() <= MAX_LINE));
+        assert!(cf.tail.len() >= 15);
     }
 
     #[tokio::test]

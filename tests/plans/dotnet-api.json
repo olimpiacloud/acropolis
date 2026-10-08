@@ -8,7 +8,7 @@
   "cmd": [
    "/bin/sh",
    "-c",
-   "dotnet out/csharp-api.dll"
+   "exec dotnet out/csharp-api.dll"
   ],
   "entrypoint": [],
   "env": [

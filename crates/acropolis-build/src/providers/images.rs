@@ -62,7 +62,7 @@ pub fn plan(dir: &Path, env: &Env, name: &str, spec: ImageBuild) -> Result<Plan>
     b.plan.image.workdir = Some("/app".into());
     b.plan.image.env = spec.image_env.clone();
     let start = env.config("START_CMD").map(|(c, _)| c).unwrap_or(spec.cmd.clone());
-    b.plan.image.cmd = Some(vec!["/bin/sh".into(), "-c".into(), start]);
+    b.plan.image.cmd = Some(super::shell_start(&start));
     b.plan.image.entrypoint = Some(vec![]);
     Ok(b.finish())
 }

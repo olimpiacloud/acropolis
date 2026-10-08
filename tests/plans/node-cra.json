@@ -31,8 +31,7 @@
    "action": {
     "kind": "toolchain",
     "parts": [
-     "npm",
-     "headers"
+     "npm"
     ],
     "spec": "lts",
     "tool": "node"

@@ -8,7 +8,7 @@
   "cmd": [
    "/bin/sh",
    "-c",
-   "gunicorn --bind 0.0.0.0:${PORT:-8000} main:app"
+   "exec gunicorn --bind 0.0.0.0:${PORT:-8000} main:app"
   ],
   "entrypoint": [],
   "env": [

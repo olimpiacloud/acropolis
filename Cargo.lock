@@ -31,6 +31,7 @@ dependencies = [
  "serde_yaml",
  "tempfile",
  "tokio",
+ "url",
  "zstd",
 ]
 
@@ -99,6 +100,7 @@ dependencies = [
 name = "acropolis-events"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "serde",
  "serde_json",
 ]

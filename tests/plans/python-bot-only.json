@@ -8,7 +8,7 @@
   "cmd": [
    "/bin/sh",
    "-c",
-   "python bot.py"
+   "exec python bot.py"
   ],
   "entrypoint": [],
   "env": [

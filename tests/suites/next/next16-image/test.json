@@ -1,0 +1,9 @@
+[
+  {
+    "httpCheck": {
+      "path": "/_next/image?url=%2Fphoto.png&w=64&q=75",
+      "expected": 200,
+      "internalPort": 3000
+    }
+  }
+]

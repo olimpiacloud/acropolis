@@ -2,7 +2,7 @@
  "app": "node-astro",
  "facts": {
   "framework": "astro",
-  "install-scripts": "esbuild, sharp",
+  "install-scripts": "esbuild",
   "node": "lts (default)",
   "package-manager": "npm",
   "runtime": "static site from dist served by caddy"
@@ -31,8 +31,7 @@
    "action": {
     "kind": "toolchain",
     "parts": [
-     "npm",
-     "headers"
+     "npm"
     ],
     "spec": "lts",
     "tool": "node"
@@ -169,7 +168,7 @@
   }
  ],
  "warnings": [
-  "install scripts of esbuild, sharp run with network access (policy: all); set ACROPOLIS_INSTALL_SCRIPTS=none to disable",
+  "install scripts of esbuild run with network access (policy: all); set ACROPOLIS_INSTALL_SCRIPTS=none to disable",
   "the build step runs with network access like docker build; set ACROPOLIS_HERMETIC_BUILD=1 to run it without network"
  ]
 }

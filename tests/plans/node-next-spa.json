@@ -2,7 +2,6 @@
  "app": "node-next-spa",
  "facts": {
   "framework": "next",
-  "install-scripts": "sharp",
   "node": "lts (default)",
   "package-manager": "npm",
   "runtime": "static site from out served by caddy"
@@ -30,10 +29,7 @@
   {
    "action": {
     "kind": "toolchain",
-    "parts": [
-     "npm",
-     "headers"
-    ],
+    "parts": [],
     "spec": "lts",
     "tool": "node"
    },
@@ -69,13 +65,12 @@
     "dev": true,
     "kind": "npm-install",
     "manager": "npm",
-    "scripts": "all",
+    "scripts": "",
     "target": "src"
    },
    "deps": [
     "npm-fetch",
-    "source",
-    "node"
+    "source"
    ],
    "id": "install",
    "name": "install node_modules"
@@ -171,7 +166,6 @@
   }
  ],
  "warnings": [
-  "install scripts of sharp run with network access (policy: all); set ACROPOLIS_INSTALL_SCRIPTS=none to disable",
   "the build step runs with network access like docker build; set ACROPOLIS_HERMETIC_BUILD=1 to run it without network"
  ]
 }

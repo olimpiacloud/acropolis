@@ -7,7 +7,7 @@
   "cmd": [
    "/bin/sh",
    "-c",
-   "ruby --enable-yjit app.rb"
+   "exec ruby --enable-yjit app.rb"
   ],
   "entrypoint": [],
   "env": [

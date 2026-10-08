@@ -63,6 +63,13 @@ enum Command {
         #[arg(long)]
         max_size: String,
     },
+    Cache {
+        #[arg(value_parser = ["export", "import"])]
+        action: String,
+        file: PathBuf,
+        #[arg(long, env = "ACROPOLIS_CACHE_KEY")]
+        key: String,
+    },
     Prewarm {
         #[arg(long, value_delimiter = ',', default_value = "node:lts,node:22,node:24,go:latest,bun:latest,uv:latest")]
         tools: Vec<String>,
@@ -287,6 +294,11 @@ fn main() {
         println!("{}", bench::summarize(&all));
         std::process::exit(0);
     }
+    if let Ok(id) = std::env::var("ACROPOLIS_BUILD_ID")
+        && !id.trim().is_empty()
+    {
+        acropolis_events::set_build_id(id.trim());
+    }
     acropolis_events::init(match cli.events.as_str() {
         "json" => acropolis_events::Mode::Json,
         "quiet" => acropolis_events::Mode::Quiet,
@@ -318,7 +330,7 @@ async fn run(cli: Cli) -> Result<()> {
     let mirrors = mirrors(&cli.mirrors)?;
     match cli.cmd {
         Command::Plan { dir, env, json } => {
-            let env = parse_env(&env)?;
+            let env = parse_env(&env)?.with_operator(std::env::vars());
             let plan = acropolis_build::plan_app(&dir, &env)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&plan)?);
@@ -328,7 +340,7 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Command::Build { dir, tag, env, compression, level, hermetic, keep_work, concurrency, config, oci, info } => {
-            let mut env = parse_env(&env)?;
+            let mut env = parse_env(&env)?.with_operator(std::env::vars());
             if let Some(c) = config {
                 env.vars.insert("ACROPOLIS_CONFIG_FILE".into(), c);
             }
@@ -417,6 +429,17 @@ async fn run(cli: Cli) -> Result<()> {
             let res = acropolis_build::run::execute(plan, opts, exec).await;
             let _ = std::fs::remove_dir_all(&scratch);
             res?;
+            Ok(())
+        }
+        Command::Cache { action, file, key } => {
+            let started = std::time::Instant::now();
+            if action == "export" {
+                let n = acropolis_build::cache::export(&home, &key, &file)?;
+                println!("cache {key}: exported {:.1} MB to {} in {:.1}s", n as f64 / 1e6, file.display(), started.elapsed().as_secs_f64());
+            } else {
+                let n = acropolis_build::cache::import(&home, &key, &file)?;
+                println!("cache {key}: imported {:.1} MB from {} in {:.1}s", n as f64 / 1e6, file.display(), started.elapsed().as_secs_f64());
+            }
             Ok(())
         }
         Command::Gc { max_size } => {

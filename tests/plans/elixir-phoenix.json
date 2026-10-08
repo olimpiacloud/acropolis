@@ -10,7 +10,7 @@
   "cmd": [
    "/bin/sh",
    "-c",
-   "/app/_build/prod/rel/hello/bin/hello start"
+   "exec /app/_build/prod/rel/hello/bin/hello start"
   ],
   "entrypoint": [],
   "env": [

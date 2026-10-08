@@ -18,6 +18,21 @@ fn safe_join(root: &Path, rel: &str) -> Option<PathBuf> {
     Some(out)
 }
 
+fn symlinked_ancestor(root: &Path, path: &Path) -> bool {
+    let Ok(rel) = path.strip_prefix(root) else { return true };
+    let mut cur = root.to_path_buf();
+    let comps: Vec<_> = rel.components().collect();
+    for c in comps.iter().take(comps.len().saturating_sub(1)) {
+        cur.push(c);
+        match std::fs::symlink_metadata(&cur) {
+            Ok(m) if m.file_type().is_symlink() => return true,
+            Ok(_) => {}
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
 fn cstr(p: &Path) -> CString {
     CString::new(p.as_os_str().as_bytes()).unwrap_or_default()
 }
@@ -41,6 +56,9 @@ pub fn unpack_for_overlay<R: Read>(reader: R, dest: &Path) -> Result<u64> {
     let mut dir_modes: Vec<(PathBuf, u32)> = Vec::new();
     while let Some(e) = tr.next_entry()? {
         let Some(path) = safe_join(dest, &e.path) else { continue };
+        if symlinked_ancestor(dest, &path) {
+            continue;
+        }
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -83,6 +101,7 @@ pub fn unpack_for_overlay<R: Read>(reader: R, dest: &Path) -> Result<u64> {
                     .write(true)
                     .create(true)
                     .truncate(true)
+                    .custom_flags(libc::O_NOFOLLOW)
                     .mode(e.mode & 0o7777)
                     .open(&path)
                     .with_context(|| format!("creating {}", path.display()))?;
@@ -95,12 +114,15 @@ pub fn unpack_for_overlay<R: Read>(reader: R, dest: &Path) -> Result<u64> {
                     f.write_all(&buf[..n])?;
                     total += n as u64;
                 }
-                drop(f);
-                let p = cstr(&path);
-                unsafe {
-                    libc::lchown(p.as_ptr(), e.uid, e.gid);
-                    libc::chmod(p.as_ptr(), e.mode & 0o7777);
+                {
+                    use std::os::unix::io::AsRawFd;
+                    let fd = f.as_raw_fd();
+                    unsafe {
+                        libc::fchown(fd, e.uid, e.gid);
+                        libc::fchmod(fd, e.mode & 0o7777);
+                    }
                 }
+                drop(f);
             }
             Kind::Symlink => {
                 let _ = std::fs::remove_file(&path);
@@ -111,7 +133,10 @@ pub fn unpack_for_overlay<R: Read>(reader: R, dest: &Path) -> Result<u64> {
                 }
             }
             Kind::Hardlink => {
-                if let Some(target) = safe_join(dest, &e.link) {
+                if let Some(target) = safe_join(dest, &e.link)
+                    && !symlinked_ancestor(dest, &target)
+                    && std::fs::symlink_metadata(&target).is_ok_and(|m| m.is_file())
+                {
                     let _ = std::fs::remove_file(&path);
                     if std::fs::hard_link(&target, &path).is_err() {
                         let _ = std::fs::copy(&target, &path);
@@ -121,10 +146,38 @@ pub fn unpack_for_overlay<R: Read>(reader: R, dest: &Path) -> Result<u64> {
         }
     }
     for (p, mode) in dir_modes.into_iter().rev() {
-        let c = cstr(&p);
-        unsafe {
-            libc::chmod(c.as_ptr(), mode & 0o7777);
+        if std::fs::symlink_metadata(&p).is_ok_and(|m| m.is_dir()) && !symlinked_ancestor(dest, &p) {
+            let c = cstr(&p);
+            unsafe {
+                libc::chmod(c.as_ptr(), mode & 0o7777);
+            }
         }
     }
     Ok(total)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tar::TarWriter;
+
+    #[test]
+    fn layer_cannot_write_through_its_own_symlinks() {
+        let base = std::env::temp_dir().join(format!("acropolis-unpack-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let outside = base.join("outside");
+        let dest = base.join("dest");
+        std::fs::create_dir_all(&outside).unwrap();
+        let mut tw = TarWriter::new(Vec::new());
+        tw.symlink("a", outside.to_str().unwrap()).unwrap();
+        tw.file_bytes("a/pwned", 0o644, b"x").unwrap();
+        tw.file_bytes("ok/file", 0o644, b"y").unwrap();
+        tw.symlink("ok/link", "/etc/hostname").unwrap();
+        let data = tw.finish().unwrap();
+        unpack_for_overlay(std::io::Cursor::new(data), &dest).unwrap();
+        assert!(!outside.join("pwned").exists());
+        assert_eq!(std::fs::read(dest.join("ok/file")).unwrap(), b"y");
+        assert!(std::fs::symlink_metadata(dest.join("ok/link")).unwrap().file_type().is_symlink());
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

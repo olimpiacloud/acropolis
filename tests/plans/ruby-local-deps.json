@@ -7,7 +7,7 @@
   "cmd": [
    "/bin/sh",
    "-c",
-   "bundle exec ruby app.rb"
+   "exec bundle exec ruby app.rb"
   ],
   "entrypoint": [],
   "env": [

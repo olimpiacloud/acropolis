@@ -4,7 +4,8 @@
   "framework": "tanstackstart",
   "node": "lts (default)",
   "package-manager": "npm",
-  "runtime": "nitro server"
+  "runtime": "nitro server",
+  "runtime-base": "distroless node (busybox shell)"
  },
  "image": {
   "cmd": [
@@ -35,6 +36,7 @@
    ]
   ],
   "layers": [
+   "layer-shim",
    "layer-server"
   ],
   "ports": [
@@ -120,12 +122,13 @@
   },
   {
    "action": {
-    "image": "node:lts-bookworm-slim",
-    "kind": "resolve-base"
+    "kind": "resolve-node-base",
+    "spec": "lts",
+    "variant": "distroless"
    },
    "deps": [],
    "id": "base",
-   "name": "resolve node:lts-bookworm-slim"
+   "name": "resolve node lts runtime (distroless)"
   },
   {
    "action": {
@@ -136,6 +139,20 @@
    ],
    "id": "copy-base",
    "name": "copy base layers"
+  },
+  {
+   "action": {
+    "dest": "",
+    "from": {
+     "type": "node-shim"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "layer-shim",
+   "name": "layer sh, env and node links"
   },
   {
    "action": {
@@ -160,7 +177,8 @@
    "deps": [
     "base",
     "copy-base",
-    "layer-server"
+    "layer-server",
+    "layer-shim"
    ],
    "id": "push",
    "name": "push image"

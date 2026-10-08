@@ -27,6 +27,38 @@ pub struct Stats {
     pub bytes_uploaded: u64,
     pub bytes_written: u64,
     pub requests: u64,
+    pub peak_rss_bytes: u64,
+    pub children_peak_rss_bytes: u64,
+}
+
+pub const SCHEMA_VERSION: u32 = 1;
+static BUILD_ID: OnceLock<String> = OnceLock::new();
+
+pub fn set_build_id(id: impl Into<String>) {
+    let _ = BUILD_ID.set(id.into());
+}
+
+pub fn build_id() -> &'static str {
+    BUILD_ID.get_or_init(|| {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        format!("{:x}{:06x}", now, std::process::id())
+    })
+}
+
+fn self_peak_rss() -> u64 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|t| t.lines().find_map(|l| l.strip_prefix("VmHWM:").and_then(|v| v.trim().trim_end_matches("kB").trim().parse::<u64>().ok())))
+        .unwrap_or(0)
+        * 1024
+}
+
+fn children_peak_rss() -> u64 {
+    let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
+    if unsafe { libc::getrusage(libc::RUSAGE_CHILDREN, &mut ru) } != 0 {
+        return 0;
+    }
+    ru.ru_maxrss.max(0) as u64 * 1024
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -79,11 +111,15 @@ pub fn emit(event: Event) {
         Mode::Json => {
             #[derive(Serialize)]
             struct Line<'a> {
+                v: u32,
+                build_id: &'a str,
+                ts: u64,
                 t: u64,
                 #[serde(flatten)]
                 event: &'a Event,
             }
-            let line = serde_json::to_string(&Line { t: elapsed_ms(), event: &event }).unwrap_or_default();
+            let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+            let line = serde_json::to_string(&Line { v: SCHEMA_VERSION, build_id: build_id(), ts, t: elapsed_ms(), event: &event }).unwrap_or_default();
             let _g = e.out.lock();
             let mut err = std::io::stderr().lock();
             let _ = writeln!(err, "{line}");
@@ -103,11 +139,13 @@ pub fn emit(event: Event) {
                 Event::BuildFinished { ms, .. } => format!("done in {:.2}s", *ms as f64 / 1000.0),
                 Event::BuildFailed { .. } => return,
                 Event::Stats(s) => format!(
-                    "downloaded {:.1} MB, uploaded {:.1} MB, written {:.1} MB, {} requests",
+                    "downloaded {:.1} MB, uploaded {:.1} MB, written {:.1} MB, {} requests, peak RSS {:.0} MB (largest child {:.0} MB)",
                     s.bytes_downloaded as f64 / 1e6,
                     s.bytes_uploaded as f64 / 1e6,
                     s.bytes_written as f64 / 1e6,
-                    s.requests
+                    s.requests,
+                    s.peak_rss_bytes as f64 / 1e6,
+                    s.children_peak_rss_bytes as f64 / 1e6
                 ),
             };
             let _g = e.out.lock();
@@ -139,6 +177,8 @@ pub fn stats() -> Stats {
         bytes_uploaded: UPLOADED.load(Ordering::Relaxed),
         bytes_written: WRITTEN.load(Ordering::Relaxed),
         requests: REQUESTS.load(Ordering::Relaxed),
+        peak_rss_bytes: self_peak_rss(),
+        children_peak_rss_bytes: children_peak_rss(),
     }
 }
 

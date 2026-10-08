@@ -2,7 +2,7 @@
  "app": "mise-config",
  "facts": {
   "framework": "none",
-  "mise-extras": "node go python",
+  "mise-extras": "go python",
   "node": "24 (mise.toml)",
   "package-manager": "npm",
   "runtime": "bun (no node)"
@@ -22,12 +22,23 @@
    [
     "PATH",
     "/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/go/bin:/opt/python/bin"
+   ],
+   [
+    "npm_config_user_agent",
+    "npm/10 node/v24 linux x64"
+   ],
+   [
+    "npm_lifecycle_event",
+    "start"
+   ],
+   [
+    "npm_package_name",
+    "node-bun"
    ]
   ],
   "layers": [
    "layer-mise-python",
    "layer-mise-go",
-   "layer-mise-node",
    "layer-bun",
    "layer-deps",
    "layer-app"
@@ -62,23 +73,12 @@
   },
   {
    "action": {
-    "kind": "toolchain",
-    "parts": [],
-    "spec": "24",
-    "tool": "node"
-   },
-   "deps": [],
-   "id": "mise-node",
-   "name": "node 24 (mise)"
-  },
-  {
-   "action": {
-    "image": "debian:bookworm-slim",
+    "image": "node:24-bookworm-slim",
     "kind": "resolve-base"
    },
    "deps": [],
    "id": "base",
-   "name": "resolve debian:bookworm-slim"
+   "name": "resolve node:24-bookworm-slim"
   },
   {
    "action": {
@@ -166,21 +166,6 @@
   },
   {
    "action": {
-    "dest": "usr/local",
-    "from": {
-     "tool": "node",
-     "type": "tool-tree"
-    },
-    "kind": "layer"
-   },
-   "deps": [
-    "mise-node"
-   ],
-   "id": "layer-mise-node",
-   "name": "layer node (mise)"
-  },
-  {
-   "action": {
     "dest": "usr/local/go",
     "from": {
      "tool": "go",
@@ -219,7 +204,6 @@
     "layer-deps",
     "layer-app",
     "layer-bun",
-    "layer-mise-node",
     "layer-mise-go",
     "layer-mise-python"
    ],

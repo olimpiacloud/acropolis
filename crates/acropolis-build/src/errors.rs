@@ -26,7 +26,7 @@ impl ErrorClass {
     }
 }
 
-const KILLED: &[&str] = &["signal: 9", "exit status: 137", "out of memory", "oom"];
+const KILLED: &[&str] = &["out of memory", "oom-kill", "oom killer"];
 
 const INFRA: &[&str] = &[
     "is unreachable",
@@ -46,6 +46,8 @@ const INFRA: &[&str] = &[
     "no space left on device",
     "dns error",
     "failed to lookup address",
+    "get blob sha256:",
+    "falling back to mirror",
 ];
 
 const CONFIG: &[&str] = &[
@@ -60,10 +62,18 @@ const CONFIG: &[&str] = &[
     "has no manifest for",
     "unknown package manager",
     "invalid env",
-    "not found",
+    "version matches",
+    "not found in",
+    "does not exist",
+    "must stay inside the app directory",
+    "must be a relative path",
+    "unsafe install path",
 ];
 
 pub fn classify(err: &anyhow::Error) -> ErrorClass {
+    if let Some(cf) = err.chain().find_map(|e| e.downcast_ref::<acropolis_exec::CommandFailed>()) {
+        return if cf.killed() { ErrorClass::Infra } else { ErrorClass::User };
+    }
     let msg = format!("{err:#}").to_ascii_lowercase();
     let has = |list: &[&str]| list.iter().any(|m| msg.contains(m));
     if has(KILLED) {
@@ -92,9 +102,21 @@ mod tests {
     #[test]
     fn classes() {
         assert_eq!(classify(&anyhow!("step build (run next build): `/bin/sh -c next build` failed with exit status: 1")), ErrorClass::User);
-        assert_eq!(classify(&anyhow!("step build: `/bin/sh -c cargo build` failed with exit status: 137")), ErrorClass::Infra);
         assert_eq!(classify(&anyhow!("registry-1.docker.io is unreachable")), ErrorClass::Infra);
         assert_eq!(classify(&anyhow!("could not detect how to build /app: no package.json or go.mod")), ErrorClass::Config);
         assert_eq!(classify(&anyhow!("index out of bounds")), ErrorClass::Internal);
+        assert_eq!(classify(&anyhow!("step packages: GET blob sha256:d4c4 from docker.io/library/debian@sha256:a467: 404 Not Found")), ErrorClass::Infra);
+        assert_eq!(classify(&anyhow!("no Node version matches \"99\"")), ErrorClass::Config);
+        let failed = |code: i32, tail: &str| {
+            use std::os::unix::process::ExitStatusExt;
+            anyhow::Error::new(acropolis_exec::CommandFailed::new(
+                &["/bin/sh".into(), "-c".into(), "vite build".into()],
+                std::process::ExitStatus::from_raw(code << 8),
+                vec![tail.into()],
+            ))
+            .context("step build (run vite build)")
+        };
+        assert_eq!(classify(&failed(1, "error: zoom.tsx: room not found, connection refused, 503 Service Unavailable")), ErrorClass::User);
+        assert_eq!(classify(&failed(137, "")), ErrorClass::Infra);
     }
 }

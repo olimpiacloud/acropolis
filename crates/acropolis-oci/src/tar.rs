@@ -151,6 +151,10 @@ impl<W: Write> TarWriter<W> {
         self.out.write_all(&[0u8; BLOCK * 2])?;
         Ok(self.out)
     }
+
+    pub fn into_inner(self) -> W {
+        self.out
+    }
 }
 
 fn truncate(s: &str, n: usize) -> &str {

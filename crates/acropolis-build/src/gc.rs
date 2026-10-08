@@ -37,6 +37,7 @@ struct Unit {
     size: u64,
     last_use: SystemTime,
     lock: Option<PathBuf>,
+    marker: Option<PathBuf>,
 }
 
 #[derive(Debug, Default)]
@@ -81,21 +82,25 @@ fn units(home: &Path, rootfs: &Path) -> Vec<Unit> {
                     continue;
                 }
                 let size = std::fs::metadata(&blob).map(|m| m.len()).unwrap_or(0);
-                out.push(Unit { last_use: mtime(&blob), path: blob, size, lock: None });
+                out.push(Unit { last_use: mtime(&blob), path: blob, size, lock: None, marker: None });
             }
         }
     }
     for t in entries(&home.join("toolchains")) {
         let marker = t.join(".acropolis-complete");
-        out.push(Unit { size: dir_size(&t), last_use: mtime(&marker), path: t, lock: None });
+        out.push(Unit { size: dir_size(&t), last_use: mtime(&marker), path: t, lock: None, marker: Some(marker) });
     }
     for r in entries(rootfs) {
-        let marker = r.join(".complete");
-        out.push(Unit { size: dir_size(&r), last_use: mtime(&marker), path: r, lock: None });
+        let name = r.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if name.ends_with(".complete") || name.starts_with('.') || !r.is_dir() {
+            continue;
+        }
+        let marker = rootfs.join(format!("{name}.complete"));
+        out.push(Unit { size: dir_size(&r), last_use: mtime(&marker), path: r, lock: None, marker: Some(marker) });
     }
     for a in entries(&home.join("cache").join("apps")) {
         let lock = a.join(".lock");
-        out.push(Unit { size: dir_size(&a), last_use: mtime(&lock), path: a, lock: Some(lock) });
+        out.push(Unit { size: dir_size(&a), last_use: mtime(&lock), path: a, lock: Some(lock), marker: None });
     }
     out
 }
@@ -160,6 +165,9 @@ pub fn collect(home: &Path, rootfs: &Path, max_size: u64) -> Result<GcReport> {
         }
         if u.lock.as_deref().is_some_and(locked) {
             continue;
+        }
+        if let Some(m) = &u.marker {
+            let _ = std::fs::remove_file(m);
         }
         remove(&u.path);
         total = total.saturating_sub(u.size);

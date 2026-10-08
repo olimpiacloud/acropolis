@@ -81,17 +81,6 @@
   },
   {
    "action": {
-    "kind": "toolchain",
-    "parts": [],
-    "spec": "latest",
-    "tool": "bun"
-   },
-   "deps": [],
-   "id": "bun",
-   "name": "bun latest"
-  },
-  {
-   "action": {
     "argv": [
      "/bin/sh",
      "-c",
@@ -109,8 +98,7 @@
    },
    "deps": [
     "node",
-    "install",
-    "bun"
+    "install"
    ],
    "id": "build",
    "name": "run expo export --platform web"

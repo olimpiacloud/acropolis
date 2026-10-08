@@ -69,6 +69,7 @@ pub enum LayerFrom {
     Upper { step: String, include: Vec<String>, exclude: Vec<String> },
     Inline { files: BTreeMap<String, String> },
     Image { image: String, include: Vec<String> },
+    NodeShim,
 }
 
 fn default_target() -> String {

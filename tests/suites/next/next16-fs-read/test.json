@@ -1,0 +1,10 @@
+[
+  {
+    "httpCheck": {
+      "path": "/api/content",
+      "expected": 200,
+      "internalPort": 3000,
+      "expectedOutput": "marker-next16-fs-read from markdown"
+    }
+  }
+]

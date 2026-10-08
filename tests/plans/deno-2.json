@@ -7,7 +7,7 @@
   "cmd": [
    "/bin/sh",
    "-c",
-   "deno run --allow-all main.ts"
+   "exec deno run --allow-all main.ts"
   ],
   "entrypoint": [],
   "env": [

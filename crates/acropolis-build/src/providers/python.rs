@@ -418,6 +418,7 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
         &["source", "uv"],
     );
     b.step("layer-app", "layer app + .venv", Action::Layer { dest: "app".into(), from: LayerFrom::WorkDir { path: ".".into(), exclude: vec![crate::extend::NATIVE_DEBS_FILE.into()] } }, &["install"]);
+    let start = start_command(dir, env);
     b.step(
         "layer-uv",
         "layer uv CLI",
@@ -481,8 +482,8 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     if playwright {
         b.plan.image.env.push(("PLAYWRIGHT_BROWSERS_PATH".into(), PLAYWRIGHT_DIR.into()));
     }
-    if let Some(start) = start_command(dir, env) {
-        b.plan.image.cmd = Some(vec!["/bin/sh".into(), "-c".into(), start]);
+    if let Some(start) = start {
+        b.plan.image.cmd = Some(super::shell_start(&start));
     } else {
         anyhow::bail!("no start command found: add a main.py, a Procfile web entry or set ACROPOLIS_START_CMD");
     }

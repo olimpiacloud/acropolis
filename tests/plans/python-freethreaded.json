@@ -9,7 +9,7 @@
   "cmd": [
    "/bin/sh",
    "-c",
-   "python main.py"
+   "exec python main.py"
   ],
   "entrypoint": [],
   "env": [

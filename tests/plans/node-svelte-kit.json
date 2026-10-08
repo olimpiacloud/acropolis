@@ -4,7 +4,8 @@
   "framework": "sveltekit",
   "node": "lts (default)",
   "package-manager": "pnpm",
-  "runtime": "node server (built)"
+  "runtime": "node server (built)",
+  "runtime-base": "distroless node (busybox shell)"
  },
  "image": {
   "cmd": [
@@ -19,7 +20,7 @@
    ],
    [
     "PATH",
-    "/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    "/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/busybox"
    ],
    [
     "npm_config_verify_deps_before_run",
@@ -56,6 +57,7 @@
   ],
   "layers": [
    "layer-pm",
+   "layer-shim",
    "layer-deps",
    "layer-app"
   ],
@@ -69,8 +71,7 @@
    "action": {
     "kind": "toolchain",
     "parts": [
-     "npm",
-     "headers"
+     "npm"
     ],
     "spec": "lts",
     "tool": "node"
@@ -120,37 +121,13 @@
   },
   {
    "action": {
-    "argv": [
-     "/bin/sh",
-     "-c",
-     "{ [ -e node_modules/@sveltejs/adapter-node ] || { v=$(node -p \"(require('fs').readFileSync('node_modules/@sveltejs/adapter-auto/adapters.js','utf8').match(/adapter-node['\\\"],\\s*version:\\s*['\\\"]([^'\\\"]+)/)||[0,'latest'])[1]\" 2>/dev/null || echo latest) && d=\"${TMPDIR:-/tmp}/sveltekit-adapter-node\" && npm install --prefix \"$d\" --no-save --no-package-lock --no-audit --no-fund --legacy-peer-deps --loglevel=error \"@sveltejs/adapter-node@$v\" && mkdir -p node_modules/@sveltejs && ln -sfn \"$d/node_modules/@sveltejs/adapter-node\" node_modules/@sveltejs/adapter-node; }; } && vite build"
-    ],
-    "cwd": ".",
-    "env": {
-     "GCP_BUILDPACKS": "true",
-     "NEXT_TELEMETRY_DISABLED": "1",
-     "NODE_ENV": "production",
-     "npm_lifecycle_event": "build",
-     "npm_package_name": "my-app"
-    },
-    "kind": "run",
-    "network": true
-   },
-   "deps": [
-    "node",
-    "install"
-   ],
-   "id": "build",
-   "name": "run { [ -e node_modules/@sveltejs/adapter-node ] || { v=$(node -p \"(require('fs').readFileSync('node_modules/@sveltejs/adapter-auto/adapters.js','utf8').match(/adapter-node['\\\"],\\s*version:\\s*['\\\"]([^'\\\"]+)/)||[0,'latest'])[1]\" 2>/dev/null || echo latest) && d=\"${TMPDIR:-/tmp}/sveltekit-adapter-node\" && npm install --prefix \"$d\" --no-save --no-package-lock --no-audit --no-fund --legacy-peer-deps --loglevel=error \"@sveltejs/adapter-node@$v\" && mkdir -p node_modules/@sveltejs && ln -sfn \"$d/node_modules/@sveltejs/adapter-node\" node_modules/@sveltejs/adapter-node; }; } && vite build"
-  },
-  {
-   "action": {
-    "image": "node:lts-bookworm-slim",
-    "kind": "resolve-base"
+    "kind": "resolve-node-base",
+    "spec": "lts",
+    "variant": "distroless"
    },
    "deps": [],
    "id": "base",
-   "name": "resolve node:lts-bookworm-slim"
+   "name": "resolve node lts runtime (distroless)"
   },
   {
    "action": {
@@ -161,6 +138,20 @@
    ],
    "id": "copy-base",
    "name": "copy base layers"
+  },
+  {
+   "action": {
+    "dest": "",
+    "from": {
+     "type": "node-shim"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "layer-shim",
+   "name": "layer sh, env and node links"
   },
   {
    "action": {
@@ -193,6 +184,43 @@
   },
   {
    "action": {
+    "kind": "toolchain",
+    "parts": [],
+    "spec": "9",
+    "tool": "npm:pnpm"
+   },
+   "deps": [],
+   "id": "pnpm",
+   "name": "pnpm 9"
+  },
+  {
+   "action": {
+    "argv": [
+     "/bin/sh",
+     "-c",
+     "{ [ -e node_modules/@sveltejs/adapter-node ] || { v=$(node -p \"(require('fs').readFileSync('node_modules/@sveltejs/adapter-auto/adapters.js','utf8').match(/adapter-node['\\\"],\\s*version:\\s*['\\\"]([^'\\\"]+)/)||[0,'latest'])[1]\" 2>/dev/null || echo latest) && d=\"${TMPDIR:-/tmp}/sveltekit-adapter-node\" && npm install --prefix \"$d\" --no-save --no-package-lock --no-audit --no-fund --legacy-peer-deps --loglevel=error \"@sveltejs/adapter-node@$v\" && mkdir -p node_modules/@sveltejs && ln -sfn \"$d/node_modules/@sveltejs/adapter-node\" node_modules/@sveltejs/adapter-node; }; } && vite build"
+    ],
+    "cwd": ".",
+    "env": {
+     "GCP_BUILDPACKS": "true",
+     "NEXT_TELEMETRY_DISABLED": "1",
+     "NODE_ENV": "production",
+     "npm_lifecycle_event": "build",
+     "npm_package_name": "my-app"
+    },
+    "kind": "run",
+    "network": true
+   },
+   "deps": [
+    "node",
+    "install",
+    "pnpm"
+   ],
+   "id": "build",
+   "name": "run { [ -e node_modules/@sveltejs/adapter-node ] || { v=$(node -p \"(require('fs').readFileSync('node_modules/@sveltejs/adapter-auto/adapters.js','utf8').match(/adapter-node['\\\"],\\s*version:\\s*['\\\"]([^'\\\"]+)/)||[0,'latest'])[1]\" 2>/dev/null || echo latest) && d=\"${TMPDIR:-/tmp}/sveltekit-adapter-node\" && npm install --prefix \"$d\" --no-save --no-package-lock --no-audit --no-fund --legacy-peer-deps --loglevel=error \"@sveltejs/adapter-node@$v\" && mkdir -p node_modules/@sveltejs && ln -sfn \"$d/node_modules/@sveltejs/adapter-node\" node_modules/@sveltejs/adapter-node; }; } && vite build"
+  },
+  {
+   "action": {
     "dest": "app",
     "from": {
      "exclude": [
@@ -209,17 +237,6 @@
    ],
    "id": "layer-app",
    "name": "layer app + build output"
-  },
-  {
-   "action": {
-    "kind": "toolchain",
-    "parts": [],
-    "spec": "9",
-    "tool": "npm:pnpm"
-   },
-   "deps": [],
-   "id": "pnpm",
-   "name": "pnpm 9"
   },
   {
    "action": {
@@ -245,6 +262,7 @@
     "copy-base",
     "layer-deps",
     "layer-app",
+    "layer-shim",
     "layer-pm"
    ],
    "id": "push",

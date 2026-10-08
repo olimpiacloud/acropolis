@@ -10,7 +10,7 @@
   "cmd": [
    "/bin/sh",
    "-c",
-   "/app/_build/prod/rel/friends/bin/friends start"
+   "exec /app/_build/prod/rel/friends/bin/friends start"
   ],
   "entrypoint": [],
   "env": [

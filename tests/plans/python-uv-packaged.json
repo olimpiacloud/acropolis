@@ -8,7 +8,7 @@
   "cmd": [
    "/bin/sh",
    "-c",
-   "python-uv-packaged"
+   "exec python-uv-packaged"
   ],
   "entrypoint": [],
   "env": [

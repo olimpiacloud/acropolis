@@ -4,7 +4,8 @@
   "framework": "none",
   "node": ">=18 (package.json engines.node)",
   "package-manager": "npm",
-  "runtime": "node server (no build step)"
+  "runtime": "node server (no build step)",
+  "runtime-base": "distroless node (busybox shell)"
  },
  "image": {
   "cmd": [
@@ -19,7 +20,7 @@
    ],
    [
     "PATH",
-    "/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    "/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/busybox"
    ],
    [
     "npm_config_user_agent",
@@ -35,6 +36,7 @@
    ]
   ],
   "layers": [
+   "layer-shim",
    "layer-deps",
    "layer-app"
   ],
@@ -46,12 +48,13 @@
  "steps": [
   {
    "action": {
-    "image": "node:18-bookworm-slim",
-    "kind": "resolve-base"
+    "kind": "resolve-node-base",
+    "spec": ">=18",
+    "variant": "distroless"
    },
    "deps": [],
    "id": "base",
-   "name": "resolve node:18-bookworm-slim"
+   "name": "resolve node >=18 runtime (distroless)"
   },
   {
    "action": {
@@ -62,6 +65,20 @@
    ],
    "id": "copy-base",
    "name": "copy base layers"
+  },
+  {
+   "action": {
+    "dest": "",
+    "from": {
+     "type": "node-shim"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "layer-shim",
+   "name": "layer sh, env and node links"
   },
   {
    "action": {
@@ -113,7 +130,8 @@
     "base",
     "copy-base",
     "layer-deps",
-    "layer-app"
+    "layer-app",
+    "layer-shim"
    ],
    "id": "push",
    "name": "push image"

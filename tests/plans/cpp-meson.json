@@ -7,7 +7,7 @@
   "cmd": [
    "/bin/sh",
    "-c",
-   "./build/cpp-meson"
+   "exec ./build/cpp-meson"
   ],
   "entrypoint": [],
   "env": [],

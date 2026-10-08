@@ -9,7 +9,35 @@ pub struct Env {
     pub vars: BTreeMap<String, String>,
 }
 
+pub const OPERATOR_KEYS: &[&str] = &[
+    "CACHE_KEY",
+    "CACHE_MAX",
+    "NO_CACHE",
+    "CACHE_SRC",
+    "STEP_TIMEOUT",
+    "BUILD_TIMEOUT",
+    "TAG_TTL",
+    "ALLOW_PRIVATE_REGISTRY",
+    "PREWARM",
+    "NFT_CACHE",
+    "NFT_PREWARM_WORKER",
+];
+
+pub fn operator_key(key: &str) -> bool {
+    ["ACROPOLIS_", "RAILPACK_"].iter().any(|p| key.strip_prefix(p).is_some_and(|rest| OPERATOR_KEYS.contains(&rest)))
+}
+
 impl Env {
+    pub fn with_operator(mut self, process: impl IntoIterator<Item = (String, String)>) -> Self {
+        self.vars.retain(|k, _| !operator_key(k));
+        for (k, v) in process {
+            if k.starts_with("ACROPOLIS_") && operator_key(&k) {
+                self.vars.insert(k, v);
+            }
+        }
+        self
+    }
+
     pub fn config(&self, name: &str) -> Option<(String, String)> {
         for key in [format!("ACROPOLIS_{name}"), format!("RAILPACK_{name}")] {
             if let Some(v) = self.vars.get(&key).filter(|v| !v.trim().is_empty()) {
@@ -565,4 +593,35 @@ fn first_dir(dir: &Path) -> Option<String> {
         .collect();
     names.sort();
     names.into_iter().next()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn operator_knobs_come_only_from_the_process() {
+        let mut user = Env::default();
+        user.vars.insert("ACROPOLIS_CACHE_KEY".into(), "someone-else".into());
+        user.vars.insert("RAILPACK_STEP_TIMEOUT".into(), "999999".into());
+        user.vars.insert("ACROPOLIS_NODE_VERSION".into(), "22".into());
+        let env = user.with_operator(vec![
+            ("ACROPOLIS_CACHE_KEY".to_string(), "tenant-app".to_string()),
+            ("ACROPOLIS_NODE_VERSION".to_string(), "18".to_string()),
+            ("PATH".to_string(), "/bin".to_string()),
+        ]);
+        assert_eq!(env.config("CACHE_KEY").unwrap().0, "tenant-app");
+        assert!(env.config("STEP_TIMEOUT").is_none());
+        assert_eq!(env.config("NODE_VERSION").unwrap().0, "22");
+        assert!(!env.vars.contains_key("PATH"));
+    }
+
+    #[test]
+    fn repo_config_cannot_escape_the_app_dir() {
+        let mut env = Env::default();
+        env.vars.insert("ACROPOLIS_CONFIG_FILE".into(), "../../etc/passwd".into());
+        assert!(crate::config::load(Path::new("/tmp"), &env).is_err());
+        env.vars.insert("ACROPOLIS_CONFIG_FILE".into(), "/etc/passwd".into());
+        assert!(crate::config::load(Path::new("/tmp"), &env).is_err());
+    }
 }

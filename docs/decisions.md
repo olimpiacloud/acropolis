@@ -92,3 +92,38 @@ Cada entrada: qué se probó, qué número dio, qué quedó y qué se descartó.
 ## D15. Recursos de la VM durante las pruebas
 
 - Compilar Rolldown en paralelo con el e2e disparó el OOM killer (7,7 GB). El e2e corre con 2 trabajos y cada build usa su propio directorio de rootfs que se borra al terminar el caso (sin eso el rootfs compartido llegó a 6,7 GB y llenó el disco).
+
+## D16. Runtime de Node sobre distroless con shell de busybox
+
+- Medido (registry, comprimido, amd64): `node:24-bookworm-slim` 80,8 MB; `gcr.io/distroless/nodejs24-debian12` 52,7 MB; la variante `:debug` 53,5 MB (agrega una capa de busybox de 740 KB, idéntica en todas las distroless `:debug`). `nodejs24-debian13` 55,3 MB, `nodejs26-debian13` 60,2 MB.
+- Quedó: la base es `gcr.io/distroless/nodejs<major>-debian12:debug` (o `-debian13` si los scripts de producción compilaron contra una glibc más nueva), con una capa propia de tres symlinks: `/bin/sh → /busybox/sh`, `/usr/bin/env → /busybox/env` y `/usr/local/bin/node → /nodejs/bin/node`. Sin eso fallan los `#!/usr/bin/env node` de `node_modules/.bin` y `child_process.exec`.
+- Solo si la versión pedida flota (`N`, `N.x`, `lts`, `latest`, `^N`, `>=N`): distroless publica la última versión de cada major (va un par de minors atrás), así que una versión exacta como `22.2.0` o `^24.15.0` sigue en `node:<v>-bookworm-slim`. Majors permitidos: 22, 24 y 26.
+- Se cae a Debian slim si hay scripts de instalación en producción (salvo Next standalone y Nitro, que no instalan dependencias de producción aparte), start por shell o con npm/pnpm/yarn, puppeteer o playwright, paquetes apt de deploy, pasos custom, herramientas extra de mise o `ACROPOLIS_RUNTIME_BASE=debian`. La resolución se hace en tiempo de build: si el major no tiene imagen distroless se usa `node:<versión>-bookworm-slim` y la capa de symlinks queda vacía.
+- Bun: `distroless/cc-debian12:debug` (9,9 MB) + capa de bun, sin ningún `node` (Railpack lo exige en `node-bun-no-deps`), solo cuando el start es `bun <archivo>` o un `bun run X` que termina en `bun <archivo>`. Un `bun run start` que llama a `node` sigue en Node.
+- Validado por consulta con Opus 5.5 (`docs/audit/2026-10-07-consulta-opus.md`): Prisma necesita el shell (lo ejecuta para detectar OpenSSL) y distroless trae libssl3; sharp trae sus libs; no hay usuario `node` (uid 1000) ni `bash`/`npm` para `docker exec`.
+
+## D17. Next sin `output` se construye como standalone
+
+- `next start` necesita el `node_modules` de producción completo (en `node-next` la imagen pesaba 162,9 MB). Next 14, 15 y 16 leen `output: process.env.NEXT_PRIVATE_STANDALONE ? 'standalone' : undefined` como valor por defecto, así que basta con esa variable en el paso de build.
+- La imagen lleva, además del standalone, los archivos de la app sin `node_modules`, `.next`, `.git` ni `public` (capa `layer-files`): `server.js` hace `chdir` a su directorio, así que siguen andando las lecturas relativas a `cwd` (contenido en markdown, configs de i18n).
+- Solo se fuerza con Next ≥ 15 (o 13/14 con `sharp`), build exactamente `next build [--flags]`, start `next start` con `-p`/`-H` opcionales, sin `output`, `distDir`, `RuntimeConfig` ni `PHASE_` en la config, y sin dependencias que nft no traza (`dd-trace`, `newrelic`, `@opentelemetry/auto-instrumentations-node`, `@sentry/profiling-node`, `geoip-lite`, `pdfkit`, `@grpc/proto-loader`, `pino`, `next-i18next`). Yarn PnP y `bun.lockb` quedan afuera. `ACROPOLIS_NEXT_STANDALONE=0` lo apaga.
+- Efecto colateral bueno: Next 15 con `next.config.ts` ya no necesita `typescript` en runtime, porque la config queda serializada en `server.js`. Para el camino `next start` se conserva `typescript` en las dependencias de producción en Next < 16.
+- En monorepos el standalone queda anidado (`.next/standalone/<miembro>/server.js`): la imagen respeta esa estructura y el workdir es `/app/<miembro>`.
+
+## D18. Perillas del operador separadas de las de la app
+
+- Antes, `ACROPOLIS_CACHE_KEY`, `ACROPOLIS_CACHE_MAX`, los timeouts y `NO_CACHE` se leían del mismo mapa que escriben `-e`, la config del repo y las variables del usuario: una app podía usar la caché de otra o saltear sus límites.
+- Quedó: esas claves solo se toman del entorno del proceso `acropolis`; si llegan por `-e`, por `railpack.json` o por las variables del usuario se descartan. `ACROPOLIS_CONFIG_FILE` tiene que ser relativo y quedar dentro del directorio de la app.
+
+## D19. Endurecimiento de lo que acropolis procesa como root
+
+- Instalación npm: las rutas de los lockfiles se validan (`..`, absolutas, NUL) y cada directorio que se crea tiene que resolver dentro del árbol de instalación (un symlink del repo no puede redirigir la escritura). Archivos con `O_NOFOLLOW`. URLs `http://` y hosts privados o link-local se rechazan (`ACROPOLIS_ALLOW_PRIVATE_REGISTRY=1`). La extracción es en streaming: un paquete ya no se descomprime entero en memoria.
+- Capas de imagen: las entradas que pasan por un symlink de la propia capa se ignoran; los hardlinks solo apuntan a archivos regulares dentro del destino; `fchmod`/`fchown` sobre el descriptor.
+- Armado de capas: rutas de `deploy.inputs`, `deploy.paths` y salidas de build sin `..`, y la raíz de cada capa tiene que resolver dentro de `src`, `work` o la caché de la app.
+- Pasos en imagen: PID namespace propio con `/proc` nuevo (antes se montaba el del host) y remount de solo lectura obligatorio.
+- Salida de los pasos: líneas de hasta 64 KB, 32 MB de log por paso, y el grupo de procesos se mata apenas termina el proceso principal (un `sleep 600 &` colgaba el paso). Los fallos de comandos son un error tipado: la clase (usuario o infra por SIGKILL) ya no depende de palabras en la salida del usuario.
+
+## D20. SPAs siguen sobre Caddy
+
+- `static-web-server` pesa 3,8 MB contra 24,9 MB de `caddy:2-alpine`, pero no tiene el fallback `{path}.html` que usa el Caddyfile (Next con `output: 'export'` sin `trailingSlash` y Astro generan `about.html`) ni lee `PORT` sin shell. Cambiarlo rompería rutas que hoy andan para ahorrar ~20 MB en imágenes que ya son chicas. Se descartó.
+- Turbopack en Next 15 queda opt-in (`ACROPOLIS_NEXT_TURBOPACK=1`, solo 15.5+ con build `next build`): con `--turbopack` una función `webpack()` de la config se ignora con un warning y plugins como `DefinePlugin` desaparecen sin error. Next 16 ya usa Turbopack por defecto.

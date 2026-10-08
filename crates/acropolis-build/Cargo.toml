@@ -17,6 +17,7 @@ acropolis-bundle = { path = "../acropolis-bundle" }
 acropolis-toolchain = { path = "../acropolis-toolchain" }
 acropolis-exec = { path = "../acropolis-exec" }
 anyhow.workspace = true
+url.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

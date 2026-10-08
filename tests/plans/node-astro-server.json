@@ -2,7 +2,7 @@
  "app": "node-astro-server",
  "facts": {
   "framework": "astro",
-  "install-scripts": "@esbuild/linux-x64, @img/sharp-libvips-linux-x64, @img/sharp-linux-x64, @rollup/rollup-linux-x64-gnu, esbuild, sharp",
+  "install-scripts": "@esbuild/linux-x64, @img/sharp-libvips-linux-x64, @img/sharp-linux-x64, @rollup/rollup-linux-x64-gnu, esbuild",
   "node": "lts (default)",
   "package-manager": "pnpm",
   "runtime": "node server (built)"
@@ -125,30 +125,6 @@
   },
   {
    "action": {
-    "argv": [
-     "/bin/sh",
-     "-c",
-     "astro build"
-    ],
-    "cwd": ".",
-    "env": {
-     "NEXT_TELEMETRY_DISABLED": "1",
-     "NODE_ENV": "production",
-     "npm_lifecycle_event": "build",
-     "npm_package_name": "node-astro-server"
-    },
-    "kind": "run",
-    "network": true
-   },
-   "deps": [
-    "node",
-    "install"
-   ],
-   "id": "build",
-   "name": "run astro build"
-  },
-  {
-   "action": {
     "image": "node:lts-trixie-slim",
     "kind": "resolve-base"
    },
@@ -215,6 +191,42 @@
   },
   {
    "action": {
+    "kind": "toolchain",
+    "parts": [],
+    "spec": "8",
+    "tool": "npm:pnpm"
+   },
+   "deps": [],
+   "id": "pnpm",
+   "name": "pnpm 8"
+  },
+  {
+   "action": {
+    "argv": [
+     "/bin/sh",
+     "-c",
+     "astro build"
+    ],
+    "cwd": ".",
+    "env": {
+     "NEXT_TELEMETRY_DISABLED": "1",
+     "NODE_ENV": "production",
+     "npm_lifecycle_event": "build",
+     "npm_package_name": "node-astro-server"
+    },
+    "kind": "run",
+    "network": true
+   },
+   "deps": [
+    "node",
+    "install",
+    "pnpm"
+   ],
+   "id": "build",
+   "name": "run astro build"
+  },
+  {
+   "action": {
     "dest": "app",
     "from": {
      "exclude": [
@@ -231,17 +243,6 @@
    ],
    "id": "layer-app",
    "name": "layer app + build output"
-  },
-  {
-   "action": {
-    "kind": "toolchain",
-    "parts": [],
-    "spec": "8",
-    "tool": "npm:pnpm"
-   },
-   "deps": [],
-   "id": "pnpm",
-   "name": "pnpm 8"
   },
   {
    "action": {
@@ -274,7 +275,7 @@
   }
  ],
  "warnings": [
-  "install scripts of @esbuild/linux-x64, @img/sharp-libvips-linux-x64, @img/sharp-linux-x64, @rollup/rollup-linux-x64-gnu, esbuild, sharp run with network access (policy: all); set ACROPOLIS_INSTALL_SCRIPTS=none to disable",
+  "install scripts of @esbuild/linux-x64, @img/sharp-libvips-linux-x64, @img/sharp-linux-x64, @rollup/rollup-linux-x64-gnu, esbuild run with network access (policy: all); set ACROPOLIS_INSTALL_SCRIPTS=none to disable",
   "the build step runs with network access like docker build; set ACROPOLIS_HERMETIC_BUILD=1 to run it without network"
  ]
 }

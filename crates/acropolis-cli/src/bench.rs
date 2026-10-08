@@ -78,6 +78,8 @@ pub struct RunResult {
     pub wall_s: f64,
     pub cpu_s: f64,
     pub peak_mem_mb: f64,
+    #[serde(default)]
+    pub peak_anon_mb: f64,
     pub net_rx_mb: f64,
     pub disk_write_mb: f64,
     pub image_mb: f64,
@@ -138,6 +140,13 @@ struct CgStats {
     cpu_usec: u64,
     peak: u64,
     wbytes: u64,
+}
+
+fn anon_bytes(dir: &Path) -> u64 {
+    fs::read_to_string(dir.join("memory.stat"))
+        .ok()
+        .and_then(|t| t.lines().find_map(|l| l.strip_prefix("anon ").and_then(|v| v.trim().parse().ok())))
+        .unwrap_or(0)
 }
 
 fn cg_stats(dir: &Path) -> CgStats {
@@ -416,6 +425,19 @@ fn run_phase(cfg: &BenchConfig, app: &AppSpec, tool_spec: &str, run: usize, ifac
         let cpu0 = children_cpu();
         let log = fs::File::create(&log_path)?;
         let start = Instant::now();
+        let sampled_cg = if tool.starts_with("acropolis") { Some(cg.clone()) } else { builder_cg.clone() };
+        let sampling = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let sampler = sampled_cg.map(|dir| {
+            let run = sampling.clone();
+            std::thread::spawn(move || {
+                let mut peak = 0u64;
+                while run.load(std::sync::atomic::Ordering::Relaxed) {
+                    peak = peak.max(anon_bytes(&dir));
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                peak.max(anon_bytes(&dir))
+            })
+        });
         let status = match tool {
             "docker" => {
                 let dockerfile = app.dockerfile(&cfg.repo, &app_dir);
@@ -472,6 +494,10 @@ fn run_phase(cfg: &BenchConfig, app: &AppSpec, tool_spec: &str, run: usize, ifac
             other => bail!("unknown tool {other}"),
         };
         let wall = start.elapsed().as_secs_f64();
+        sampling.store(false, std::sync::atomic::Ordering::Relaxed);
+        if let Some(h) = sampler {
+            r.peak_anon_mb = h.join().unwrap_or(0) as f64 / 1e6;
+        }
         let _ = Command::new("sync").status();
         let rx1 = rx_bytes(iface);
         let cpu1 = children_cpu();
@@ -788,10 +814,11 @@ fn summarize_one(results: &[RunResult]) -> String {
         }
     };
     let mut s = String::new();
-    let metrics: [(&str, fn(&RunResult) -> f64, usize); 7] = [
+    let metrics: [(&str, fn(&RunResult) -> f64, usize); 8] = [
         ("wall time (s)", |r| r.wall_s, 1),
         ("CPU-seconds", |r| r.cpu_s, 1),
-        ("peak memory (MB)", |r| r.peak_mem_mb, 0),
+        ("peak memory incl. page cache (MB)", |r| r.peak_mem_mb, 0),
+        ("peak anonymous memory (MB)", |r| r.peak_anon_mb, 0),
         ("downloaded (MB)", |r| r.net_rx_mb, 0),
         ("disk writes (MB)", |r| r.disk_write_mb, 0),
         ("image size (MB)", |r| r.image_mb, 1),

@@ -7,7 +7,7 @@
   "cmd": [
    "/bin/sh",
    "-c",
-   "./build/cpp-cmake"
+   "exec ./build/cpp-cmake"
   ],
   "entrypoint": [],
   "env": [],

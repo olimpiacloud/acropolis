@@ -9,7 +9,7 @@
   "cmd": [
    "/bin/sh",
    "-c",
-   "ruby app.rb"
+   "exec ruby app.rb"
   ],
   "entrypoint": [],
   "env": [

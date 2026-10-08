@@ -8,7 +8,7 @@
   "cmd": [
    "/bin/sh",
    "-c",
-   "python app.py"
+   "exec python app.py"
   ],
   "entrypoint": [],
   "env": [

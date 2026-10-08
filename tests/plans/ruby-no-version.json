@@ -7,7 +7,7 @@
   "cmd": [
    "/bin/sh",
    "-c",
-   "bundle exec rackup config.ru -o 0.0.0.0 -p ${PORT:-3000}"
+   "exec bundle exec rackup config.ru -o 0.0.0.0 -p ${PORT:-3000}"
   ],
   "entrypoint": [],
   "env": [

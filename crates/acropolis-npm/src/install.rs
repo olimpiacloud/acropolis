@@ -109,8 +109,43 @@ pub fn inferred_libc(name: &str, libc: &Option<Vec<String>>) -> Option<Vec<Strin
     None
 }
 
+const NAME_OS: &[(&str, &str)] = &[
+    ("darwin", "darwin"),
+    ("win32", "win32"),
+    ("windows", "win32"),
+    ("freebsd", "freebsd"),
+    ("openbsd", "openbsd"),
+    ("netbsd", "netbsd"),
+    ("sunos", "sunos"),
+    ("android", "android"),
+    ("aix", "aix"),
+    ("linux", "linux"),
+    ("linuxmusl", "linux"),
+    ("webcontainers", "webcontainers"),
+];
+const NAME_CPU: &[&str] = &["x64", "arm64", "arm", "ia32", "ppc64", "ppc64le", "s390x", "riscv64", "loong64", "mips64el", "wasm32", "universal"];
+
+pub fn inferred_os_cpu(name: &str) -> (Option<Vec<String>>, Option<Vec<String>>) {
+    let short = name.rsplit('/').next().unwrap_or(name);
+    let parts: Vec<&str> = short.split('-').collect();
+    for (i, w) in parts.iter().enumerate() {
+        let Some(&(_, os)) = NAME_OS.iter().find(|(token, _)| token == w) else { continue };
+        let cpu = parts.get(i + 1).filter(|c| NAME_CPU.contains(c));
+        if let Some(cpu) = cpu {
+            let cpu = if *cpu == "universal" { "x64".to_string() } else { cpu.to_string() };
+            let cpus = if short.contains("universal") { vec!["x64".to_string(), "arm64".to_string()] } else { vec![cpu] };
+            return (Some(vec![os.to_string()]), Some(cpus));
+        }
+    }
+    if parts.len() >= 2 && parts[parts.len() - 1] == "wasm32" {
+        return (None, Some(vec!["wasm32".to_string()]));
+    }
+    (None, None)
+}
+
 pub fn platform_matches_named(name: &str, os: &Option<Vec<String>>, cpu: &Option<Vec<String>>, libc: &Option<Vec<String>>, p: &Platform) -> bool {
-    platform_matches(os, cpu, &inferred_libc(name, libc), p)
+    let (ios, icpu) = if os.is_none() && cpu.is_none() { inferred_os_cpu(name) } else { (None, None) };
+    platform_matches(&os.clone().or(ios), &cpu.clone().or(icpu), &inferred_libc(name, libc), p)
 }
 
 #[cfg(test)]
@@ -476,6 +511,12 @@ pub fn stream_node_modules(
     sink: &mut dyn FnMut(Vec<u8>) -> Result<()>,
 ) -> Result<()> {
     let mut pkgs: Vec<&InstallPackage> = plan.packages.iter().filter(|p| filter(p)).collect();
+    for p in &pkgs {
+        safe_rel_path(&p.path)?;
+    }
+    for l in &plan.links {
+        safe_rel_path(&l.path)?;
+    }
     pkgs.sort_by(|a, b| a.path.cmp(&b.path));
     let mut head_dirs = BTreeSet::new();
     let mut acc = String::new();
@@ -515,7 +556,7 @@ pub fn stream_node_modules(
     }
     sink(take(head))?;
     let wanted: Vec<&InstallPackage> = pkgs.iter().copied().filter(|p| fetched(p)).collect();
-    let window = (rayon::current_num_threads() * 4).max(4);
+    let window = (rayon::current_num_threads() * 2).max(4);
     let mut bins: HashMap<String, Vec<(String, String)>> = HashMap::new();
     for win in wanted.chunks(window) {
         let bodies: Vec<Result<(String, Vec<u8>, Vec<(String, String)>)>> = win
@@ -581,14 +622,69 @@ fn type_files_only(entries: &[TarEntry], bins: &[(String, String)]) -> bool {
     declared || entries.iter().any(|e| e.rel.ends_with(".d.ts") || e.rel.ends_with(".d.mts") || e.rel.ends_with(".d.cts"))
 }
 
+pub fn safe_rel_path(path: &str) -> Result<()> {
+    if path.is_empty() || path.starts_with('/') || path.contains('\0') || path.contains('\\') {
+        bail!("unsafe install path {path:?}");
+    }
+    if path.split('/').any(|c| c == "..") {
+        bail!("unsafe install path {path:?}");
+    }
+    Ok(())
+}
+
+struct Inside {
+    root: std::path::PathBuf,
+    ok: std::sync::Mutex<HashSet<std::path::PathBuf>>,
+}
+
+impl Inside {
+    fn new(root: &Path) -> Result<Self> {
+        std::fs::create_dir_all(root)?;
+        Ok(Inside { root: std::fs::canonicalize(root)?, ok: std::sync::Mutex::new(HashSet::new()) })
+    }
+
+    fn dir(&self, dir: &Path) -> Result<()> {
+        if self.ok.lock().unwrap_or_else(|e| e.into_inner()).contains(dir) {
+            return Ok(());
+        }
+        let mut existing = dir;
+        while std::fs::symlink_metadata(existing).is_err() {
+            existing = existing.parent().ok_or_else(|| anyhow!("no existing ancestor for {}", dir.display()))?;
+        }
+        let real = std::fs::canonicalize(existing)?;
+        if !real.starts_with(&self.root) {
+            bail!("refusing to write outside the install root: {} resolves to {}", dir.display(), real.display());
+        }
+        std::fs::create_dir_all(dir)?;
+        let real = std::fs::canonicalize(dir)?;
+        if !real.starts_with(&self.root) {
+            bail!("refusing to write outside the install root: {} resolves to {}", dir.display(), real.display());
+        }
+        self.ok.lock().unwrap_or_else(|e| e.into_inner()).insert(dir.to_path_buf());
+        Ok(())
+    }
+}
+
 pub fn materialize_with(plan: &InstallPlan, tarballs: &Tarballs, root: &Path, types_only: bool) -> Result<u64> {
+    for p in &plan.packages {
+        safe_rel_path(&p.path)?;
+    }
+    for l in &plan.links {
+        safe_rel_path(&l.path)?;
+    }
+    let inside = Inside::new(root)?;
     let pkgs: Vec<&InstallPackage> = plan.packages.iter().collect();
     let written: Vec<Result<(String, u64, Vec<(String, String)>)>> = pkgs
         .par_iter()
         .filter(|p| fetched(p))
         .map(|p| {
             let blob = blob_for(tarballs, p).ok_or_else(|| anyhow!("missing tarball for {}", p.path))?;
-            let (n, bins) = extract_package_with(p, &blob.path, &root.join(&p.path), types_only)?;
+            let dest = root.join(&p.path);
+            let (n, bins) = if types_only {
+                extract_package_with(p, &blob.path, &dest, true, &inside)?
+            } else {
+                extract_package_streaming(p, &blob.path, &dest, &inside)?
+            };
             Ok((p.path.clone(), n, bins))
         })
         .collect();
@@ -604,24 +700,27 @@ pub fn materialize_with(plan: &InstallPlan, tarballs: &Tarballs, root: &Path, ty
     for l in &plan.links {
         let dest = root.join(&l.path);
         if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
+            inside.dir(parent)?;
         }
         let _ = std::fs::remove_file(&dest);
         std::os::unix::fs::symlink(&l.target, &dest).with_context(|| format!("linking {}", l.path))?;
     }
     for (dir, entries) in bin_links(plan, &bins) {
         let bin_dir = root.join(&dir).join(".bin");
-        std::fs::create_dir_all(&bin_dir)?;
+        inside.dir(&bin_dir)?;
         for (name, target) in entries {
             let dest = bin_dir.join(&name);
             let _ = std::fs::remove_file(&dest);
             std::os::unix::fs::symlink(&target, &dest)?;
             let resolved = bin_dir.join(&target);
-            if let Ok(meta) = std::fs::metadata(&resolved) {
+            if let Ok(real) = std::fs::canonicalize(&resolved)
+                && real.starts_with(&inside.root)
+                && let Ok(meta) = std::fs::metadata(&real)
+            {
                 use std::os::unix::fs::PermissionsExt;
                 let mut perm = meta.permissions();
                 perm.set_mode(perm.mode() | 0o111);
-                let _ = std::fs::set_permissions(&resolved, perm);
+                let _ = std::fs::set_permissions(&real, perm);
             }
         }
     }
@@ -630,10 +729,85 @@ pub fn materialize_with(plan: &InstallPlan, tarballs: &Tarballs, root: &Path, ty
 }
 
 pub fn extract_package(p: &InstallPackage, blob: &Path, dest: &Path) -> Result<(u64, Vec<(String, String)>)> {
-    extract_package_with(p, blob, dest, false)
+    let inside = Inside::new(dest)?;
+    extract_package_streaming(p, blob, dest, &inside)
 }
 
-fn extract_package_with(p: &InstallPackage, blob: &Path, dest: &Path, types_only: bool) -> Result<(u64, Vec<(String, String)>)> {
+fn open_tarball(blob: &Path) -> Result<TarReader<BufReader<Box<dyn Read>>>> {
+    let file = std::fs::File::open(blob)?;
+    let mut raw = BufReader::with_capacity(128 * 1024, file);
+    let mut magic = [0u8; 2];
+    let n = raw.read(&mut magic)?;
+    let chained = std::io::Cursor::new(magic[..n].to_vec()).chain(raw);
+    let reader: Box<dyn Read> = if n == 2 && magic == [0x1f, 0x8b] { Box::new(GzDecoder::new(chained)) } else { Box::new(chained) };
+    Ok(TarReader::new(BufReader::with_capacity(128 * 1024, reader)))
+}
+
+fn extract_package_streaming(p: &InstallPackage, blob: &Path, dest: &Path, inside: &Inside) -> Result<(u64, Vec<(String, String)>)> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut tr = open_tarball(blob).with_context(|| format!("extracting {}", p.path))?;
+    inside.dir(dest)?;
+    let mut made: HashSet<std::path::PathBuf> = HashSet::new();
+    made.insert(dest.to_path_buf());
+    let mut files: Vec<TarEntry> = Vec::new();
+    let mut package_json: Option<Vec<u8>> = None;
+    let mut total = 0u64;
+    while let Some(e) = tr.next_entry().with_context(|| format!("extracting {}", p.path))? {
+        if !matches!(e.kind, Kind::File | Kind::Dir) {
+            continue;
+        }
+        let Some((_, rest)) = e.path.split_once('/') else { continue };
+        let Some(rel) = clean_rel(rest) else { continue };
+        let path = dest.join(&rel);
+        if e.kind == Kind::Dir {
+            if made.insert(path.clone()) {
+                inside.dir(&path)?;
+            }
+            continue;
+        }
+        if let Some(parent) = path.parent()
+            && made.insert(parent.to_path_buf())
+        {
+            inside.dir(parent)?;
+        }
+        let mode = normalize_mode(e.mode, Kind::File);
+        let _ = std::fs::remove_file(&path);
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .mode(mode)
+            .open(&path)
+            .with_context(|| format!("writing {}", path.display()))?;
+        if rel == "package.json" {
+            let data = tr.read_data()?;
+            std::io::Write::write_all(&mut f, &data)?;
+            total += data.len() as u64;
+            package_json = Some(data);
+        } else {
+            total += std::io::copy(&mut tr.data(), &mut f)?;
+        }
+        files.push(TarEntry { rel, kind: Kind::File, mode, data: Vec::new() });
+    }
+    let bins = match &p.bins {
+        Some(b) => b.clone(),
+        None => package_json.as_deref().map(|d| bins_from_package_json(&p.name, d, &files)).unwrap_or_default(),
+    };
+    for (_, t) in &bins {
+        if let Some(t) = clean_rel(t) {
+            use std::os::unix::fs::PermissionsExt;
+            let path = dest.join(&t);
+            if let Ok(meta) = std::fs::symlink_metadata(&path)
+                && meta.is_file()
+            {
+                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
+            }
+        }
+    }
+    Ok((total, bins))
+}
+
+fn extract_package_with(p: &InstallPackage, blob: &Path, dest: &Path, types_only: bool, inside: &Inside) -> Result<(u64, Vec<(String, String)>)> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     let mut entries = read_tarball(blob).with_context(|| format!("extracting {}", p.path))?;
@@ -642,7 +816,7 @@ fn extract_package_with(p: &InstallPackage, blob: &Path, dest: &Path, types_only
         entries.retain(|e| e.kind == Kind::Dir || e.rel == "package.json" || TYPE_FILES.iter().any(|x| e.rel.ends_with(x)));
     }
     let execs: HashSet<String> = bins.iter().filter_map(|(_, t)| clean_rel(t)).collect();
-    std::fs::create_dir_all(dest)?;
+    inside.dir(dest)?;
     let mut made: HashSet<std::path::PathBuf> = HashSet::new();
     made.insert(dest.to_path_buf());
     let mut total = 0u64;
@@ -650,17 +824,18 @@ fn extract_package_with(p: &InstallPackage, blob: &Path, dest: &Path, types_only
         let path = dest.join(&e.rel);
         if e.kind == Kind::Dir {
             if made.insert(path.clone()) {
-                std::fs::create_dir_all(&path)?;
+                inside.dir(&path)?;
             }
             continue;
         }
         if let Some(parent) = path.parent()
             && made.insert(parent.to_path_buf())
         {
-            std::fs::create_dir_all(parent)?;
+            inside.dir(parent)?;
         }
         let mode = if execs.contains(&e.rel) { 0o755 } else { normalize_mode(e.mode, Kind::File) };
-        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(mode).open(&path)?;
+        let _ = std::fs::remove_file(&path);
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).custom_flags(libc::O_NOFOLLOW).mode(mode).open(&path)?;
         f.write_all(&e.data)?;
         total += e.data.len() as u64;
     }
@@ -698,6 +873,43 @@ mod tests {
         );
         assert_eq!(git_tarball_url("github:a/b#abcdef1").unwrap(), "https://codeload.github.com/a/b/tar.gz/abcdef1");
         assert!(git_tarball_url("git+https://gitlab.com/a/b.git#abcdef1").is_none());
+    }
+
+    #[test]
+    fn platform_from_names() {
+        let p = Platform { os: "linux".into(), cpu: "x64".into(), libc: "glibc".into() };
+        let ok = |n: &str| platform_matches_named(n, &None, &None, &None, &p);
+        for n in ["@img/sharp-linux-x64", "@img/sharp-libvips-linux-x64", "@esbuild/linux-x64", "@next/swc-linux-x64-gnu", "lightningcss-linux-x64-gnu", "sharp", "react", "linux-utils", "@rollup/rollup-linux-x64-gnu"] {
+            assert!(ok(n), "{n}");
+        }
+        for n in ["@img/sharp-darwin-arm64", "@img/sharp-libvips-linuxmusl-x64", "@img/sharp-win32-ia32", "@img/sharp-wasm32", "@img/sharp-webcontainers-wasm32", "@img/sharp-freebsd-wasm32", "@esbuild/linux-arm64", "@next/swc-linux-x64-musl", "@esbuild/android-arm"] {
+            assert!(!ok(n), "{n}");
+        }
+    }
+
+    #[test]
+    fn unsafe_paths() {
+        assert!(safe_rel_path("node_modules/a").is_ok());
+        assert!(safe_rel_path("node_modules/.pnpm/a@1/node_modules/a").is_ok());
+        assert!(safe_rel_path("node_modules/../../etc/cron.d/x").is_err());
+        assert!(safe_rel_path("/etc/passwd").is_err());
+        assert!(safe_rel_path("node_modules/a\0b").is_err());
+    }
+
+    #[test]
+    fn extraction_stays_inside_root() {
+        let base = std::env::temp_dir().join(format!("acropolis-inside-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("root");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("evil")).unwrap();
+        let inside = Inside::new(&root).unwrap();
+        assert!(inside.dir(&root.join("node_modules/a")).is_ok());
+        assert!(inside.dir(&root.join("evil/node_modules/a")).is_err());
+        assert!(!outside.join("node_modules").exists());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

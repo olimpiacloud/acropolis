@@ -1,5 +1,5 @@
 use crate::hoist::{Graph, PkgId, hoist};
-use crate::install::{BinDir, InstallOptions, InstallPackage, InstallPlan, Link, Source, parent_node_modules, relative_link};
+use crate::install::{BinDir, InstallOptions, InstallPackage, InstallPlan, Link, Source, parent_node_modules, platform_matches_named, relative_link};
 use acropolis_store::{Algo, Integrity};
 use anyhow::{Context, Result, anyhow, bail};
 use std::collections::{BTreeMap, HashMap};
@@ -140,6 +140,7 @@ impl YarnLock {
             collect(pj, &mut root_specs);
         }
         let mut queue: Vec<(String, String)> = Vec::new();
+        let mut plan_skipped: Vec<String> = Vec::new();
         for (name, range) in root_specs {
             if ws_names.contains_key(&name) {
                 continue;
@@ -165,6 +166,10 @@ impl YarnLock {
                 all.extend(entry.optional_dependencies.iter());
             }
             for (dn, dr) in all {
+                if entry.optional_dependencies.contains_key(dn) && !platform_matches_named(dn, &None, &None, &None, &opts.platform) {
+                    plan_skipped.push(format!("{dn}@{dr}"));
+                    continue;
+                }
                 let Some((_, de)) = self.lookup(dn, dr) else {
                     if entry.optional_dependencies.contains_key(dn) {
                         continue;
@@ -181,7 +186,7 @@ impl YarnLock {
             graph.deps.insert(id, deps);
         }
         let layout = hoist(&graph);
-        let mut plan = InstallPlan::default();
+        let mut plan = InstallPlan { skipped_platform: plan_skipped, ..Default::default() };
         let mut bin_dirs: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for (path, id) in &layout {
             let (name, e) = &by_id[id];

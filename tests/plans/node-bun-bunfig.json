@@ -4,7 +4,8 @@
   "framework": "none",
   "node": "lts (default)",
   "package-manager": "bun",
-  "runtime": "node server (no build step)"
+  "runtime": "bun (no node)",
+  "runtime-base": "distroless cc + bun (busybox shell)"
  },
  "image": {
   "cmd": [
@@ -19,7 +20,7 @@
    ],
    [
     "PATH",
-    "/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    "/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/busybox"
    ],
    [
     "npm_config_user_agent",
@@ -35,6 +36,7 @@
    ]
   ],
   "layers": [
+   "layer-shim",
    "layer-bun",
    "layer-deps",
    "layer-app"
@@ -47,12 +49,12 @@
  "steps": [
   {
    "action": {
-    "image": "node:lts-bookworm-slim",
+    "image": "gcr.io/distroless/cc-debian12:debug",
     "kind": "resolve-base"
    },
    "deps": [],
    "id": "base",
-   "name": "resolve node:lts-bookworm-slim"
+   "name": "resolve gcr.io/distroless/cc-debian12:debug"
   },
   {
    "action": {
@@ -63,6 +65,20 @@
    ],
    "id": "copy-base",
    "name": "copy base layers"
+  },
+  {
+   "action": {
+    "dest": "",
+    "from": {
+     "type": "node-shim"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "layer-shim",
+   "name": "layer sh and env links"
   },
   {
    "action": {
@@ -147,7 +163,8 @@
     "copy-base",
     "layer-deps",
     "layer-app",
-    "layer-bun"
+    "layer-bun",
+    "layer-shim"
    ],
    "id": "push",
    "name": "push image"

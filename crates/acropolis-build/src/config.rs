@@ -67,7 +67,19 @@ pub struct Config {
 pub fn load(dir: &Path, env: &Env) -> Result<Option<Config>> {
     let explicit = env.vars.get("ACROPOLIS_CONFIG_FILE").cloned().or_else(|| env.config("CONFIG_FILE").map(|(v, _)| v));
     let path = match &explicit {
-        Some(p) => dir.join(p),
+        Some(p) => {
+            let rel = Path::new(p);
+            if rel.is_absolute() || rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+                anyhow::bail!("config file {p:?} must be a relative path inside the app directory");
+            }
+            let path = dir.join(rel);
+            if let (Ok(real), Ok(root)) = (std::fs::canonicalize(&path), std::fs::canonicalize(dir))
+                && !real.starts_with(&root)
+            {
+                anyhow::bail!("config file {p:?} resolves outside the app directory");
+            }
+            path
+        }
         None => {
             let found = ["acropolis.json", "railpack.json"].iter().map(|f| dir.join(f)).find(|p| p.exists());
             match found {
@@ -152,7 +164,9 @@ pub fn apply(cfg: &Config, env: &mut Env) -> Result<()> {
                     env.vars.insert("ACROPOLIS_BUILD_CMD".into(), chain.join(" && "));
                 }
                 for (k, v) in &step.variables {
-                    env.vars.entry(k.clone()).or_insert_with(|| v.clone());
+                    if !crate::detect::operator_key(k) {
+                        env.vars.entry(k.clone()).or_insert_with(|| v.clone());
+                    }
                 }
             }
             other => custom_steps.push(serde_json::json!({

@@ -2,7 +2,6 @@
  "app": "node-turborepo",
  "facts": {
   "framework": "none",
-  "install-scripts": "sharp",
   "node": ">=18 (package.json engines.node)",
   "package-manager": "npm",
   "runtime": "node server (built)"
@@ -50,8 +49,7 @@
    "action": {
     "kind": "toolchain",
     "parts": [
-     "npm",
-     "headers"
+     "npm"
     ],
     "spec": ">=18",
     "tool": "node"
@@ -125,12 +123,12 @@
   },
   {
    "action": {
-    "image": "node:18-trixie-slim",
+    "image": "node:18-bookworm-slim",
     "kind": "resolve-base"
    },
    "deps": [],
    "id": "base",
-   "name": "resolve node:18-trixie-slim"
+   "name": "resolve node:18-bookworm-slim"
   },
   {
    "action": {
@@ -158,33 +156,15 @@
   },
   {
    "action": {
-    "dev": false,
-    "kind": "npm-install",
-    "manager": "npm",
-    "scripts": "all",
-    "target": "prod"
-   },
-   "deps": [
-    "npm-fetch-prod",
-    "node"
-   ],
-   "id": "install-prod",
-   "name": "install production node_modules + scripts"
-  },
-  {
-   "action": {
     "dest": "app",
     "from": {
-     "exclude": [
-      "package.json"
-     ],
-     "path": "@work/prod",
-     "type": "work-dir"
+     "dev": false,
+     "type": "node-modules"
     },
     "kind": "layer"
    },
    "deps": [
-    "install-prod"
+    "npm-fetch-prod"
    ],
    "id": "layer-deps",
    "name": "layer node_modules (production)"
@@ -223,7 +203,6 @@
   }
  ],
  "warnings": [
-  "install scripts of sharp run with network access (policy: all); set ACROPOLIS_INSTALL_SCRIPTS=none to disable",
   "the build step runs with network access like docker build; set ACROPOLIS_HERMETIC_BUILD=1 to run it without network"
  ]
 }
