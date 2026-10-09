@@ -24,7 +24,7 @@
    ],
    [
     "npm_config_user_agent",
-    "bun/ npm/? node/v{version:node|lts} linux x64"
+    "bun/{version:bun|>=1.0.0} npm/? node/v{version:node|lts} linux x64"
    ],
    [
     "npm_lifecycle_event",

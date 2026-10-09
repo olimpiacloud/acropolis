@@ -36,3 +36,17 @@ updates:
     groups:
       docker:
         patterns: ["*"]
+
+  # Benchmark fixtures: no version updates (they would change what the benchmark measures), only security
+  # updates, grouped and titled as Conventional Commits so the PR-title check passes.
+  - package-ecosystem: npm
+    directories: ["/bench/apps/*"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: "chore(bench)"
+    groups:
+      bench-security:
+        applies-to: security-updates
+        patterns: ["*"]
