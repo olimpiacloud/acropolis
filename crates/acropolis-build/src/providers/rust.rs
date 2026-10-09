@@ -141,13 +141,44 @@ const SYSTEM_SYS_CRATES: &[&str] = &[
     "librocksdb-sys",
 ];
 
+/// Cargo.lock lists optional dependencies whatever features are on: every sqlx app locks `libsqlite3-sys` (and
+/// `sqlx-mysql`) even with only `postgres`. These crates count only when a workspace manifest mentions them,
+/// and a `bundled` build compiles the library from source, which the host can do.
+const LOCKED_BY_DEFAULT: &[(&str, &[&str])] = &[("libsqlite3-sys", &["sqlite"])];
+
 fn needs_system_libs(dir: &Path) -> bool {
     let lock = std::fs::read_to_string(dir.join("Cargo.lock")).unwrap_or_default();
     let toml = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap_or_default();
-    SYSTEM_SYS_CRATES
-        .iter()
-        .any(|c| lock.contains(&format!("name = \"{c}\"")) || toml.contains(c))
-        && !toml.contains("vendored")
+    let manifests = workspace_manifests(dir);
+    SYSTEM_SYS_CRATES.iter().any(|c| {
+        let locked = lock.contains(&format!("name = \"{c}\"")) || toml.contains(c);
+        match LOCKED_BY_DEFAULT.iter().find(|(name, _)| name == c) {
+            Some((_, words)) => locked && words.iter().any(|w| manifests.contains(w)) && !manifests.contains("bundled"),
+            None => locked,
+        }
+    }) && !toml.contains("vendored")
+}
+
+/// Text of every Cargo.toml in the app up to three levels deep (workspace members), skipping build outputs.
+fn workspace_manifests(dir: &Path) -> String {
+    fn walk(dir: &Path, depth: usize, out: &mut String) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for e in entries.flatten() {
+            let Ok(ft) = e.file_type() else { continue };
+            let name = e.file_name();
+            if ft.is_file() && name == "Cargo.toml" {
+                out.push_str(&std::fs::read_to_string(e.path()).unwrap_or_default());
+            } else if ft.is_dir()
+                && depth > 0
+                && !matches!(name.to_str(), Some("target" | "vendor" | "node_modules" | ".git"))
+            {
+                walk(&e.path(), depth - 1, out);
+            }
+        }
+    }
+    let mut out = String::new();
+    walk(dir, 3, &mut out);
+    out
 }
 
 fn plan_in_image(app: &RustApp, env: &Env, dir: &Path, name: &str) -> Result<Plan> {
@@ -364,6 +395,33 @@ mod tests {
         std::fs::write(dir.join("Cargo.lock"), "version = 4\n").unwrap();
         let p = crate::plan_app(&dir, &Env::default()).unwrap();
         assert_eq!(cwds(&p), ["@app"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn locked_sqlite_needs_the_system_library_only_when_used() {
+        let dir = crate::detect::scratch_dir("rust-syslibs");
+        std::fs::create_dir_all(dir.join("api")).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "[workspace]\nmembers = [\"api\"]\n").unwrap();
+        std::fs::write(
+            dir.join("Cargo.lock"),
+            "[[package]]\nname = \"libsqlite3-sys\"\nversion = \"0.30.1\"\n",
+        )
+        .unwrap();
+        let api = |features: &str| {
+            let toml = format!(
+                "[package]\nname = \"api\"\n[dependencies]\nsqlx = {{ version = \"0.9\", features = [{features}] }}\n"
+            );
+            std::fs::write(dir.join("api/Cargo.toml"), toml).unwrap();
+        };
+        api("\"postgres\"");
+        assert!(!needs_system_libs(&dir));
+        api("\"sqlite\"");
+        assert!(needs_system_libs(&dir));
+        api("\"sqlite\", \"bundled\"");
+        assert!(!needs_system_libs(&dir));
+        std::fs::write(dir.join("Cargo.lock"), "[[package]]\nname = \"openssl-sys\"\n").unwrap();
+        assert!(needs_system_libs(&dir));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
