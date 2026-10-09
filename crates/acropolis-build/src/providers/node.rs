@@ -2262,7 +2262,10 @@ fn add_package_manager(b: &mut PlanBuilder, app: &NodeApp, env: &Env, image_env:
         }
         PackageManager::Bun => format!(
             "bun/{} npm/? node/v{{version:node|{}}} linux x64",
-            app.pm_version.clone().unwrap_or_else(|| "{version:bun|latest}".into()),
+            // Without a pinned bun, use the installed bun if the build has one, else the spec the plan would pick.
+            app.pm_version
+                .clone()
+                .unwrap_or_else(|| format!("{{version:bun|{}}}", bun_spec(app, env))),
             app.node.spec
         ),
         PackageManager::Npm => format!("npm/10 node/v{{version:node|{}}} linux x64", app.node.spec),
