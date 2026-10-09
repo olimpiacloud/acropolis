@@ -171,23 +171,24 @@ impl App {
     }
 }
 
-pub fn read_json_lenient(path: &Path) -> Result<Value> {
-    let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    match serde_json::from_str(&text) {
-        Ok(v) => Ok(v),
-        Err(_) => json5::from_str(&text).with_context(|| format!("parsing {}", path.display())),
+/// Reads `dir/rel` only if it resolves to a regular file inside `dir`: a repo symlink to
+/// /proc/self/environ or a host secret must not end up in the plan or in the image.
+pub fn read_app_file(dir: &Path, rel: &str) -> Option<String> {
+    let real = std::fs::canonicalize(dir.join(rel)).ok()?;
+    if !real.starts_with(std::fs::canonicalize(dir).ok()?) || !real.is_file() {
+        return None;
     }
+    std::fs::read_to_string(real).ok()
 }
 
-fn read_trim(path: &Path) -> Option<String> {
-    std::fs::read_to_string(path)
-        .ok()
+fn read_trim(dir: &Path, rel: &str) -> Option<String> {
+    read_app_file(dir, rel)
         .map(|s| s.lines().next().unwrap_or("").trim().to_string())
         .filter(|s| !s.is_empty())
 }
 
 fn mise_locked(dir: &Path, tool: &str) -> Option<String> {
-    let text = std::fs::read_to_string(dir.join("mise.lock")).ok()?;
+    let text = read_app_file(dir, "mise.lock")?;
     let header = format!("[[tools.{tool}]]");
     let mut in_tool = false;
     for line in text.lines() {
@@ -208,7 +209,7 @@ fn mise_locked(dir: &Path, tool: &str) -> Option<String> {
 
 pub fn tool_version(dir: &Path, tool: &str) -> Option<VersionSpec> {
     for file in ["mise.toml", ".mise.toml", "mise/config.toml", ".config/mise.toml"] {
-        if let Ok(text) = std::fs::read_to_string(dir.join(file)) {
+        if let Some(text) = read_app_file(dir, file) {
             let mut in_tools = false;
             for line in text.lines() {
                 let l = line.trim();
@@ -253,7 +254,7 @@ pub fn tool_version(dir: &Path, tool: &str) -> Option<VersionSpec> {
             }
         }
     }
-    if let Ok(text) = std::fs::read_to_string(dir.join(".tool-versions")) {
+    if let Some(text) = read_app_file(dir, ".tool-versions") {
         let names: Vec<&str> = match tool {
             "node" => vec!["node", "nodejs"],
             "go" => vec!["go", "golang"],
@@ -295,19 +296,29 @@ pub fn has_package_json(dir: &Path) -> bool {
 }
 
 pub fn read_package_json(dir: &Path) -> Result<Value> {
-    if dir.join("package.json").exists() {
-        return read_json_lenient(&dir.join("package.json"));
+    let file = ["package.json", "package.json5"]
+        .into_iter()
+        .find(|f| dir.join(f).exists())
+        .unwrap_or("package.yaml");
+    // Parser errors quote the input, so the file must be the app's own (not a symlink to /proc/self/environ).
+    let text = read_app_file(dir, file).with_context(|| {
+        format!(
+            "{file} in {} is missing or resolves outside the app directory",
+            dir.display()
+        )
+    })?;
+    if file == "package.yaml" {
+        return serde_yaml::from_str(&text).context("parsing package.yaml");
     }
-    if dir.join("package.json5").exists() {
-        return read_json_lenient(&dir.join("package.json5"));
+    match serde_json::from_str(&text) {
+        Ok(v) => Ok(v),
+        Err(_) => json5::from_str(&text).with_context(|| format!("parsing {file}")),
     }
-    let text = std::fs::read_to_string(dir.join("package.yaml")).context("reading package.yaml")?;
-    serde_yaml::from_str(&text).context("parsing package.yaml")
 }
 
 pub fn workspace_members(root: &Path, pj: &Value) -> Vec<String> {
     let mut globs: Vec<String> = Vec::new();
-    if let Ok(text) = std::fs::read_to_string(root.join("pnpm-workspace.yaml")) {
+    if let Some(text) = read_app_file(root, "pnpm-workspace.yaml") {
         let mut in_packages = false;
         for line in text.lines() {
             if !line.starts_with(' ') && !line.starts_with('-') {
@@ -326,6 +337,9 @@ pub fn workspace_members(root: &Path, pj: &Value) -> Vec<String> {
     for g in arr.into_iter().flatten().filter_map(|g| g.as_str()) {
         globs.push(g.to_string());
     }
+    let real_root = std::fs::canonicalize(root).ok();
+    let inside =
+        |p: &Path| std::fs::canonicalize(p).is_ok_and(|r| real_root.as_ref().is_some_and(|root| r.starts_with(root)));
     let mut out = Vec::new();
     for g in globs {
         let g = g.trim_start_matches("./").trim_end_matches('/');
@@ -333,15 +347,18 @@ pub fn workspace_members(root: &Path, pj: &Value) -> Vec<String> {
             continue;
         }
         if let Some(parent) = g.strip_suffix("/*").or_else(|| g.strip_suffix("/**")) {
+            if !inside(&root.join(parent)) {
+                continue;
+            }
             let Ok(rd) = std::fs::read_dir(root.join(parent)) else {
                 continue;
             };
             for e in rd.flatten() {
-                if e.path().join("package.json").exists() {
+                if e.path().join("package.json").exists() && inside(&e.path()) {
                     out.push(format!("{parent}/{}", e.file_name().to_string_lossy()));
                 }
             }
-        } else if root.join(g).join("package.json").exists() {
+        } else if root.join(g).join("package.json").exists() && inside(&root.join(g)) {
             out.push(g.to_string());
         }
     }
@@ -474,15 +491,22 @@ pub fn detect_node(dir: &Path, env: &Env) -> Result<NodeApp> {
             _ => PackageManager::Npm,
         };
         if !ver.is_empty() {
+            // The version reaches toolchain cache paths and download URLs (yarn berry).
+            if !ver
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "._-^~<>=*| ".contains(c))
+            {
+                bail!("invalid packageManager version {ver:?} in package.json");
+            }
             pm_version = Some(ver);
         }
     }
-    if pm == PackageManager::Yarn1 && pm_field.is_none() {
-        if let Ok(text) = std::fs::read_to_string(root.join("yarn.lock"))
-            && text.contains("__metadata:")
-        {
-            pm = PackageManager::YarnBerry;
-        }
+    if pm == PackageManager::Yarn1
+        && pm_field.is_none()
+        && let Ok(text) = std::fs::read_to_string(root.join("yarn.lock"))
+        && text.contains("__metadata:")
+    {
+        pm = PackageManager::YarnBerry;
     }
     let mut node = node_version(dir, &pj, env);
     if member.is_some() && node.source == "default" {
@@ -511,7 +535,7 @@ fn node_version(dir: &Path, pj: &Value, env: &Env) -> VersionSpec {
         return v;
     }
     for f in [".nvmrc", ".node-version"] {
-        if let Some(v) = read_trim(&dir.join(f)) {
+        if let Some(v) = read_trim(dir, f) {
             return VersionSpec {
                 spec: v.trim_start_matches('v').to_string(),
                 source: f.into(),
@@ -708,8 +732,77 @@ fn first_dir(dir: &Path) -> Option<String> {
 }
 
 #[cfg(test)]
+pub fn scratch_dir(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("acropolis-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_files_cannot_point_outside_the_app() {
+        let base = scratch_dir("detect-symlink");
+        let app = base.join("app");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(base.join("secret"), "TOKEN=hunter2\n").unwrap();
+        std::os::unix::fs::symlink("../secret", app.join(".nvmrc")).unwrap();
+        std::fs::write(app.join(".node-version"), "22\n").unwrap();
+        assert_eq!(read_app_file(&app, ".nvmrc"), None);
+        let v = node_version(&app, &Value::Null, &Env::default());
+        assert_eq!((v.spec.as_str(), v.source.as_str()), ("22", ".node-version"));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn package_json_symlink_out_of_the_app_is_not_parsed() {
+        let base = scratch_dir("detect-pj");
+        let app = base.join("app");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(base.join("secret"), "TOKEN=hunter2\n").unwrap();
+        std::os::unix::fs::symlink("../secret", app.join("package.json")).unwrap();
+        let err = format!("{:#}", read_package_json(&app).unwrap_err());
+        assert!(!err.contains("hunter2"), "{err}");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn package_manager_version_cannot_carry_a_path() {
+        let app = scratch_dir("detect-pm");
+        std::fs::write(
+            app.join("package.json"),
+            r#"{"packageManager":"yarn@2.4.3/../../../../2.4.3"}"#,
+        )
+        .unwrap();
+        assert!(detect_node(&app, &Env::default()).is_err());
+        std::fs::write(
+            app.join("package.json"),
+            r#"{"packageManager":"yarn@2.4.3+sha512.abc"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            detect_node(&app, &Env::default()).unwrap().pm_version.as_deref(),
+            Some("2.4.3")
+        );
+        std::fs::remove_dir_all(&app).unwrap();
+    }
+
+    #[test]
+    fn workspace_globs_stay_inside_the_root() {
+        let base = scratch_dir("detect-ws");
+        let root = base.join("repo");
+        for d in ["repo/packages/a", "outside/b"] {
+            std::fs::create_dir_all(base.join(d)).unwrap();
+            std::fs::write(base.join(d).join("package.json"), "{}").unwrap();
+        }
+        std::os::unix::fs::symlink("../outside", root.join("linked")).unwrap();
+        let pj = serde_json::json!({ "workspaces": ["packages/*", "../outside/*", "linked/*", "../outside/b"] });
+        assert_eq!(workspace_members(&root, &pj), vec!["packages/a".to_string()]);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
 
     #[test]
     fn operator_knobs_come_only_from_the_process() {

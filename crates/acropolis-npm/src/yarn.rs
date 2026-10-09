@@ -44,11 +44,6 @@ fn split_kv(line: &str) -> (String, String) {
     }
 }
 
-pub fn name_of_spec(spec: &str) -> (&str, &str) {
-    let at = spec[1..].find('@').map(|i| i + 1).unwrap_or(spec.len());
-    (&spec[..at], spec.get(at + 1..).unwrap_or(""))
-}
-
 impl YarnLock {
     pub fn parse(text: &str) -> Result<Self> {
         if text.contains("__metadata:") {
@@ -271,9 +266,12 @@ pub fn expand_workspaces(app_dir: &Path, pj: &serde_json::Value) -> Vec<(String,
 
 pub fn expand_globs(app_dir: &Path, globs: &[String]) -> Vec<(String, serde_json::Value)> {
     let mut out = Vec::new();
+    let Ok(inside) = crate::install::Inside::new(app_dir) else {
+        return out;
+    };
     for g in globs {
         let g = g.trim_start_matches("./").trim_end_matches('/');
-        if g.starts_with('!') {
+        if g.starts_with('!') || g.starts_with('/') || g.split('/').any(|c| c == "..") {
             continue;
         }
         let dirs: Vec<String> = if let Some(base) = g.strip_suffix("/*").or_else(|| g.strip_suffix("/**")) {
@@ -291,7 +289,11 @@ pub fn expand_globs(app_dir: &Path, globs: &[String]) -> Vec<(String, serde_json
             vec![g.to_string()]
         };
         for d in dirs {
-            if let Ok(text) = std::fs::read(app_dir.join(&d).join("package.json"))
+            let file = app_dir.join(&d).join("package.json");
+            // A workspace symlinked out of the repo must not read host files.
+            if inside.contains(&file)
+                && file.is_file()
+                && let Ok(text) = std::fs::read(&file)
                 && let Ok(v) = serde_json::from_slice::<serde_json::Value>(&text)
             {
                 out.push((d, v));
@@ -327,5 +329,29 @@ mod tests {
             .unwrap();
         let paths: Vec<&str> = plan.packages.iter().map(|p| p.path.as_str()).collect();
         assert_eq!(paths, vec!["node_modules/@types/node", "node_modules/undici-types"]);
+    }
+
+    #[test]
+    fn workspace_globs_stay_in_app() {
+        let base = std::env::temp_dir().join(format!("acropolis-ws-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("app/packages/a")).unwrap();
+        std::fs::create_dir_all(base.join("other")).unwrap();
+        std::fs::write(base.join("app/packages/a/package.json"), r#"{"name":"a"}"#).unwrap();
+        std::fs::write(base.join("other/package.json"), r#"{"name":"other"}"#).unwrap();
+        let app = base.join("app");
+        std::os::unix::fs::symlink("../other", app.join("linked")).unwrap();
+        let found = expand_globs(
+            &app,
+            &[
+                "packages/*".into(),
+                "../other".into(),
+                "linked".into(),
+                base.join("other").to_string_lossy().into_owned(),
+            ],
+        );
+        let dirs: Vec<&str> = found.iter().map(|(d, _)| d.as_str()).collect();
+        assert_eq!(dirs, vec!["packages/a"]);
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

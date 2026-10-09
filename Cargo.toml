@@ -7,7 +7,14 @@ exclude = ["bench", "tests"]
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0 OR MIT"
-rust-version = "1.90"
+rust-version = "1.96"
+authors = ["Agustin Garcia <81272885+agusgarcia3007@users.noreply.github.com>"]
+repository = "https://github.com/olimpiacloud/acropolis"
+homepage = "https://github.com/olimpiacloud/acropolis"
+publish = false
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
 
 [workspace.dependencies]
 acropolis-events = { path = "crates/acropolis-events" }
@@ -28,7 +35,7 @@ base64 = "0.22"
 hex = "0.4"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 zstd = { version = "0.13", features = ["zstdmt"] }
-liblzma = { version = "0.4", features = ["parallel"] }
+liblzma = "0.4"
 clap = { version = "4", features = ["derive", "env"] }
 semver = "1"
 json5 = "0.4"
@@ -36,12 +43,11 @@ tempfile = "3"
 rayon = "1"
 libc = "0.2"
 url = "2"
-memchr = "2"
 
 [profile.release]
 lto = "thin"
 codegen-units = 16
-debug = "line-tables-only"
+strip = "symbols"
 panic = "abort"
 
 [profile.fast]
@@ -49,7 +55,7 @@ inherits = "release"
 lto = false
 codegen-units = 256
 incremental = true
-debug = false
+strip = "none"
 
 [profile.dev.package."*"]
 opt-level = 2

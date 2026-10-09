@@ -76,13 +76,7 @@ pub fn load(dir: &Path, env: &Env) -> Result<Option<Config>> {
             if rel.is_absolute() || rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
                 anyhow::bail!("config file {p:?} must be a relative path inside the app directory");
             }
-            let path = dir.join(rel);
-            if let (Ok(real), Ok(root)) = (std::fs::canonicalize(&path), std::fs::canonicalize(dir))
-                && !real.starts_with(&root)
-            {
-                anyhow::bail!("config file {p:?} resolves outside the app directory");
-            }
-            path
+            dir.join(rel)
         }
         None => {
             let found = ["acropolis.json", "railpack.json"]
@@ -95,6 +89,11 @@ pub fn load(dir: &Path, env: &Env) -> Result<Option<Config>> {
             }
         }
     };
+    if let (Ok(real), Ok(root)) = (std::fs::canonicalize(&path), std::fs::canonicalize(dir))
+        && !real.starts_with(&root)
+    {
+        anyhow::bail!("config file {} resolves outside the app directory", path.display());
+    }
     let text = std::fs::read_to_string(&path).with_context(|| format!("reading config {}", path.display()))?;
     let value: Value = json5::from_str(&text).with_context(|| format!("{} is not valid JSON", path.display()))?;
     let cfg: Config = serde_json::from_value(value)
@@ -236,4 +235,21 @@ pub fn apply(cfg: &Config, env: &mut Env) -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_symlinked_out_of_the_app_is_not_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = tmp.path().join("app");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(tmp.path().join("environ"), "REGISTRY_PASSWORD=hunter2").unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("environ"), app.join("railpack.json")).unwrap();
+        let err = load(&app, &Env::default()).unwrap_err();
+        assert!(!format!("{err:#}").contains("hunter2"), "{err:#}");
+        assert_eq!(crate::errors::classify(&err), crate::errors::ErrorClass::Config);
+    }
 }

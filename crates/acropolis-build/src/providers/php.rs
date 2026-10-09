@@ -52,7 +52,7 @@ const START: &str = "#!/bin/sh\nset -e\nif [ \"$IS_LARAVEL\" = \"true\" ]; then\
 pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     let mut b = PlanBuilder::new(name, "php");
     let v = version(dir, env);
-    let image = format!("dunglas/frankenphp:php{v}-trixie");
+    let image = format!("dunglas/frankenphp:php{}-trixie", super::tag_part("PHP", &v)?);
     let cj = composer_json(dir);
     let laravel = dir.join("artisan").exists() && cj.get("require").and_then(|r| r.get("laravel/framework")).is_some();
     b.fact("php", v.clone());
@@ -271,7 +271,12 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
             from: LayerFrom::Upper {
                 step: "php-setup".into(),
                 include: vec![],
-                exclude: vec!["var/cache".into(), "var/log".into(), "root".into()],
+                exclude: vec![
+                    "var/cache".into(),
+                    "var/log".into(),
+                    "var/lib/apt/lists".into(),
+                    "root".into(),
+                ],
             },
         },
         &["php-setup"],

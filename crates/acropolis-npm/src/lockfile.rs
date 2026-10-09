@@ -130,6 +130,11 @@ pub fn package_name_from_path(path: &str) -> &str {
     &path[idx..]
 }
 
+/// Byte index of the `@` between a package name and its version; a leading `@` starts a scope.
+pub fn version_sep(spec: &str) -> Option<usize> {
+    spec.char_indices().skip(1).find(|&(_, c)| c == '@').map(|(i, _)| i)
+}
+
 pub fn bins_of(name: &str, bin: &Option<Value>) -> Vec<(String, String)> {
     match bin {
         Some(Value::String(s)) => {

@@ -49,8 +49,8 @@ enum Command {
         hermetic: String,
         #[arg(long)]
         keep_work: bool,
-        #[arg(long, default_value_t = 64)]
-        concurrency: usize,
+        #[arg(long, default_value = "64")]
+        concurrency: std::num::NonZeroUsize,
         #[arg(long)]
         config: Option<String>,
         #[arg(long, value_name = "FILE")]
@@ -77,7 +77,7 @@ enum Command {
         #[arg(value_parser = ["export", "import"])]
         action: String,
         file: PathBuf,
-        #[arg(long, env = "ACROPOLIS_CACHE_KEY")]
+        #[arg(long, env = "ACROPOLIS_CACHE_KEY", value_parser = clap::builder::NonEmptyStringValueParser::new())]
         key: String,
     },
     Prewarm {
@@ -88,6 +88,7 @@ enum Command {
         )]
         tools: Vec<String>,
     },
+    #[command(hide = true)]
     Bench {
         #[arg(long, value_delimiter = ',', default_value = "express-api,go-api")]
         apps: Vec<String>,
@@ -122,9 +123,11 @@ enum Command {
         #[arg(long)]
         apps_file: Option<PathBuf>,
     },
+    #[command(hide = true)]
     Report {
         results: Vec<PathBuf>,
     },
+    #[command(hide = true)]
     E2e {
         #[arg(long)]
         examples: PathBuf,
@@ -197,6 +200,7 @@ fn parse_env(pairs: &[String]) -> Result<Env> {
     for p in pairs {
         let (k, v) = p
             .split_once('=')
+            .filter(|(k, _)| !k.is_empty())
             .with_context(|| format!("invalid env {p:?}, expected KEY=VALUE"))?;
         env.vars.insert(k.to_string(), v.to_string());
     }
@@ -205,9 +209,12 @@ fn parse_env(pairs: &[String]) -> Result<Env> {
 
 fn mirrors(list: &[String]) -> Result<Vec<(String, String)>> {
     list.iter()
+        .map(|m| m.trim())
         .filter(|m| !m.is_empty())
         .map(|m| {
             m.split_once('=')
+                .map(|(a, b)| (a.trim(), b.trim()))
+                .filter(|(a, b)| !a.is_empty() && !b.is_empty())
                 .map(|(a, b)| (a.to_string(), b.to_string()))
                 .with_context(|| format!("invalid mirror {m:?}, expected REGISTRY=MIRROR"))
         })
@@ -215,149 +222,155 @@ fn mirrors(list: &[String]) -> Result<Vec<(String, String)>> {
 }
 
 fn default_home() -> PathBuf {
-    if let Ok(x) = std::env::var("XDG_CACHE_HOME") {
-        return PathBuf::from(x).join("acropolis");
+    // Empty or relative values are invalid per the XDG spec; using them would put the store under the current directory.
+    let abs = |k: &str| std::env::var_os(k).map(PathBuf::from).filter(|p| p.is_absolute());
+    match abs("XDG_CACHE_HOME") {
+        Some(x) => x.join("acropolis"),
+        None => abs("HOME")
+            .unwrap_or_else(|| "/tmp".into())
+            .join(".cache")
+            .join("acropolis"),
     }
-    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()))
-        .join(".cache")
-        .join("acropolis")
+}
+
+fn dev_command(cli: &Cli) -> Option<Result<i32>> {
+    let res = match &cli.cmd {
+        Command::Bench {
+            apps,
+            tools,
+            runs,
+            cpus,
+            memory,
+            mirror,
+            out,
+            repo,
+            railpack,
+            railpack_frontend,
+            compression,
+            no_drop_caches,
+            scenario,
+            cache,
+            fresh,
+            apps_file,
+        } => (|| {
+            let repo = std::fs::canonicalize(repo).with_context(|| format!("repo {}", repo.display()))?;
+            let cache = Some(
+                cache
+                    .clone()
+                    .unwrap_or_else(|| repo.join("bench/results/competitors.jsonl")),
+            );
+            let out = out.clone().unwrap_or_else(|| {
+                repo.join("bench/results")
+                    .join(format!("run-{}.jsonl", std::process::id()))
+            });
+            let cfg = bench::BenchConfig {
+                repo,
+                apps: apps.clone(),
+                tools: tools.clone(),
+                runs: *runs,
+                cpus: cpus.clone(),
+                memory: memory.clone(),
+                mirror: mirror == "on",
+                out: out.clone(),
+                acropolis_bin: std::env::current_exe()?,
+                railpack_bin: railpack.clone(),
+                railpack_frontend: railpack_frontend.clone(),
+                compression: compression.clone(),
+                drop_caches: !no_drop_caches,
+                scenario: scenario.clone(),
+                cache,
+                fresh: *fresh,
+                apps_file: apps_file.clone(),
+            };
+            let results = bench::run(cfg)?;
+            println!("{}", bench::summarize(&results));
+            eprintln!("results: {}", out.display());
+            Ok(0)
+        })(),
+        Command::E2e {
+            examples,
+            filter,
+            jobs,
+            registry,
+            out,
+            isolated,
+            failed_from,
+        } => (|| {
+            let only = failed_from.as_deref().map(e2e::failed_cases).transpose()?;
+            let out = out
+                .clone()
+                .unwrap_or_else(|| PathBuf::from(format!("e2e-{}.jsonl", std::process::id())));
+            let cfg = e2e::E2eConfig {
+                examples: std::fs::canonicalize(examples)
+                    .with_context(|| format!("examples {}", examples.display()))?,
+                filter: filter.clone(),
+                jobs: *jobs,
+                acropolis_bin: std::env::current_exe()?,
+                registry: registry.clone(),
+                out: out.clone(),
+                home: cli
+                    .home
+                    .clone()
+                    .unwrap_or_else(|| std::env::temp_dir().join("acropolis-e2e-home")),
+                isolated: *isolated,
+                only,
+            };
+            let results = e2e::run(cfg)?;
+            println!("{}", e2e::summary(&results));
+            eprintln!("results: {}", out.display());
+            Ok(if results.iter().any(|r| r.status == "fail") {
+                1
+            } else {
+                0
+            })
+        })(),
+        Command::Report { results } => (|| {
+            let mut all = Vec::new();
+            for p in results {
+                let text = std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?;
+                let mut rs = text
+                    .lines()
+                    .filter(|l| !l.trim().is_empty())
+                    .map(serde_json::from_str::<bench::RunResult>)
+                    .collect::<Result<Vec<_>, _>>()
+                    .with_context(|| format!("parsing {}", p.display()))?;
+                bench::backfill(&mut rs, &p.with_extension("logs"));
+                for r in &mut rs {
+                    if r.tool == "acro" || r.tool.starts_with("acro@") {
+                        r.tool = r.tool.replacen("acro", "acropolis", 1);
+                    }
+                }
+                all.extend(rs);
+            }
+            println!("{}", bench::summarize(&all));
+            Ok(0)
+        })(),
+        _ => return None,
+    };
+    Some(res)
+}
+
+fn fail(class: acropolis_build::errors::ErrorClass, error: String) -> i32 {
+    if acropolis_events::mode() != acropolis_events::Mode::Json {
+        eprintln!("error: {error}");
+        eprintln!("error class: {} (exit {})", class.name(), class.exit_code());
+    }
+    acropolis_events::emit(acropolis_events::Event::BuildFailed {
+        ms: acropolis_events::elapsed_ms(),
+        class: class.name().to_string(),
+        exit_code: class.exit_code(),
+        error,
+    });
+    class.exit_code()
 }
 
 fn main() {
     let cli = Cli::parse();
-    if let Command::Bench {
-        apps,
-        tools,
-        runs,
-        cpus,
-        memory,
-        mirror,
-        out,
-        repo,
-        railpack,
-        railpack_frontend,
-        compression,
-        no_drop_caches,
-        scenario,
-        cache,
-        fresh,
-        apps_file,
-    } = &cli.cmd
-    {
-        let repo = std::fs::canonicalize(repo).expect("repo path");
-        let cache = Some(
-            cache
-                .clone()
-                .unwrap_or_else(|| repo.join("bench/results/competitors.jsonl")),
-        );
-        let out = out.clone().unwrap_or_else(|| {
-            repo.join("bench/results")
-                .join(format!("run-{}.jsonl", std::process::id()))
-        });
-        let cfg = bench::BenchConfig {
-            repo,
-            apps: apps.clone(),
-            tools: tools.clone(),
-            runs: *runs,
-            cpus: cpus.clone(),
-            memory: memory.clone(),
-            mirror: mirror == "on",
-            out: out.clone(),
-            acropolis_bin: std::env::current_exe().expect("current exe"),
-            railpack_bin: railpack.clone(),
-            railpack_frontend: railpack_frontend.clone(),
-            compression: compression.clone(),
-            drop_caches: !no_drop_caches,
-            scenario: scenario.clone(),
-            cache,
-            fresh: *fresh,
-            apps_file: apps_file.clone(),
-        };
-        match bench::run(cfg) {
-            Ok(results) => {
-                println!("{}", bench::summarize(&results));
-                eprintln!("results: {}", out.display());
-                std::process::exit(0);
-            }
-            Err(e) => {
-                eprintln!("error: {e:#}");
-                std::process::exit(1);
-            }
-        }
-    }
-    if let Command::E2e {
-        examples,
-        filter,
-        jobs,
-        registry,
-        out,
-        isolated,
-        failed_from,
-    } = &cli.cmd
-    {
-        let only = match failed_from {
-            Some(p) => match e2e::failed_cases(p) {
-                Ok(set) => Some(set),
-                Err(e) => {
-                    eprintln!("error: {e:#}");
-                    std::process::exit(2);
-                }
-            },
-            None => None,
-        };
-        let out = out
-            .clone()
-            .unwrap_or_else(|| PathBuf::from(format!("e2e-{}.jsonl", std::process::id())));
-        let home = cli
-            .home
-            .clone()
-            .unwrap_or_else(|| std::env::temp_dir().join("acropolis-e2e-home"));
-        let cfg = e2e::E2eConfig {
-            examples: std::fs::canonicalize(examples).expect("examples dir"),
-            filter: filter.clone(),
-            jobs: *jobs,
-            acropolis_bin: std::env::current_exe().expect("current exe"),
-            registry: registry.clone(),
-            out: out.clone(),
-            home,
-            isolated: *isolated,
-            only,
-        };
-        match e2e::run(cfg) {
-            Ok(results) => {
-                println!("{}", e2e::summary(&results));
-                eprintln!("results: {}", out.display());
-                std::process::exit(if results.iter().any(|r| r.status == "fail") {
-                    1
-                } else {
-                    0
-                });
-            }
-            Err(e) => {
-                eprintln!("error: {e:#}");
-                std::process::exit(2);
-            }
-        }
-    }
-    if let Command::Report { results } = &cli.cmd {
-        let mut all = Vec::new();
-        for p in results {
-            let text = std::fs::read_to_string(p).expect("results file");
-            let mut rs: Vec<bench::RunResult> = text
-                .lines()
-                .filter(|l| !l.trim().is_empty())
-                .map(|line| serde_json::from_str::<bench::RunResult>(line).expect("result line"))
-                .collect();
-            bench::backfill(&mut rs, &p.with_extension("logs"));
-            for r in &mut rs {
-                if r.tool == "acro" || r.tool.starts_with("acro@") {
-                    r.tool = r.tool.replacen("acro", "acropolis", 1);
-                }
-            }
-            all.extend(rs);
-        }
-        println!("{}", bench::summarize(&all));
-        std::process::exit(0);
+    if let Some(res) = dev_command(&cli) {
+        std::process::exit(res.unwrap_or_else(|e| {
+            eprintln!("error: {e:#}");
+            2
+        }));
     }
     if let Ok(id) = std::env::var("ACROPOLIS_BUILD_ID")
         && !id.trim().is_empty()
@@ -369,26 +382,24 @@ fn main() {
         "quiet" => acropolis_events::Mode::Quiet,
         _ => acropolis_events::Mode::Human,
     });
+    // With panic = "abort" a panic would otherwise end in SIGABRT (not the documented exit 70) and, in json mode, a non-JSON stderr line.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if acropolis_events::mode() == acropolis_events::Mode::Human {
+            default_hook(info);
+        }
+        std::process::exit(fail(
+            acropolis_build::errors::ErrorClass::Internal,
+            format!("panic: {info}"),
+        ));
+    }));
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .expect("tokio runtime");
     let code = match rt.block_on(run(cli)) {
         Ok(()) => 0,
-        Err(e) => {
-            let class = acropolis_build::errors::classify(&e);
-            acropolis_events::emit(acropolis_events::Event::BuildFailed {
-                ms: acropolis_events::elapsed_ms(),
-                class: class.name().to_string(),
-                exit_code: class.exit_code(),
-                error: format!("{e:#}"),
-            });
-            if acropolis_events::mode() != acropolis_events::Mode::Json {
-                eprintln!("error: {e:#}");
-                eprintln!("error class: {} (exit {})", class.name(), class.exit_code());
-            }
-            class.exit_code()
-        }
+        Err(e) => fail(acropolis_build::errors::classify(&e), format!("{e:#}")),
     };
     std::process::exit(code);
 }
@@ -424,60 +435,64 @@ async fn run(cli: Cli) -> Result<()> {
             if let Some(c) = config {
                 env.vars.insert("ACROPOLIS_CONFIG_FILE".into(), c);
             }
-            let compression =
-                Compression::parse(&compression).with_context(|| format!("unknown compression {compression}"))?;
-            let target = tag.as_deref().map(Reference::parse).transpose()?;
-            let abs_home = std::path::absolute(&home)?;
-            let readonly = vec![
-                abs_home.join("store"),
-                abs_home.join("toolchains"),
-                std::env::var_os("ACROPOLIS_ROOTFS")
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| abs_home.join("rootfs")),
-            ];
-            let exec: Arc<dyn Executor> = if hermetic == "off" {
-                Arc::new(HostExecutor {
-                    isolation: Isolation::None,
-                    readonly: Vec::new(),
-                })
-            } else {
-                let e = HostExecutor::detect();
-                if e.isolation == Isolation::None {
-                    bail!(
-                        "cannot create network namespaces for hermetic build steps; rerun with --hermetic=off to build without isolation"
-                    );
+            let built = async {
+                let compression = Compression::parse(&compression).with_context(|| format!("unknown compression {compression}"))?;
+                if matches!(compression, Compression::Gzip) && level > 9 {
+                    bail!("invalid --level {level} for gzip, expected 1-9");
                 }
-                Arc::new(e.with_readonly(readonly))
-            };
-            let opts = BuildOptions {
-                app_dir: std::fs::canonicalize(&dir).with_context(|| format!("{} not found", dir.display()))?,
-                home,
-                target,
-                env: env.clone(),
-                layer: LayerOptions {
-                    compression,
-                    level,
-                    threads: 0,
-                },
-                mirrors,
-                concurrency,
-                keep_work,
-                platform: acropolis_oci::image::host_platform(),
-                oci_out: oci.map(|p| std::path::absolute(&p)).transpose()?,
-            };
-            let built = acropolis_build::build(opts, exec).await;
-            if let Some(path) = &info {
-                let plan = acropolis_build::plan_app(&std::fs::canonicalize(&dir)?, &env).ok();
-                std::fs::write(
-                    path,
+                let target = tag.as_deref().map(Reference::parse).transpose()?;
+                let abs_home = std::path::absolute(&home)?;
+                let readonly = vec![
+                    abs_home.join("store"),
+                    abs_home.join("toolchains"),
+                    std::env::var_os("ACROPOLIS_ROOTFS").map(PathBuf::from).unwrap_or_else(|| abs_home.join("rootfs")),
+                ];
+                let exec: Arc<dyn Executor> = if hermetic == "off" {
+                    Arc::new(HostExecutor { isolation: Isolation::None, readonly: Vec::new() })
+                } else {
+                    let e = HostExecutor::detect();
+                    if e.isolation == Isolation::None {
+                        bail!("cannot create network namespaces for hermetic build steps; rerun with --hermetic=off to build without isolation");
+                    }
+                    Arc::new(e.with_readonly(readonly))
+                };
+                let opts = BuildOptions {
+                    app_dir: std::fs::canonicalize(&dir).with_context(|| format!("{} not found", dir.display()))?,
+                    home,
+                    target,
+                    env: env.clone(),
+                    layer: LayerOptions { compression, level, threads: 0 },
+                    mirrors,
+                    concurrency: concurrency.get(),
+                    keep_work,
+                    platform: acropolis_oci::image::host_platform(),
+                    oci_out: oci.map(|p| std::path::absolute(&p)).transpose()?,
+                };
+                acropolis_build::build(opts, exec).await
+            }
+            .await;
+            let written = match &info {
+                Some(path) => {
+                    let replanned = if built.is_err() {
+                        std::fs::canonicalize(&dir)
+                            .ok()
+                            .and_then(|d| acropolis_build::plan_app(&d, &env).ok())
+                    } else {
+                        None
+                    };
+                    let plan = built.as_ref().ok().map(|(p, _)| p).or(replanned.as_ref());
                     serde_json::to_vec_pretty(&build_info(
-                        plan.as_ref(),
+                        plan,
                         built.as_ref().ok().map(|(_, r)| r),
                         built.as_ref().err(),
-                    ))?,
-                )?;
-            }
+                    ))
+                    .map_err(anyhow::Error::from)
+                    .and_then(|json| std::fs::write(path, json).with_context(|| format!("writing {}", path.display())))
+                }
+                None => Ok(()),
+            };
             let (_plan, res) = built?;
+            written?;
             acropolis_events::emit(acropolis_events::Event::Stats(acropolis_events::stats()));
             acropolis_events::emit(acropolis_events::Event::BuildFinished {
                 ms: acropolis_events::elapsed_ms(),
@@ -591,7 +606,10 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Command::Inspect { reference } => {
             let r = Reference::parse(&reference)?;
-            let client = reqwest::Client::builder().build()?;
+            let client = reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .read_timeout(std::time::Duration::from_secs(60))
+                .build()?;
             let reg = acropolis_build::run::make_registry(client, &mirrors);
             let img = reg.resolve(&r, &acropolis_oci::image::host_platform()).await?;
             let out = serde_json::json!({
@@ -603,5 +621,43 @@ async fn run(cli: Cli) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&out)?);
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_cache_key_rejected() {
+        assert!(Cli::try_parse_from(["acropolis", "cache", "export", "out.tar", "--key", ""]).is_err());
+        assert!(Cli::try_parse_from(["acropolis", "cache", "export", "out.tar", "--key", "k"]).is_ok());
+    }
+
+    #[test]
+    fn env_pairs() {
+        let env = parse_env(&["A=b=c".into(), "EMPTY=".into()]).unwrap();
+        assert_eq!(env.vars["A"], "b=c");
+        assert_eq!(env.vars["EMPTY"], "");
+        assert!(parse_env(&["=x".into()]).is_err());
+        assert!(parse_env(&["NOVALUE".into()]).is_err());
+    }
+
+    #[test]
+    fn mirror_list() {
+        assert_eq!(
+            mirrors(&[
+                "docker.io=mirror.gcr.io".into(),
+                " ghcr.io = m.example ".into(),
+                "".into()
+            ])
+            .unwrap(),
+            [
+                ("docker.io".to_string(), "mirror.gcr.io".to_string()),
+                ("ghcr.io".into(), "m.example".into())
+            ]
+        );
+        assert!(mirrors(&["docker.io=".into()]).is_err());
+        assert!(mirrors(&["=mirror.gcr.io".into()]).is_err());
     }
 }

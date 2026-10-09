@@ -2,6 +2,7 @@ pub mod rootfs;
 use anyhow::{Result, bail};
 use futures::future::BoxFuture;
 use std::collections::{BTreeMap, VecDeque};
+use std::ffi::{CStr, CString};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -185,11 +186,20 @@ impl HostExecutor {
     }
 }
 
-pub(crate) const DROP_CAPS: &[u32] = &[
-    9, 12, 16, 17, 18, 19, 20, 21, 22, 25, 27, 29, 30, 31, 32, 33, 34, 37, 38, 39,
-];
+/// CHOWN, DAC_OVERRIDE, FOWNER, FSETID, KILL, SETGID, SETUID, NET_BIND_SERVICE: what package
+/// managers and build scripts use as root. Every other capability is removed from all sets,
+/// including ones the kernel adds later.
+const KEEP_CAPS: &[u32] = &[0, 1, 3, 4, 5, 6, 7, 10];
 
-pub(crate) unsafe fn drop_dangerous_caps() -> std::io::Result<()> {
+pub(crate) fn check(rc: libc::c_int) -> std::io::Result<()> {
+    if rc != 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) unsafe fn drop_caps() -> std::io::Result<()> {
     #[repr(C)]
     struct Header {
         version: u32,
@@ -202,9 +212,16 @@ pub(crate) unsafe fn drop_dangerous_caps() -> std::io::Result<()> {
         permitted: u32,
         inheritable: u32,
     }
+    let keep = KEEP_CAPS.iter().fold(0u64, |m, &c| m | (1 << c));
     unsafe {
-        for &c in DROP_CAPS {
-            libc::prctl(libc::PR_CAPBSET_DROP, c as libc::c_ulong, 0, 0, 0);
+        for c in 0..64u32 {
+            if keep & (1 << c) == 0 && libc::prctl(libc::PR_CAPBSET_DROP, c as libc::c_ulong, 0, 0, 0) != 0 {
+                let e = std::io::Error::last_os_error();
+                if e.raw_os_error() == Some(libc::EINVAL) {
+                    break;
+                }
+                return Err(e);
+            }
         }
         libc::prctl(
             libc::PR_CAP_AMBIENT,
@@ -225,81 +242,231 @@ pub(crate) unsafe fn drop_dangerous_caps() -> std::io::Result<()> {
         if libc::syscall(libc::SYS_capget, &mut hdr as *mut Header, data.as_mut_ptr()) != 0 {
             return Err(std::io::Error::last_os_error());
         }
-        for &c in DROP_CAPS {
-            let (i, bit) = ((c / 32) as usize, 1u32 << (c % 32));
-            data[i].effective &= !bit;
-            data[i].permitted &= !bit;
-            data[i].inheritable &= !bit;
+        for (d, mask) in data.iter_mut().zip([keep as u32, (keep >> 32) as u32]) {
+            d.effective &= mask;
+            d.permitted &= mask;
+            d.inheritable &= mask;
         }
         if libc::syscall(libc::SYS_capset, &mut hdr as *mut Header, data.as_ptr()) != 0 {
             return Err(std::io::Error::last_os_error());
         }
-        libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+        check(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0))
+    }
+}
+
+#[repr(C)]
+struct MountAttr {
+    attr_set: u64,
+    attr_clr: u64,
+    propagation: u64,
+    userns_fd: u64,
+}
+
+const MOUNT_ATTR_RDONLY: u64 = 1;
+
+/// Bind-mounts `src` on `target` read-only, submounts included: a plain read-only remount only
+/// covers the top mount, which left e.g. /sys/fs/cgroup writable under a read-only /sys.
+pub(crate) unsafe fn bind_readonly(src: &CStr, target: &CStr) -> std::io::Result<()> {
+    unsafe {
+        check(libc::mount(
+            src.as_ptr(),
+            target.as_ptr(),
+            std::ptr::null(),
+            libc::MS_BIND | libc::MS_REC,
+            std::ptr::null(),
+        ))?;
+        let attr = MountAttr {
+            attr_set: MOUNT_ATTR_RDONLY,
+            attr_clr: 0,
+            propagation: 0,
+            userns_fd: 0,
+        };
+        if libc::syscall(
+            libc::SYS_mount_setattr,
+            libc::AT_FDCWD,
+            target.as_ptr(),
+            libc::AT_RECURSIVE as libc::c_uint,
+            &attr as *const MountAttr,
+            std::mem::size_of::<MountAttr>(),
+        ) == 0
+        {
+            return Ok(());
+        }
+        let e = std::io::Error::last_os_error();
+        if e.raw_os_error() != Some(libc::ENOSYS) {
+            return Err(e);
+        }
+        check(libc::mount(
+            std::ptr::null(),
+            target.as_ptr(),
+            std::ptr::null(),
+            libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY,
+            std::ptr::null(),
+        ))
+    }
+}
+
+/// Docker's read-only /proc paths: root can write sysctls without any capability, and
+/// kernel.core_pattern or kernel.modprobe run a helper as host root.
+const PROC_READONLY: &[&CStr] = &[
+    c"/proc/sys",
+    c"/proc/sysrq-trigger",
+    c"/proc/irq",
+    c"/proc/bus",
+    c"/proc/fs",
+];
+const DEV_NODES: &[(&CStr, u32, u32)] = &[
+    (c"/dev/null", 1, 3),
+    (c"/dev/zero", 1, 5),
+    (c"/dev/full", 1, 7),
+    (c"/dev/random", 1, 8),
+    (c"/dev/urandom", 1, 9),
+    (c"/dev/tty", 5, 0),
+];
+const DEV_LINKS: &[(&CStr, &CStr)] = &[
+    (c"/proc/self/fd", c"/dev/fd"),
+    (c"/proc/self/fd/0", c"/dev/stdin"),
+    (c"/proc/self/fd/1", c"/dev/stdout"),
+    (c"/proc/self/fd/2", c"/dev/stderr"),
+    (c"pts/ptmx", c"/dev/ptmx"),
+];
+
+/// Mounts, on the current root, a /proc of the step's PID namespace and a /dev with only the
+/// standard character devices (the host /dev of a privileged container has its disks).
+pub(crate) unsafe fn mount_proc_and_dev() -> std::io::Result<()> {
+    unsafe {
+        check(libc::mount(
+            c"proc".as_ptr(),
+            c"/proc".as_ptr(),
+            c"proc".as_ptr(),
+            libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
+            std::ptr::null(),
+        ))?;
+        for p in PROC_READONLY {
+            match bind_readonly(p, p) {
+                Err(e) if e.raw_os_error() == Some(libc::ENOENT) => {}
+                r => r?,
+            }
+        }
+        check(libc::mount(
+            c"tmpfs".as_ptr(),
+            c"/dev".as_ptr(),
+            c"tmpfs".as_ptr(),
+            libc::MS_NOSUID | libc::MS_NOEXEC,
+            c"mode=755,size=65536k".as_ptr() as *const libc::c_void,
+        ))?;
+        for &(path, major, minor) in DEV_NODES {
+            check(libc::mknod(
+                path.as_ptr(),
+                libc::S_IFCHR | 0o666,
+                libc::makedev(major, minor),
+            ))?;
+            check(libc::chmod(path.as_ptr(), 0o666))?;
+        }
+        for &(target, link) in DEV_LINKS {
+            libc::symlink(target.as_ptr(), link.as_ptr());
+        }
+        if libc::mkdir(c"/dev/shm".as_ptr(), 0o1777) == 0 {
+            let _ = libc::mount(
+                c"tmpfs".as_ptr(),
+                c"/dev/shm".as_ptr(),
+                c"tmpfs".as_ptr(),
+                libc::MS_NOSUID | libc::MS_NODEV,
+                c"mode=1777".as_ptr() as *const libc::c_void,
+            );
+        }
     }
     Ok(())
 }
 
-pub(crate) unsafe fn bind_readonly(path: &std::ffi::CStr) -> std::io::Result<()> {
+/// After `unshare(CLONE_NEWPID)` the caller is still outside the new namespace: fork its PID 1.
+/// The calling copy only waits and exits with the child's status, so this returns in the child.
+pub(crate) unsafe fn fork_into_pid_namespace() -> std::io::Result<()> {
     unsafe {
-        if libc::mount(
-            path.as_ptr(),
-            path.as_ptr(),
-            std::ptr::null(),
-            libc::MS_BIND | libc::MS_REC,
-            std::ptr::null(),
-        ) != 0
-        {
+        let pid = libc::fork();
+        if pid < 0 {
             return Err(std::io::Error::last_os_error());
         }
-        if libc::mount(
-            std::ptr::null(),
-            path.as_ptr(),
-            std::ptr::null(),
-            libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY,
-            std::ptr::null(),
-        ) != 0
-        {
-            return Err(std::io::Error::last_os_error());
+        if pid > 0 {
+            if libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32) != 0 {
+                for fd in 3..4096 {
+                    libc::close(fd);
+                }
+            }
+            let mut status: libc::c_int = 0;
+            while libc::waitpid(pid, &mut status, 0) < 0 {
+                if *libc::__errno_location() != libc::EINTR {
+                    libc::_exit(70);
+                }
+            }
+            if libc::WIFEXITED(status) {
+                libc::_exit(libc::WEXITSTATUS(status));
+            }
+            libc::_exit(128 + libc::WTERMSIG(status));
         }
+        libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
     }
     Ok(())
 }
 
 pub(crate) const OFFLINE_RESOLV: &str = "nameserver 192.0.2.1\noptions timeout:1 attempts:1\n";
 
-pub(crate) fn offline_resolv_conf() -> Option<std::ffi::CString> {
+pub(crate) fn offline_resolv_conf() -> Option<CString> {
     let path = std::env::temp_dir().join(format!("acropolis-offline-resolv-{}.conf", unsafe { libc::geteuid() }));
     if std::fs::read_to_string(&path).ok().as_deref() != Some(OFFLINE_RESOLV) {
+        use std::io::Write;
         let tmp = path.with_extension(format!("tmp{}", std::process::id()));
-        std::fs::write(&tmp, OFFLINE_RESOLV).ok()?;
+        let _ = std::fs::remove_file(&tmp);
+        std::fs::File::create_new(&tmp)
+            .ok()?
+            .write_all(OFFLINE_RESOLV.as_bytes())
+            .ok()?;
         std::fs::rename(&tmp, &path).ok()?;
     }
-    std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).ok()
+    CString::new(path.as_os_str().as_encoded_bytes()).ok()
 }
 
+/// Docker credential directories of this process, hidden from hardened steps: they run as root
+/// and could otherwise read the passwords acropolis pushes with.
+fn credential_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = [
+        std::env::var_os("DOCKER_CONFIG").map(PathBuf::from),
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".docker")),
+    ]
+    .into_iter()
+    .flatten()
+    .chain([PathBuf::from("/root/.docker")])
+    .filter_map(|d| std::path::absolute(d).ok())
+    .collect();
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
+
+/// Steps of a root acropolis: own mount and PID namespaces (the step cannot see acropolis or
+/// read its environment, which holds the registry credentials), read-only store, toolchains,
+/// /sys and sysctls, hidden `masked` directories, a /dev without host devices and only the
+/// capabilities in `KEEP_CAPS`.
 fn enter_hardened(
-    readonly: &[std::ffi::CString],
+    readonly: &[CString],
+    masked: &[CString],
     network: bool,
-    resolv: Option<&std::ffi::CStr>,
+    resolv: Option<&CStr>,
 ) -> std::io::Result<()> {
     unsafe {
-        let mut flags = libc::CLONE_NEWNS;
+        let mut flags = libc::CLONE_NEWNS | libc::CLONE_NEWPID;
         if !network {
             flags |= libc::CLONE_NEWNET;
         }
-        if libc::unshare(flags) != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        if libc::mount(
+        check(libc::unshare(flags))?;
+        fork_into_pid_namespace()?;
+        check(libc::mount(
             std::ptr::null(),
             c"/".as_ptr(),
             std::ptr::null(),
             libc::MS_REC | libc::MS_PRIVATE,
             std::ptr::null(),
-        ) != 0
-        {
-            return Err(std::io::Error::last_os_error());
-        }
+        ))?;
         if !network && let Some(r) = resolv {
             libc::mount(
                 r.as_ptr(),
@@ -310,12 +477,23 @@ fn enter_hardened(
             );
         }
         for p in readonly {
-            bind_readonly(p)?;
+            bind_readonly(p, p)?;
         }
+        for p in masked {
+            check(libc::mount(
+                c"tmpfs".as_ptr(),
+                p.as_ptr(),
+                c"tmpfs".as_ptr(),
+                libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
+                c"size=4k,mode=700".as_ptr() as *const libc::c_void,
+            ))?;
+        }
+        bind_readonly(c"/sys", c"/sys")?;
+        mount_proc_and_dev()?;
         if !network {
             bring_up_lo();
         }
-        drop_dangerous_caps()
+        drop_caps()
     }
 }
 
@@ -323,7 +501,7 @@ fn probe_netns() -> bool {
     let mut cmd = std::process::Command::new("/bin/true");
     unsafe {
         use std::os::unix::process::CommandExt;
-        cmd.pre_exec(|| enter_netns());
+        cmd.pre_exec(enter_netns);
     }
     cmd.stdout(Stdio::null()).stderr(Stdio::null());
     matches!(cmd.status(), Ok(s) if s.success())
@@ -331,7 +509,7 @@ fn probe_netns() -> bool {
 
 fn write_file(path: &[u8], data: &[u8]) -> bool {
     unsafe {
-        let fd = libc::open(path.as_ptr() as *const libc::c_char, libc::O_WRONLY);
+        let fd = libc::open(path.as_ptr() as *const libc::c_char, libc::O_WRONLY | libc::O_CLOEXEC);
         if fd < 0 {
             return false;
         }
@@ -341,9 +519,10 @@ fn write_file(path: &[u8], data: &[u8]) -> bool {
     }
 }
 
-fn bring_up_lo() {
+/// Needs CAP_NET_ADMIN: call before `drop_caps`.
+pub(crate) fn bring_up_lo() {
     unsafe {
-        let s = libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0);
+        let s = libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0);
         if s < 0 {
             return;
         }
@@ -445,49 +624,56 @@ impl Executor for HostExecutor {
     }
 
     fn run(&self, cmd: Cmd) -> BoxFuture<'_, Result<Output>> {
-        Box::pin(async move {
-            if cmd.argv.is_empty() {
-                bail!("empty command");
-            }
-            let mut c = Command::new(&cmd.argv[0]);
-            c.args(&cmd.argv[1..]).current_dir(&cmd.cwd).env_clear().envs(&cmd.env);
-            c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-            c.kill_on_drop(true);
-            c.process_group(0);
-            let is_root = unsafe { libc::geteuid() } == 0;
-            if is_root && self.isolation == Isolation::NetNamespace {
-                let ro: Vec<std::ffi::CString> = self
-                    .readonly
+        Box::pin(self.run_masked(cmd, credential_dirs()))
+    }
+}
+
+impl HostExecutor {
+    async fn run_masked(&self, cmd: Cmd, masked: Vec<PathBuf>) -> Result<Output> {
+        if cmd.argv.is_empty() {
+            bail!("empty command");
+        }
+        let mut c = Command::new(&cmd.argv[0]);
+        c.args(&cmd.argv[1..]).current_dir(&cmd.cwd).env_clear().envs(&cmd.env);
+        c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        c.kill_on_drop(true);
+        c.process_group(0);
+        let is_root = unsafe { libc::geteuid() } == 0;
+        if is_root && self.isolation == Isolation::NetNamespace {
+            let cpaths = |paths: &[PathBuf], keep: fn(&std::path::Path) -> bool| -> Vec<CString> {
+                paths
                     .iter()
-                    .filter(|p| p.exists())
-                    .filter_map(|p| std::ffi::CString::new(p.as_os_str().as_encoded_bytes()).ok())
-                    .collect();
-                let network = cmd.network;
-                let resolv = if network { None } else { offline_resolv_conf() };
-                unsafe {
-                    c.pre_exec(move || enter_hardened(&ro, network, resolv.as_deref()));
-                }
-            } else if !cmd.network {
-                if self.isolation != Isolation::NetNamespace {
-                    bail!(
-                        "step {} must run without network but this host cannot create a network namespace; pass --hermetic=off to allow it",
-                        cmd.step
-                    );
-                }
-                unsafe {
-                    c.pre_exec(|| enter_netns());
-                }
+                    .filter(|p| keep(p))
+                    .filter_map(|p| CString::new(p.as_os_str().as_encoded_bytes()).ok())
+                    .collect()
+            };
+            let ro = cpaths(&self.readonly, |p| p.exists());
+            let masked = cpaths(&masked, |p| p.is_dir());
+            let network = cmd.network;
+            let resolv = if network { None } else { offline_resolv_conf() };
+            unsafe {
+                c.pre_exec(move || enter_hardened(&ro, &masked, network, resolv.as_deref()));
             }
-            let mut child = c
-                .spawn()
-                .map_err(|e| anyhow::anyhow!("spawning {}: {e}", cmd.argv[0]))?;
-            let group = ProcessGroup::of(&child);
-            let (status, tail) = wait_with_output(&cmd.step, &mut child, group).await?;
-            if !status.success() {
-                return Err(CommandFailed::new(&cmd.argv, status, tail).into());
+        } else if !cmd.network {
+            if self.isolation != Isolation::NetNamespace {
+                bail!(
+                    "step {} must run without network but this host cannot create a network namespace; pass --hermetic=off to allow it",
+                    cmd.step
+                );
             }
-            Ok(Output { tail })
-        })
+            unsafe {
+                c.pre_exec(enter_netns);
+            }
+        }
+        let mut child = c
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("spawning {}: {e}", cmd.argv[0]))?;
+        let group = ProcessGroup::of(&child);
+        let (status, tail) = wait_with_output(&cmd.step, &mut child, group).await?;
+        if !status.success() {
+            return Err(CommandFailed::new(&cmd.argv, status, tail).into());
+        }
+        Ok(Output { tail })
     }
 }
 
@@ -539,6 +725,62 @@ mod tests {
         assert_eq!(std::fs::read(store.join("blob")).unwrap(), b"original");
         assert!(e.run(sh("echo ok > out", &tmp)).await.is_ok());
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn hardened_steps_cannot_reach_acropolis_or_the_host_kernel() {
+        if unsafe { libc::geteuid() } != 0 || !probe_netns() {
+            return;
+        }
+        let tmp = std::env::temp_dir();
+        let e = HostExecutor::detect();
+        let checks = [
+            "test $$ -eq 1".to_string(),
+            format!("test ! -e /proc/{}/environ", std::process::id()),
+            "grep -q '^CapBnd:[[:space:]]*00000000000004fb$' /proc/self/status".to_string(),
+            "grep -q '^CapEff:[[:space:]]*00000000000004fb$' /proc/self/status".to_string(),
+            "test -c /dev/null && echo ok > /dev/null && test -z \"$(find /dev -type b)\"".to_string(),
+            "if cat /proc/sys/kernel/hostname > /proc/sys/kernel/hostname; then exit 1; fi".to_string(),
+            "if mkdir /sys/fs/cgroup/acropolis-probe; then rmdir /sys/fs/cgroup/acropolis-probe; exit 1; fi"
+                .to_string(),
+        ];
+        for c in &checks {
+            let r = e.run(sh(c, &tmp)).await;
+            assert!(r.is_ok(), "{c}: {r:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn credential_dirs_are_hidden_from_hardened_steps() {
+        if unsafe { libc::geteuid() } != 0 || !probe_netns() {
+            return;
+        }
+        let creds = std::env::temp_dir().join(format!("acropolis-exec-creds-{}", std::process::id()));
+        std::fs::create_dir_all(&creds).unwrap();
+        std::fs::write(creds.join("config.json"), b"{\"auths\":{}}").unwrap();
+        let e = HostExecutor::detect();
+        let tmp = std::env::temp_dir();
+        let read = format!("cat {}/config.json", creds.display());
+        assert!(e.run_masked(sh(&read, &tmp), Vec::new()).await.is_ok());
+        assert!(e.run_masked(sh(&read, &tmp), vec![creds.clone()]).await.is_err());
+        let write = format!("touch {}/x", creds.display());
+        assert!(e.run_masked(sh(&write, &tmp), vec![creds.clone()]).await.is_err());
+        let _ = std::fs::remove_dir_all(&creds);
+    }
+
+    #[tokio::test]
+    async fn steps_do_not_inherit_the_acropolis_environment() {
+        let e = HostExecutor {
+            isolation: Isolation::None,
+            readonly: Vec::new(),
+        };
+        let mut c = sh(
+            "test -z \"${HOME-}\" && test -z \"${CARGO-}\" && test \"$PATH\" = /usr/bin:/bin",
+            &std::env::temp_dir(),
+        );
+        c.network = true;
+        assert!(std::env::var_os("HOME").is_some() || std::env::var_os("CARGO").is_some());
+        assert!(e.run(c).await.is_ok());
     }
 
     #[tokio::test]

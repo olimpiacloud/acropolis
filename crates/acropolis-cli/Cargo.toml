@@ -3,6 +3,11 @@ name = "acropolis-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
 
 [[bin]]
 name = "acropolis"
@@ -12,7 +17,6 @@ path = "src/main.rs"
 acropolis-events.workspace = true
 acropolis-oci.workspace = true
 acropolis-store.workspace = true
-acropolis-fetch.workspace = true
 acropolis-build = { path = "../acropolis-build" }
 acropolis-exec = { path = "../acropolis-exec" }
 anyhow.workspace = true
@@ -23,3 +27,6 @@ reqwest.workspace = true
 serde.workspace = true
 libc.workspace = true
 json5.workspace = true
+
+[lints]
+workspace = true

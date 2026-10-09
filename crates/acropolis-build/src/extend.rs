@@ -96,12 +96,11 @@ fn work_image(plan: &Plan) -> (String, Vec<String>) {
 }
 
 fn user_env(env: &Env, only: Option<&[String]>) -> BTreeMap<String, String> {
-    env.vars
-        .iter()
-        .filter(|(k, _)| !k.starts_with("ACROPOLIS_") && !k.starts_with("RAILPACK_"))
-        .filter(|(k, _)| only.map(|o| o.iter().any(|n| n == *k)).unwrap_or(true))
-        .map(|(k, v)| (k.clone(), crate::env_ref(k, v)))
-        .collect()
+    let mut vars = crate::user_env(env);
+    if let Some(only) = only {
+        vars.retain(|k, _| only.contains(k));
+    }
+    vars
 }
 
 fn ensure_source(plan: &mut Plan) -> String {

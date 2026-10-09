@@ -34,6 +34,10 @@ pub fn parse_go_sum(text: &str) -> Result<GoSum> {
             bail!("go.sum line {}: malformed: {line}", n + 1);
         }
         let (module, version, h1) = (parts[0], parts[1], parts[2]);
+        let v = version.strip_suffix("/go.mod").unwrap_or(version);
+        if !module_path_ok(module) || !version_ok(v) {
+            bail!("go.sum line {}: invalid module path or version: {line}", n + 1);
+        }
         if let Some(v) = version.strip_suffix("/go.mod") {
             mods.insert((module.to_string(), v.to_string()), h1.to_string());
         } else {
@@ -50,6 +54,29 @@ pub fn parse_go_sum(text: &str) -> Result<GoSum> {
         mods: conv(mods),
     })
 }
+
+/// Subset of Go's module.CheckPath: these strings become directory names in the module cache.
+fn module_path_ok(path: &str) -> bool {
+    !path.is_empty()
+        && path.split('/').all(|elem| {
+            !elem.is_empty()
+                && !elem.starts_with('.')
+                && !elem.ends_with('.')
+                && elem
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~'))
+        })
+}
+
+fn version_ok(v: &str) -> bool {
+    v.len() > 1
+        && v.starts_with('v')
+        && v.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+'))
+}
+
+/// Go's modzip.MaxZipFile: limit for both the zip and the total size of its files.
+const MAX_MODULE_SIZE: u64 = 500 << 20;
 
 pub fn escape(path: &str) -> String {
     let mut out = String::with_capacity(path.len());
@@ -104,6 +131,14 @@ pub struct Stats {
 
 fn extract_verified(cache: &ModCache, e: &SumEntry, zip_bytes: &[u8]) -> Result<u64> {
     let entries = zip::entries(zip_bytes).with_context(|| format!("reading zip of {}@{}", e.module, e.version))?;
+    if entries.iter().map(|z| z.size).sum::<u64>() > MAX_MODULE_SIZE {
+        bail!(
+            "{}@{}: module zip unpacks to more than {} MB",
+            e.module,
+            e.version,
+            MAX_MODULE_SIZE >> 20
+        );
+    }
     let prefix = format!("{}@{}/", e.module, e.version);
     let mut files: Vec<(String, Vec<u8>)> = Vec::with_capacity(entries.len());
     for z in &entries {
@@ -126,11 +161,12 @@ fn extract_verified(cache: &ModCache, e: &SumEntry, zip_bytes: &[u8]) -> Result<
         );
     }
     let dir = cache.module_dir(&e.module, &e.version);
+    let _ = std::fs::remove_dir_all(&dir);
     let mut total = 0u64;
     let mut made = std::collections::HashSet::new();
     for (name, data) in &files {
         let rel = &name[prefix.len()..];
-        if rel.split('/').any(|c| c == "..") {
+        if rel.split('/').any(|c| c.is_empty() || c == "." || c == "..") {
             bail!("unsafe path {name} in module zip");
         }
         let path = dir.join(rel);
@@ -301,5 +337,65 @@ mod tests {
     fn gomod_hash_matches_go() {
         let data = b"module github.com/gin-contrib/sse\n\ngo 1.12\n\nrequire github.com/stretchr/testify v1.3.0\n";
         assert!(hash1_gomod(data).starts_with("h1:"));
+    }
+
+    #[test]
+    fn gosum_rejects_paths_that_escape_the_cache() {
+        assert!(parse_go_sum("../../etc v1.0.0 h1:x=\n").is_err());
+        assert!(parse_go_sum("/etc v1.0.0 h1:x=\n").is_err());
+        assert!(parse_go_sum("example.com/m v1.0.0/../../x h1:x=\n").is_err());
+        assert!(parse_go_sum("example.com/!m v1.0.0 h1:x=\n").is_err());
+        assert!(parse_go_sum("github.com/BurntSushi/toml v0.0.0-20230101-abcdef+incompatible/go.mod h1:x=\n").is_ok());
+    }
+
+    fn stored_zip(files: &[(String, Vec<u8>)]) -> Vec<u8> {
+        let (mut out, mut cd) = (Vec::new(), Vec::new());
+        for (name, data) in files {
+            let off = out.len() as u32;
+            out.extend_from_slice(&0x04034b50u32.to_le_bytes());
+            out.extend_from_slice(&[0u8; 22]);
+            out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            out.extend_from_slice(&[0u8; 2]);
+            out.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(data);
+            let mut h = [0u8; 46];
+            h[0..4].copy_from_slice(&0x02014b50u32.to_le_bytes());
+            h[20..24].copy_from_slice(&(data.len() as u32).to_le_bytes());
+            h[24..28].copy_from_slice(&(data.len() as u32).to_le_bytes());
+            h[28..30].copy_from_slice(&(name.len() as u16).to_le_bytes());
+            h[42..46].copy_from_slice(&off.to_le_bytes());
+            cd.extend_from_slice(&h);
+            cd.extend_from_slice(name.as_bytes());
+        }
+        let cd_off = out.len() as u32;
+        out.extend_from_slice(&cd);
+        let mut eocd = [0u8; 22];
+        eocd[0..4].copy_from_slice(&0x06054b50u32.to_le_bytes());
+        eocd[10..12].copy_from_slice(&(files.len() as u16).to_le_bytes());
+        eocd[16..20].copy_from_slice(&cd_off.to_le_bytes());
+        out.extend_from_slice(&eocd);
+        out
+    }
+
+    #[test]
+    fn module_zip_cannot_write_outside_its_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("pwned");
+        let cache = ModCache {
+            root: tmp.path().join("cache"),
+        };
+        let prefix = "example.com/m@v1.0.0/";
+        let mut files = vec![
+            (format!("{prefix}ok.go"), b"package m".to_vec()),
+            (format!("{prefix}{}", outside.display()), b"x".to_vec()),
+        ];
+        let zip = stored_zip(&files);
+        let e = SumEntry {
+            module: "example.com/m".into(),
+            version: "v1.0.0".into(),
+            h1: hash1(&mut files),
+        };
+        assert!(extract_verified(&cache, &e, &zip).is_err());
+        assert!(!outside.exists());
     }
 }

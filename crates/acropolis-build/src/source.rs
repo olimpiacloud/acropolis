@@ -26,23 +26,16 @@ type Inodes = std::collections::HashMap<(u64, u64), String>;
 pub fn walk(root: &Path, ignore: &Ignore) -> Result<Vec<SourceEntry>> {
     let mut out = Vec::new();
     let mut inodes = Inodes::new();
-    walk_dir(root, root, "", ignore, &mut out, &mut inodes)?;
+    walk_dir(root, "", ignore, &mut out, &mut inodes)?;
     Ok(out)
 }
 
-fn walk_dir(
-    root: &Path,
-    dir: &Path,
-    prefix: &str,
-    ignore: &Ignore,
-    out: &mut Vec<SourceEntry>,
-    inodes: &mut Inodes,
-) -> Result<()> {
+fn walk_dir(dir: &Path, prefix: &str, ignore: &Ignore, out: &mut Vec<SourceEntry>, inodes: &mut Inodes) -> Result<()> {
     let mut names: Vec<(String, std::fs::Metadata)> = Vec::new();
     for e in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let e = e?;
         let name = e.file_name().to_string_lossy().into_owned();
-        let meta = std::fs::symlink_metadata(e.path())?;
+        let meta = e.metadata()?;
         names.push((name, meta));
     }
     names.sort_by(|a, b| a.0.cmp(&b.0));
@@ -66,7 +59,7 @@ fn walk_dir(
                     kind: EntryKind::Dir,
                 });
             }
-            walk_dir(root, &path, &rel, ignore, out, inodes)?;
+            walk_dir(&path, &rel, ignore, out, inodes)?;
             if excluded && out.len() > before {
                 out.insert(
                     before,
@@ -109,7 +102,6 @@ fn walk_dir(
             });
         }
     }
-    let _ = root;
     Ok(())
 }
 
@@ -126,15 +118,6 @@ pub fn ancestors(prefix: &str) -> Vec<String> {
     out
 }
 
-pub fn fragments_for(root: &Path, entries: &[SourceEntry], prefix: &str, with_ancestors: bool) -> Result<Vec<Vec<u8>>> {
-    let mut frags = Vec::new();
-    stream_tree(root, entries, prefix, with_ancestors, &mut |b| {
-        frags.push(b);
-        Ok(())
-    })?;
-    Ok(frags)
-}
-
 pub fn stream_tree_into<W: std::io::Write>(
     root: &Path,
     entries: &[SourceEntry],
@@ -148,7 +131,7 @@ pub fn stream_tree_into<W: std::io::Write>(
     })
 }
 
-pub fn stream_tree(
+fn stream_tree(
     root: &Path,
     entries: &[SourceEntry],
     prefix: &str,
@@ -289,12 +272,6 @@ pub fn copy_tree(src: &Path, dst: &Path, ignore: &Ignore) -> Result<u64> {
     Ok(bytes)
 }
 
-pub fn upper_fragments(upper: &Path, prefix: &str, include: &[String], exclude: &[String]) -> Result<Vec<Vec<u8>>> {
-    let mut buf = Vec::new();
-    stream_upper(upper, prefix, include, exclude, &mut buf)?;
-    Ok(vec![buf])
-}
-
 pub fn stream_upper<W: std::io::Write>(
     upper: &Path,
     prefix: &str,
@@ -333,7 +310,6 @@ pub fn stream_upper<W: std::io::Write>(
     }
     #[allow(clippy::too_many_arguments)]
     fn walk_upper<W: std::io::Write>(
-        root: &Path,
         dir: &Path,
         rel: &str,
         tw: &mut TarWriter<W>,
@@ -392,7 +368,7 @@ pub fn stream_upper<W: std::io::Write>(
                     tw.set_owner(0, 0);
                     tw.file_bytes(&format!("{dest}/.wh..wh..opq"), 0o644, b"")?;
                 }
-                walk_upper(root, &full, &r, tw, prefix, include, exclude, skip, inodes)?;
+                walk_upper(&full, &r, tw, prefix, include, exclude, skip, inodes)?;
             } else if ft.is_symlink() {
                 let t = std::fs::read_link(&full)?.to_string_lossy().into_owned();
                 tw.symlink(&dest, &t)?;
@@ -411,17 +387,7 @@ pub fn stream_upper<W: std::io::Write>(
         Ok(())
     }
     let mut inodes = Inodes::new();
-    walk_upper(
-        upper,
-        upper,
-        "",
-        &mut tw,
-        prefix,
-        include,
-        exclude,
-        &skip_always,
-        &mut inodes,
-    )?;
+    walk_upper(upper, "", &mut tw, prefix, include, exclude, &skip_always, &mut inodes)?;
     tw.set_owner(0, 0);
     Ok(())
 }

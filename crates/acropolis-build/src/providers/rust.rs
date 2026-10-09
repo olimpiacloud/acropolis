@@ -37,8 +37,7 @@ pub fn detect(dir: &Path, env: &Env) -> Result<RustApp> {
             source: "Cargo.toml rust-version".into(),
         }
     } else if let Some(v) = ["rust-version.txt", ".rust-version"].iter().find_map(|f| {
-        std::fs::read_to_string(dir.join(f))
-            .ok()
+        crate::detect::read_app_file(dir, f)
             .map(|t| t.trim().to_string())
             .filter(|t| !t.is_empty())
     }) {
@@ -163,7 +162,7 @@ fn plan_in_image(app: &RustApp, env: &Env, dir: &Path, name: &str) -> Result<Pla
         "stable" | "latest" | "" => "1".to_string(),
         v => acropolis_semver::fuzzy_version(v),
     };
-    let image = format!("rust:{tag}-bookworm");
+    let image = format!("rust:{}-bookworm", super::tag_part("Rust", &tag)?);
     let base = "gcr.io/distroless/cc-debian12";
     b.step(
         "base",
@@ -190,11 +189,7 @@ fn plan_in_image(app: &RustApp, env: &Env, dir: &Path, name: &str) -> Result<Pla
     }
     let mut run_env = BTreeMap::new();
     run_env.insert("CARGO_HOME".to_string(), "/app/.acropolis-cargo".to_string());
-    for (k, v) in &env.vars {
-        if !k.starts_with("ACROPOLIS_") && !k.starts_with("RAILPACK_") {
-            run_env.insert(k.clone(), crate::env_ref(k, v));
-        }
-    }
+    run_env.extend(crate::user_env(env));
     b.step(
         "build",
         format!("{cmd} (in {image})"),
@@ -263,12 +258,7 @@ pub fn plan(app: &RustApp, env: &Env, dir: &Path, name: &str) -> Result<Plan> {
         &[],
     );
     let mut deps = vec!["rust"];
-    let mut run_env = BTreeMap::new();
-    for (k, v) in &env.vars {
-        if !k.starts_with("ACROPOLIS_") && !k.starts_with("RAILPACK_") {
-            run_env.insert(k.clone(), crate::env_ref(k, v));
-        }
-    }
+    let run_env = crate::user_env(env);
     if app.has_lock {
         let lock = std::fs::read(dir.join("Cargo.lock"))?;
         b.step(

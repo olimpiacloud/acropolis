@@ -10,7 +10,10 @@ use futures::future::try_join_all;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::{BufReader, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+pub type Bins = Vec<(String, String)>;
 
 #[derive(Clone, Debug)]
 pub struct Platform {
@@ -224,7 +227,10 @@ impl InstallPlan {
                 }
                 continue;
             }
-            if skipped.iter().any(|s| path.starts_with(&format!("{s}/"))) {
+            if skipped
+                .iter()
+                .any(|s| path.strip_prefix(s.as_str()).is_some_and(|rest| rest.starts_with('/')))
+            {
                 continue;
             }
             let keep = if e.dev_optional {
@@ -236,19 +242,15 @@ impl InstallPlan {
                 skipped.push(path.clone());
                 continue;
             }
-            let pname = e
-                .name
-                .clone()
-                .unwrap_or_else(|| package_name_from_path(path).to_string());
-            if !platform_matches_named(&pname, &e.os, &e.cpu, &e.libc, &opts.platform) {
-                skipped.push(path.clone());
-                out.skipped_platform.push(path.clone());
-                continue;
-            }
             let name = e
                 .name
                 .clone()
                 .unwrap_or_else(|| package_name_from_path(path).to_string());
+            if !platform_matches_named(&name, &e.os, &e.cpu, &e.libc, &opts.platform) {
+                skipped.push(path.clone());
+                out.skipped_platform.push(path.clone());
+                continue;
+            }
             if let Some((nm, _)) = parent_node_modules(path) {
                 bin_dirs.entry(nm.to_string()).or_default().push(path.clone());
             }
@@ -325,14 +327,16 @@ impl InstallPlan {
         Ok(out)
     }
 
-    pub fn registry_packages(&self) -> impl Iterator<Item = &InstallPackage> {
-        self.packages
+    pub fn check_paths(&self) -> Result<()> {
+        for path in self
+            .packages
             .iter()
-            .filter(|p| matches!(p.source, Source::Registry { .. }))
-    }
-
-    pub fn with_install_scripts(&self) -> Vec<&InstallPackage> {
-        self.packages.iter().filter(|p| p.has_install_script).collect()
+            .map(|p| &p.path)
+            .chain(self.links.iter().map(|l| &l.path))
+        {
+            safe_rel_path(path)?;
+        }
+        Ok(())
     }
 }
 
@@ -431,17 +435,7 @@ pub struct TarEntry {
 }
 
 pub fn read_tarball(blob: &Path) -> Result<Vec<TarEntry>> {
-    let file = std::fs::File::open(blob)?;
-    let mut raw = BufReader::with_capacity(128 * 1024, file);
-    let mut magic = [0u8; 2];
-    let n = raw.read(&mut magic)?;
-    let chained = std::io::Cursor::new(magic[..n].to_vec()).chain(raw);
-    let reader: Box<dyn Read> = if n == 2 && magic == [0x1f, 0x8b] {
-        Box::new(GzDecoder::new(chained))
-    } else {
-        Box::new(chained)
-    };
-    let mut tr = TarReader::new(BufReader::with_capacity(128 * 1024, reader));
+    let mut tr = open_tarball(blob)?;
     let mut out = Vec::new();
     let mut seen: HashMap<String, usize> = HashMap::new();
     while let Some(e) = tr.next_entry()? {
@@ -478,7 +472,7 @@ pub fn read_tarball(blob: &Path) -> Result<Vec<TarEntry>> {
     Ok(out)
 }
 
-pub fn bins_from_package_json(name: &str, data: &[u8], files: &[TarEntry]) -> Vec<(String, String)> {
+pub fn bins_from_package_json(name: &str, data: &[u8], files: &[TarEntry]) -> Bins {
     let Ok(v) = serde_json::from_slice::<serde_json::Value>(data) else {
         return Vec::new();
     };
@@ -499,7 +493,7 @@ pub fn bins_from_package_json(name: &str, data: &[u8], files: &[TarEntry]) -> Ve
     Vec::new()
 }
 
-fn package_bins(p: &InstallPackage, entries: &[TarEntry]) -> Vec<(String, String)> {
+fn package_bins(p: &InstallPackage, entries: &[TarEntry]) -> Bins {
     match &p.bins {
         Some(b) => b.clone(),
         None => entries
@@ -510,7 +504,7 @@ fn package_bins(p: &InstallPackage, entries: &[TarEntry]) -> Vec<(String, String
     }
 }
 
-fn package_fragment(prefix: &str, p: &InstallPackage, blob: &Path) -> Result<(Vec<u8>, Vec<(String, String)>)> {
+fn package_fragment(prefix: &str, p: &InstallPackage, blob: &Path) -> Result<(Vec<u8>, Bins)> {
     let entries = read_tarball(blob).with_context(|| format!("reading tarball of {}", p.path))?;
     let bins = package_bins(p, &entries);
     let execs: HashSet<String> = bins.iter().filter_map(|(_, t)| clean_rel(t)).collect();
@@ -555,10 +549,7 @@ fn take(mut tw: TarWriter<Vec<u8>>) -> Vec<u8> {
     std::mem::take(tw.get_mut())
 }
 
-fn bin_links(
-    plan: &InstallPlan,
-    bins: &HashMap<String, Vec<(String, String)>>,
-) -> BTreeMap<String, BTreeMap<String, String>> {
+fn bin_links(plan: &InstallPlan, bins: &HashMap<String, Bins>) -> BTreeMap<String, BTreeMap<String, String>> {
     let mut out: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
     let link_targets: HashMap<&str, &str> = plan
         .links
@@ -607,24 +598,6 @@ fn normalize_join(base: &Path, rel: &str) -> String {
     parts.join("/")
 }
 
-pub struct LayerFragments {
-    pub fragments: Vec<Vec<u8>>,
-}
-
-pub fn node_modules_fragments(
-    plan: &InstallPlan,
-    tarballs: &Tarballs,
-    prefix: &str,
-    filter: impl Fn(&InstallPackage) -> bool + Sync,
-) -> Result<LayerFragments> {
-    let mut fragments = Vec::new();
-    stream_node_modules(plan, tarballs, prefix, filter, &mut |b| {
-        fragments.push(b);
-        Ok(())
-    })?;
-    Ok(LayerFragments { fragments })
-}
-
 pub fn stream_node_modules(
     plan: &InstallPlan,
     tarballs: &Tarballs,
@@ -632,13 +605,8 @@ pub fn stream_node_modules(
     filter: impl Fn(&InstallPackage) -> bool + Sync,
     sink: &mut dyn FnMut(Vec<u8>) -> Result<()>,
 ) -> Result<()> {
+    plan.check_paths()?;
     let mut pkgs: Vec<&InstallPackage> = plan.packages.iter().filter(|p| filter(p)).collect();
-    for p in &pkgs {
-        safe_rel_path(&p.path)?;
-    }
-    for l in &plan.links {
-        safe_rel_path(&l.path)?;
-    }
     pkgs.sort_by(|a, b| a.path.cmp(&b.path));
     let mut head_dirs = BTreeSet::new();
     let mut acc = String::new();
@@ -683,9 +651,9 @@ pub fn stream_node_modules(
     sink(take(head))?;
     let wanted: Vec<&InstallPackage> = pkgs.iter().copied().filter(|p| fetched(p)).collect();
     let window = (rayon::current_num_threads() * 2).max(4);
-    let mut bins: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    let mut bins: HashMap<String, Bins> = HashMap::new();
     for win in wanted.chunks(window) {
-        let bodies: Vec<Result<(String, Vec<u8>, Vec<(String, String)>)>> = win
+        let bodies: Vec<Result<(String, Vec<u8>, Bins)>> = win
             .par_iter()
             .map(|p| {
                 let blob = blob_for(tarballs, p).ok_or_else(|| anyhow!("missing tarball for {}", p.path))?;
@@ -729,10 +697,6 @@ pub fn relative_link(from: &Path, to: &Path) -> String {
     if parts.is_empty() { ".".into() } else { parts.join("/") }
 }
 
-pub fn materialize(plan: &InstallPlan, tarballs: &Tarballs, root: &Path) -> Result<u64> {
-    materialize_with(plan, tarballs, root, false)
-}
-
 const TYPE_FILES: &[&str] = &[".d.ts", ".d.mts", ".d.cts", ".ts", ".tsx", ".mts", ".cts", ".json"];
 
 fn type_files_only(entries: &[TarEntry], bins: &[(String, String)]) -> bool {
@@ -761,21 +725,27 @@ pub fn safe_rel_path(path: &str) -> Result<()> {
     Ok(())
 }
 
-struct Inside {
-    root: std::path::PathBuf,
-    ok: std::sync::Mutex<HashSet<std::path::PathBuf>>,
+/// Confines writes to a root: every directory is checked after symlink resolution.
+pub struct Inside {
+    root: PathBuf,
+    ok: Mutex<HashSet<PathBuf>>,
 }
 
 impl Inside {
-    fn new(root: &Path) -> Result<Self> {
+    pub fn new(root: &Path) -> Result<Self> {
         std::fs::create_dir_all(root)?;
         Ok(Inside {
             root: std::fs::canonicalize(root)?,
-            ok: std::sync::Mutex::new(HashSet::new()),
+            ok: Mutex::new(HashSet::new()),
         })
     }
 
-    fn dir(&self, dir: &Path) -> Result<()> {
+    /// True if `path` exists and, with every symlink resolved, stays inside the root.
+    pub fn contains(&self, path: &Path) -> bool {
+        std::fs::canonicalize(path).is_ok_and(|real| real.starts_with(&self.root))
+    }
+
+    pub fn dir(&self, dir: &Path) -> Result<()> {
         if self.ok.lock().unwrap_or_else(|e| e.into_inner()).contains(dir) {
             return Ok(());
         }
@@ -811,15 +781,10 @@ impl Inside {
 }
 
 pub fn materialize_with(plan: &InstallPlan, tarballs: &Tarballs, root: &Path, types_only: bool) -> Result<u64> {
-    for p in &plan.packages {
-        safe_rel_path(&p.path)?;
-    }
-    for l in &plan.links {
-        safe_rel_path(&l.path)?;
-    }
+    plan.check_paths()?;
     let inside = Inside::new(root)?;
     let pkgs: Vec<&InstallPackage> = plan.packages.iter().collect();
-    let written: Vec<Result<(String, u64, Vec<(String, String)>)>> = pkgs
+    let written: Vec<Result<(String, u64, Bins)>> = pkgs
         .par_iter()
         .filter(|p| fetched(p))
         .map(|p| {
@@ -834,7 +799,7 @@ pub fn materialize_with(plan: &InstallPlan, tarballs: &Tarballs, root: &Path, ty
         })
         .collect();
     let mut total = 0;
-    let mut bins: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    let mut bins: HashMap<String, Bins> = HashMap::new();
     for w in written {
         let (path, n, b) = w?;
         total += n;
@@ -873,11 +838,6 @@ pub fn materialize_with(plan: &InstallPlan, tarballs: &Tarballs, root: &Path, ty
     Ok(total)
 }
 
-pub fn extract_package(p: &InstallPackage, blob: &Path, dest: &Path) -> Result<(u64, Vec<(String, String)>)> {
-    let inside = Inside::new(dest)?;
-    extract_package_streaming(p, blob, dest, &inside)
-}
-
 fn open_tarball(blob: &Path) -> Result<TarReader<BufReader<Box<dyn Read>>>> {
     let file = std::fs::File::open(blob)?;
     let mut raw = BufReader::with_capacity(128 * 1024, file);
@@ -892,12 +852,7 @@ fn open_tarball(blob: &Path) -> Result<TarReader<BufReader<Box<dyn Read>>>> {
     Ok(TarReader::new(BufReader::with_capacity(128 * 1024, reader)))
 }
 
-fn extract_package_streaming(
-    p: &InstallPackage,
-    blob: &Path,
-    dest: &Path,
-    inside: &Inside,
-) -> Result<(u64, Vec<(String, String)>)> {
+fn extract_package_streaming(p: &InstallPackage, blob: &Path, dest: &Path, inside: &Inside) -> Result<(u64, Bins)> {
     use std::os::unix::fs::OpenOptionsExt;
     let mut tr = open_tarball(blob).with_context(|| format!("extracting {}", p.path))?;
     inside.dir(dest)?;
@@ -961,7 +916,8 @@ fn extract_package_streaming(
         if let Some(t) = clean_rel(t) {
             use std::os::unix::fs::PermissionsExt;
             let path = dest.join(&t);
-            if let Ok(meta) = std::fs::symlink_metadata(&path)
+            if inside.contains(&path)
+                && let Ok(meta) = std::fs::symlink_metadata(&path)
                 && meta.is_file()
             {
                 let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
@@ -977,7 +933,7 @@ fn extract_package_with(
     dest: &Path,
     types_only: bool,
     inside: &Inside,
-) -> Result<(u64, Vec<(String, String)>)> {
+) -> Result<(u64, Bins)> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     let mut entries = read_tarball(blob).with_context(|| format!("extracting {}", p.path))?;

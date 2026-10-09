@@ -118,8 +118,14 @@ fn plan_provider(dir: &Path, env: &Env) -> Result<Plan> {
     Ok(plan)
 }
 
-pub fn env_ref(name: &str, _value: &str) -> String {
-    format!("{{env:{name}}}")
+/// App variables (without acropolis/railpack knobs) as `{env:NAME}` placeholders that build steps
+/// resolve when they run, so values never land in the plan.
+pub fn user_env(env: &Env) -> std::collections::BTreeMap<String, String> {
+    env.vars
+        .keys()
+        .filter(|k| !k.starts_with("ACROPOLIS_") && !k.starts_with("RAILPACK_"))
+        .map(|k| (k.clone(), format!("{{env:{k}}}")))
+        .collect()
 }
 
 fn layers_tool(plan: &Plan, tool: &str) -> bool {
@@ -282,7 +288,6 @@ fn apply_runtime_packages(plan: &mut Plan, env: &Env) -> Result<()> {
         .filter(|p| !p.is_empty() && *p != "...")
         .map(|p| p.to_string())
         .collect();
-    all.dedup();
     let mut seen = std::collections::BTreeSet::new();
     all.retain(|p| seen.insert(p.clone()));
     env2.vars.insert("ACROPOLIS_DEPLOY_APT_PACKAGES".into(), all.join(" "));

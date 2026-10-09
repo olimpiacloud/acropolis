@@ -54,6 +54,9 @@ pub fn entries(buf: &[u8]) -> Result<Vec<ZipEntry<'_>>> {
         let elen = u16le(buf, p + 30) as usize;
         let clen = u16le(buf, p + 32) as usize;
         let local = u32le(buf, p + 42) as usize;
+        if p + 46 + nlen > buf.len() {
+            bail!("corrupt zip central directory");
+        }
         let name = String::from_utf8_lossy(&buf[p + 46..p + 46 + nlen]).into_owned();
         p += 46 + nlen + elen + clen;
         if local + 30 > buf.len() || u32le(buf, local) != 0x04034b50 {
@@ -81,7 +84,9 @@ impl ZipEntry<'_> {
             0 => Ok(self.data.to_vec()),
             8 => {
                 let mut out = Vec::with_capacity(self.size as usize);
-                flate2::read::DeflateDecoder::new(self.data).read_to_end(&mut out)?;
+                flate2::read::DeflateDecoder::new(self.data)
+                    .take(self.size + 1)
+                    .read_to_end(&mut out)?;
                 if out.len() as u64 != self.size {
                     bail!("zip entry {} size mismatch", self.name);
                 }

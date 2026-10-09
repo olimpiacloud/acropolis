@@ -1,5 +1,7 @@
+use acropolis_npm::install::Inside;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -44,7 +46,7 @@ impl PkgIndex {
         }
     }
 
-    pub fn materialize(&self, pkg_root: &Path, rel: &str) -> std::io::Result<()> {
+    pub fn materialize(&self, inside: &Inside, pkg_root: &Path, rel: &str) -> anyhow::Result<()> {
         let mut done = self.materialized.lock().unwrap();
         if done.contains(rel) {
             return Ok(());
@@ -52,17 +54,22 @@ impl PkgIndex {
         let Some(data) = self.files.get(rel) else { return Ok(()) };
         let dest = pkg_root.join(rel);
         if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
+            inside.dir(parent)?;
         }
         let tmp = dest.with_extension(format!("acropolis-tmp-{}", std::process::id()));
-        std::fs::write(&tmp, data.as_slice())?;
+        let _ = std::fs::remove_file(&tmp);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?
+            .write_all(data)?;
         std::fs::rename(&tmp, &dest)?;
         done.insert(rel.to_string());
         Ok(())
     }
 
-    pub fn materialize_package_jsons(&self, pkg_root: &Path, rel_file: &str) -> std::io::Result<()> {
-        self.materialize(pkg_root, "package.json")?;
+    pub fn materialize_package_jsons(&self, inside: &Inside, pkg_root: &Path, rel_file: &str) -> anyhow::Result<()> {
+        self.materialize(inside, pkg_root, "package.json")?;
         let mut dir = Path::new(rel_file).parent();
         while let Some(d) = dir {
             let s = d.to_string_lossy();
@@ -71,7 +78,7 @@ impl PkgIndex {
             }
             let pj = format!("{s}/package.json");
             if self.files.contains_key(&pj) {
-                self.materialize(pkg_root, &pj)?;
+                self.materialize(inside, pkg_root, &pj)?;
             }
             dir = d.parent();
         }
@@ -223,10 +230,10 @@ fn pick_target(target: &Value, star: Option<&str>, conditions: &[&str]) -> Optio
         Value::Array(items) => items.iter().find_map(|t| pick_target(t, star, conditions)),
         Value::Object(map) => {
             for (k, v) in map {
-                if k == "default" || conditions.contains(&k.as_str()) {
-                    if let Some(r) = pick_target(v, star, conditions) {
-                        return Some(r);
-                    }
+                if (k == "default" || conditions.contains(&k.as_str()))
+                    && let Some(r) = pick_target(v, star, conditions)
+                {
+                    return Some(r);
                 }
             }
             None

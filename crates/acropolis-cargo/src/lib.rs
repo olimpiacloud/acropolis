@@ -203,6 +203,21 @@ pub async fn vendor(fetcher: &Fetcher, lock: &CargoLock, vendor_dir: &Path) -> R
             Some(s) if s.starts_with("git+") => bail!("git dependency {} ({s}) is not supported yet", p.name),
             Some(s) => bail!("unsupported crate source {s} for {}", p.name),
         }
+        let name_ok = !p.name.is_empty()
+            && p.name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+        let version_ok = !p.version.is_empty()
+            && p.version
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b".-+".contains(&b));
+        if !name_ok || !version_ok {
+            bail!(
+                "invalid crate name or version in Cargo.lock: {:?} {:?}",
+                p.name,
+                p.version
+            );
+        }
     }
     std::fs::create_dir_all(vendor_dir)?;
     let futs = regs.iter().map(|p| {
@@ -231,8 +246,11 @@ pub async fn vendor(fetcher: &Fetcher, lock: &CargoLock, vendor_dir: &Path) -> R
                     &headers,
                     Some(expected),
                     move |r| {
-                        let mut gz = flate2::read::GzDecoder::new(r);
-                        extract_tar_filtered(&mut gz, &d2, 1, &|_| true)
+                        let mut gz = Capped {
+                            inner: flate2::read::GzDecoder::new(r),
+                            left: MAX_CRATE_UNPACKED,
+                        };
+                        extract_tar_filtered(&mut gz, &d2, 1, &|rel| rel != ".cargo-checksum.json")
                     },
                 )
                 .await?;
@@ -245,6 +263,25 @@ pub async fn vendor(fetcher: &Fetcher, lock: &CargoLock, vendor_dir: &Path) -> R
         crates: sizes.len(),
         bytes: sizes.iter().sum(),
     })
+}
+
+/// Cargo's own limit for an unpacked crate (CVE-2022-36114).
+const MAX_CRATE_UNPACKED: u64 = 512 << 20;
+
+struct Capped<R> {
+    inner: R,
+    left: u64,
+}
+
+impl<R: std::io::Read> std::io::Read for Capped<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.left = self
+            .left
+            .checked_sub(n as u64)
+            .ok_or_else(|| std::io::Error::other("crate unpacks to more than 512 MiB"))?;
+        Ok(n)
+    }
 }
 
 pub fn cargo_config(vendor_dir: &Path) -> String {
@@ -264,8 +301,18 @@ pub struct RustProject {
     pub edition: Option<String>,
 }
 
+/// Repo files may be symlinks; one pointing at /proc/self/environ or a host secret must not reach logs or errors.
+fn read_app_file(dir: &Path, rel: &str) -> Option<String> {
+    let real = std::fs::canonicalize(dir.join(rel)).ok()?;
+    if !real.starts_with(std::fs::canonicalize(dir).ok()?) || !real.is_file() {
+        return None;
+    }
+    std::fs::read_to_string(real).ok()
+}
+
 pub fn read_project(dir: &Path) -> Result<RustProject> {
-    let text = std::fs::read_to_string(dir.join("Cargo.toml")).context("reading Cargo.toml")?;
+    let text = read_app_file(dir, "Cargo.toml")
+        .ok_or_else(|| anyhow!("reading Cargo.toml: not a regular file inside the app"))?;
     let v: toml::Value = toml::from_str(&text).context("parsing Cargo.toml")?;
     let mut p = RustProject::default();
     if let Some(pkg) = v.get("package") {
@@ -295,17 +342,16 @@ pub fn read_project(dir: &Path) -> Result<RustProject> {
 }
 
 pub fn toolchain_file(dir: &Path) -> Option<String> {
-    if let Ok(text) = std::fs::read_to_string(dir.join("rust-toolchain.toml")) {
-        if let Ok(v) = toml::from_str::<toml::Value>(&text)
-            && let Some(c) = v
-                .get("toolchain")
-                .and_then(|t| t.get("channel"))
-                .and_then(|c| c.as_str())
-        {
-            return Some(c.to_string());
-        }
+    if let Some(text) = read_app_file(dir, "rust-toolchain.toml")
+        && let Ok(v) = toml::from_str::<toml::Value>(&text)
+        && let Some(c) = v
+            .get("toolchain")
+            .and_then(|t| t.get("channel"))
+            .and_then(|c| c.as_str())
+    {
+        return Some(c.to_string());
     }
-    if let Ok(text) = std::fs::read_to_string(dir.join("rust-toolchain")) {
+    if let Some(text) = read_app_file(dir, "rust-toolchain") {
         let t = text.trim();
         if t.starts_with('[') {
             if let Ok(v) = toml::from_str::<toml::Value>(t)
@@ -360,5 +406,37 @@ mod tests {
             runtime_base_for_glibc(Some((2, 39))).unwrap(),
             "gcr.io/distroless/cc-debian13"
         );
+    }
+
+    #[test]
+    fn vendor_rejects_lockfile_paths_outside_vendor_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let victim = tmp.path().join("victim-1");
+        std::fs::create_dir_all(&victim).unwrap();
+        let store = std::sync::Arc::new(acropolis_store::Store::open(tmp.path().join("store")).unwrap());
+        let fetcher = Fetcher::new(store, 1).unwrap();
+        let lock = parse_lock(&format!(
+            "[[package]]\nname = \"../victim\"\nversion = \"1\"\nsource = \"{CRATES_IO}\"\nchecksum = \"{}\"\n",
+            "0".repeat(64)
+        ))
+        .unwrap();
+        assert!(futures::executor::block_on(vendor(&fetcher, &lock, &tmp.path().join("vendor"))).is_err());
+        assert!(victim.exists());
+    }
+
+    #[test]
+    fn toolchain_file_ignores_symlinks_outside_the_app() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = tmp.path().join("app");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(tmp.path().join("secret"), "TOKEN=hunter2\n").unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("secret"), app.join("rust-toolchain")).unwrap();
+        std::os::unix::fs::symlink("../secret", app.join("Cargo.toml")).unwrap();
+        assert_eq!(toolchain_file(&app), None);
+        assert!(!read_project(&app).unwrap_err().to_string().contains("hunter2"));
+        std::fs::remove_file(app.join("rust-toolchain")).unwrap();
+        std::fs::write(app.join("real"), "1.80.0\n").unwrap();
+        std::os::unix::fs::symlink("real", app.join("rust-toolchain")).unwrap();
+        assert_eq!(toolchain_file(&app).as_deref(), Some("1.80.0"));
     }
 }

@@ -48,6 +48,7 @@ const INFRA: &[&str] = &[
     "failed to lookup address",
     "get blob sha256:",
     "falling back to mirror",
+    "build interrupted",
 ];
 
 const CONFIG: &[&str] = &[
@@ -68,6 +69,13 @@ const CONFIG: &[&str] = &[
     "must stay inside the app directory",
     "must be a relative path",
     "unsafe install path",
+    "resolves outside",
+    ", outside of ",
+    "points outside",
+    "refusing to write outside",
+    "over plain http",
+    "private or link-local",
+    "invalid toolchain version",
 ];
 
 pub fn classify(err: &anyhow::Error) -> ErrorClass {

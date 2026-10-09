@@ -17,15 +17,7 @@ pub struct ImageBuild {
 }
 
 fn read(dir: &Path, f: &str) -> String {
-    std::fs::read_to_string(dir.join(f)).unwrap_or_default()
-}
-
-fn user_env(env: &Env) -> BTreeMap<String, String> {
-    env.vars
-        .iter()
-        .filter(|(k, _)| !k.starts_with("ACROPOLIS_") && !k.starts_with("RAILPACK_"))
-        .map(|(k, v)| (k.clone(), crate::env_ref(k, v)))
-        .collect()
+    crate::detect::read_app_file(dir, f).unwrap_or_default()
 }
 
 pub fn plan(dir: &Path, env: &Env, name: &str, spec: ImageBuild) -> Result<Plan> {
@@ -38,7 +30,7 @@ pub fn plan(dir: &Path, env: &Env, name: &str, spec: ImageBuild) -> Result<Plan>
     b.step("copy-base", "copy base layers", Action::CopyBase, &["base"]);
     b.step("source", "copy source", Action::CopySource { exclude: vec![] }, &[]);
     let mut run_env = spec.env.clone();
-    run_env.extend(user_env(env));
+    run_env.extend(crate::user_env(env));
     let mut commands = spec.commands.clone();
     if let Some((c, _)) = env.config("BUILD_CMD") {
         commands.push(c);
@@ -175,7 +167,7 @@ fn deno(dir: &Path, env: &Env) -> Result<ImageBuild> {
     let Some(main) = main else {
         bail!("no Deno entrypoint found (main.ts, mod.ts, index.ts)")
     };
-    let image = format!("denoland/deno:{version}");
+    let image = format!("denoland/deno:{}", super::tag_part("deno", &version)?);
     let mut e = BTreeMap::new();
     e.insert("DENO_DIR".to_string(), "/app/.deno".to_string());
     Ok(ImageBuild {
@@ -198,7 +190,10 @@ fn gleam(dir: &Path, env: &Env) -> Result<ImageBuild> {
         .or_else(|| tool_version(dir, "gleam").map(|v| v.spec));
     let base = match &version {
         Some(v) => Action::ResolveBase {
-            image: format!("ghcr.io/gleam-lang/gleam:v{}-erlang-slim", v.trim_start_matches('v')),
+            image: format!(
+                "ghcr.io/gleam-lang/gleam:v{}-erlang-slim",
+                super::tag_part("gleam", v.trim_start_matches('v'))?
+            ),
         },
         None => Action::ResolveBaseLatest {
             template: "ghcr.io/gleam-lang/gleam:{tag}-erlang-slim".into(),
@@ -237,7 +232,7 @@ fn dotnet(dir: &Path, env: &Env) -> Result<ImageBuild> {
         .unwrap_or("net8.0")
         .trim()
         .to_string();
-    let runtime_version = tfm.trim_start_matches("net").to_string();
+    let runtime_version = super::tag_part("dotnet", tfm.trim_start_matches("net").trim_start_matches("coreapp"))?;
     let sdk = env
         .config("DOTNET_VERSION")
         .map(|(v, _)| v)
@@ -260,6 +255,7 @@ fn dotnet(dir: &Path, env: &Env) -> Result<ImageBuild> {
                 runtime_version.clone()
             }
         });
+    let sdk = super::tag_part("dotnet SDK", &sdk)?;
     let web = text.contains("Microsoft.NET.Sdk.Web");
     let runtime = if web { "aspnet" } else { "runtime" };
     let assembly = text
@@ -342,6 +338,7 @@ fn gradle_java(dir: &Path) -> Option<String> {
 fn java(dir: &Path, env: &Env) -> Result<ImageBuild> {
     let pom = read(dir, "pom.xml");
     let gradle = dir.join("gradlew").exists();
+    // `<maven.compiler.release>${java.version}</maven.compiler.release>` is a property reference, not a version.
     let from_pom = [
         "maven.compiler.release",
         "java.version",
@@ -350,10 +347,15 @@ fn java(dir: &Path, env: &Env) -> Result<ImageBuild> {
     ]
     .iter()
     .find_map(|k| {
-        pom.split(&format!("<{k}>"))
-            .nth(1)
-            .and_then(|s| s.split('<').next())
-            .map(|s| s.trim().trim_start_matches("1.").to_string())
+        let v: String = pom
+            .split(&format!("<{k}>"))
+            .nth(1)?
+            .trim_start()
+            .trim_start_matches("1.")
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        (!v.is_empty()).then_some(v)
     });
     let jdk = env
         .config("JDK_VERSION")
@@ -372,7 +374,11 @@ fn java(dir: &Path, env: &Env) -> Result<ImageBuild> {
         .or(from_pom)
         .or_else(|| gradle_java(dir))
         .unwrap_or_else(|| "21".into());
-    let jdk = if jdk.is_empty() { "21".to_string() } else { jdk };
+    let jdk = if jdk.is_empty() {
+        "21".to_string()
+    } else {
+        super::tag_part("JDK", &jdk)?
+    };
     let (build_image, commands, cmd) = if gradle {
         (
             format!("eclipse-temurin:{jdk}-jdk"),
@@ -502,7 +508,7 @@ fn elixir(dir: &Path, env: &Env) -> Result<ImageBuild> {
     let tag = if version == "latest" {
         "latest".to_string()
     } else {
-        acropolis_semver::fuzzy_version(&version)
+        super::tag_part("elixir", &acropolis_semver::fuzzy_version(&version))?
     };
     let image = format!("elixir:{tag}");
     let mut commands = vec![
@@ -555,4 +561,30 @@ fn elixir(dir: &Path, env: &Env) -> Result<ImageBuild> {
             ),
         ],
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repo_versions_cannot_rewrite_the_image_reference() {
+        let dir = crate::detect::scratch_dir("images-tag");
+        std::fs::write(dir.join("mix.exs"), "def project do\n  [app: :demo]\nend\n").unwrap();
+        std::fs::write(dir.join(".elixir-version"), "80/library/evil\n").unwrap();
+        assert!(detect(&dir, &Env::default()).unwrap().is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn pom_property_references_are_not_versions() {
+        let dir = crate::detect::scratch_dir("images-pom");
+        let pom = "<properties><java.version>17</java.version><maven.compiler.release>${java.version}</maven.compiler.release></properties>";
+        std::fs::write(dir.join("pom.xml"), pom).unwrap();
+        let Action::ResolveBase { image } = java(&dir, &Env::default()).unwrap().base else {
+            panic!("expected a base image")
+        };
+        assert_eq!(image, "eclipse-temurin:17-jre");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

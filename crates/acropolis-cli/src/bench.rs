@@ -710,11 +710,7 @@ pub fn image_pull_seconds(log: &str, tool: &str) -> f64 {
             }
         }
     }
-    names
-        .iter()
-        .filter_map(|(id, _)| done.get(id))
-        .cloned()
-        .fold(0.0, f64::max)
+    names.keys().filter_map(|id| done.get(id)).copied().fold(0.0, f64::max)
 }
 
 fn parse_mem(s: &str) -> u64 {
@@ -1057,7 +1053,8 @@ fn summarize_one(results: &[RunResult]) -> String {
         }
     };
     let mut s = String::new();
-    let metrics: [(&str, fn(&RunResult) -> f64, usize); 8] = [
+    type Metric = (&'static str, fn(&RunResult) -> f64, usize);
+    let metrics: [Metric; 8] = [
         ("wall time (s)", |r| r.wall_s, 1),
         ("CPU-seconds", |r| r.cpu_s, 1),
         ("peak memory incl. page cache (MB)", |r| r.peak_mem_mb, 0),

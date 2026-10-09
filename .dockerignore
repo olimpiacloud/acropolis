@@ -1,0 +1,7 @@
+# deploy/builder/Dockerfile only needs the workspace sources; target/ and bench/tests results are gigabytes.
+*
+!Cargo.toml
+!Cargo.lock
+!crates/
+**/target
+**/node_modules

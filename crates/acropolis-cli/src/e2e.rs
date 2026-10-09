@@ -583,30 +583,13 @@ fn low_disk(cfg: &E2eConfig) -> bool {
 
 const MAX_REGISTRY_BYTES: u64 = 4 << 30;
 
-fn dir_size(path: &Path) -> u64 {
-    let mut total = 0;
-    let mut stack = vec![path.to_path_buf()];
-    while let Some(d) = stack.pop() {
-        let Ok(rd) = fs::read_dir(&d) else { continue };
-        for e in rd.flatten() {
-            let Ok(m) = e.metadata() else { continue };
-            if m.is_dir() {
-                stack.push(e.path());
-            } else {
-                total += m.len();
-            }
-        }
-    }
-    total
-}
-
 fn registry_dir(cfg: &E2eConfig) -> PathBuf {
     let port = cfg.registry.rsplit(':').next().unwrap_or("5001");
     cfg.home.join(format!("e2e-registry-{port}"))
 }
 
 fn registry_full(cfg: &E2eConfig) -> bool {
-    dir_size(&registry_dir(cfg)) > MAX_REGISTRY_BYTES
+    acropolis_build::gc::dir_size(&registry_dir(cfg)) > MAX_REGISTRY_BYTES
 }
 
 fn infra_failure(detail: &str) -> bool {
@@ -876,7 +859,7 @@ pub fn run(cfg: E2eConfig) -> Result<Vec<CaseResult>> {
         prune_e2e_images(&cfg.registry);
     }
     let mut v = results.lock().unwrap().clone();
-    v.sort_by(|a, b| (a.example.clone(), a.case).cmp(&(b.example.clone(), b.case)));
+    v.sort_by(|a, b| (&a.example, a.case).cmp(&(&b.example, b.case)));
     Ok(v)
 }
 

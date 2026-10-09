@@ -31,7 +31,7 @@ pub fn package_name() -> &'static str {
 pub struct BunRelease {
     pub version: String,
     pub tarball: String,
-    pub integrity: Option<Integrity>,
+    pub integrity: Integrity,
 }
 
 pub async fn resolve(fetcher: &Fetcher, spec: &str) -> Result<BunRelease> {
@@ -57,7 +57,7 @@ pub async fn resolve(fetcher: &Fetcher, spec: &str) -> Result<BunRelease> {
         .as_str()
         .ok_or_else(|| anyhow!("bun {version} has no tarball"))?
         .to_string();
-    let integrity = dist["integrity"].as_str().map(Integrity::parse_sri).transpose()?;
+    let integrity = crate::npm_dist_integrity(dist).with_context(|| format!("bun {version}"))?;
     Ok(BunRelease {
         version,
         tarball,
@@ -69,34 +69,40 @@ pub async fn install(fetcher: &Fetcher, release: &BunRelease, dest: &Path) -> Re
     let headers = HeaderMap::new();
     let dest_owned = dest.to_path_buf();
     let (found, blob) = fetcher
-        .blob_streaming("bun", &release.tarball, &headers, release.integrity.clone(), move |r| {
-            let gz = flate2::read::GzDecoder::new(r);
-            let mut tr = TarReader::new(std::io::BufReader::new(gz));
-            let bin = dest_owned.join("bin");
-            std::fs::create_dir_all(&bin)?;
-            let mut found = false;
-            while let Some(e) = tr.next_entry()? {
-                if e.kind == Kind::File && e.path.ends_with("bin/bun") {
-                    let mut f = std::fs::OpenOptions::new()
-                        .write(true)
-                        .create(true)
-                        .truncate(true)
-                        .mode(0o755)
-                        .open(bin.join("bun"))?;
-                    let mut buf = vec![0u8; 256 * 1024];
-                    let mut data = tr.data();
-                    loop {
-                        let n = data.read(&mut buf)?;
-                        if n == 0 {
-                            break;
+        .blob_streaming(
+            "bun",
+            &release.tarball,
+            &headers,
+            Some(release.integrity.clone()),
+            move |r| {
+                let gz = flate2::read::GzDecoder::new(r);
+                let mut tr = TarReader::new(std::io::BufReader::new(gz));
+                let bin = dest_owned.join("bin");
+                std::fs::create_dir_all(&bin)?;
+                let mut found = false;
+                while let Some(e) = tr.next_entry()? {
+                    if e.kind == Kind::File && e.path.ends_with("bin/bun") {
+                        let mut f = std::fs::OpenOptions::new()
+                            .write(true)
+                            .create(true)
+                            .truncate(true)
+                            .mode(0o755)
+                            .open(bin.join("bun"))?;
+                        let mut buf = vec![0u8; 256 * 1024];
+                        let mut data = tr.data();
+                        loop {
+                            let n = data.read(&mut buf)?;
+                            if n == 0 {
+                                break;
+                            }
+                            f.write_all(&buf[..n])?;
                         }
-                        f.write_all(&buf[..n])?;
+                        found = true;
                     }
-                    found = true;
                 }
-            }
-            Ok(found)
-        })
+                Ok(found)
+            },
+        )
         .await?;
     if !found {
         bail!("bun tarball has no bin/bun");

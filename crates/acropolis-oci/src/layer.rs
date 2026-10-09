@@ -157,18 +157,19 @@ impl<'s> LayerWriter<'s> {
     }
 }
 
-fn compress_chunk(data: &[u8], opts: &LayerOptions) -> io::Result<Vec<u8>> {
+/// `None` means the chunk goes out as is.
+fn compress_chunk(data: &[u8], opts: &LayerOptions) -> io::Result<Option<Vec<u8>>> {
     match opts.compression {
-        Compression::None => Ok(data.to_vec()),
+        Compression::None => Ok(None),
         Compression::Gzip => {
             let level = if opts.level > 0 { opts.level as u32 } else { 6 };
             let mut enc = GzEncoder::new(Vec::with_capacity(data.len() / 3), GzLevel::new(level));
             enc.write_all(data)?;
-            enc.finish()
+            enc.finish().map(Some)
         }
         Compression::Zstd => {
             let level = if opts.level != 0 { opts.level } else { 3 };
-            zstd::bulk::compress(data, level)
+            zstd::bulk::compress(data, level).map(Some)
         }
     }
 }
@@ -209,11 +210,12 @@ impl<'a> LayerBuilder<'a> {
             return Ok(());
         }
         let opts = self.opts;
-        let compressed: Vec<io::Result<Vec<u8>>> = self.pending.par_iter().map(|c| compress_chunk(c, &opts)).collect();
+        let compressed: Vec<io::Result<Option<Vec<u8>>>> =
+            self.pending.par_iter().map(|c| compress_chunk(c, &opts)).collect();
         for (raw, c) in self.pending.drain(..).zip(compressed) {
             self.diff.update(&raw);
             self.uncompressed_size += raw.len() as u64;
-            self.blob.write_all(&c?)?;
+            self.blob.write_all(c?.as_deref().unwrap_or(&raw))?;
         }
         Ok(())
     }

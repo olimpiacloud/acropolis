@@ -51,11 +51,12 @@ impl Ignore {
         if pat.is_empty() {
             return;
         }
-        let segments: Vec<String> = pat
+        let mut segments: Vec<String> = pat
             .split('/')
             .filter(|s| !s.is_empty() && *s != ".")
             .map(|s| s.to_string())
             .collect();
+        segments.dedup_by(|a, b| a == "**" && b == "**");
         if segments.is_empty() {
             return;
         }
@@ -214,6 +215,10 @@ mod tests {
         assert!(!ig.excluded("docs/keep.md"));
         assert!(ig.excluded(".git/config"));
         assert!(!ig.excluded("src/index.js"));
+        let stars = Ignore::new(&[format!("{}x", "**/".repeat(40))]);
+        let deep = ["a"; 40].join("/");
+        assert!(!stars.excluded(&deep));
+        assert!(stars.excluded(&format!("{deep}/x")));
     }
 
     #[test]

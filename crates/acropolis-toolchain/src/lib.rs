@@ -26,6 +26,18 @@ pub struct ExtractStats {
     pub bytes: u64,
 }
 
+fn clean_rel(path: &str, strip: usize) -> Option<String> {
+    let rel: Vec<&str> = path
+        .split('/')
+        .filter(|c| !c.is_empty() && *c != ".")
+        .skip(strip)
+        .collect();
+    if rel.is_empty() || rel.contains(&"..") {
+        return None;
+    }
+    Some(rel.join("/"))
+}
+
 pub fn extract_tar_filtered(
     reader: &mut dyn Read,
     dest: &Path,
@@ -39,16 +51,7 @@ pub fn extract_tar_filtered(
     let mut buf = vec![0u8; 256 * 1024];
     let mut links: Vec<(PathBuf, String)> = Vec::new();
     while let Some(e) = tr.next_entry()? {
-        let rel: Vec<&str> = e
-            .path
-            .split('/')
-            .filter(|c| !c.is_empty() && *c != ".")
-            .skip(strip)
-            .collect();
-        if rel.is_empty() || rel.contains(&"..") {
-            continue;
-        }
-        let rel = rel.join("/");
+        let Some(rel) = clean_rel(&e.path, strip) else { continue };
         if !keep(&rel) {
             continue;
         }
@@ -93,8 +96,10 @@ pub fn extract_tar_filtered(
                 links.push((path, e.link.clone()));
             }
             Kind::Hardlink => {
-                let target: Vec<&str> = e.link.split('/').filter(|c| !c.is_empty()).skip(strip).collect();
-                let target = dest.join(target.join("/"));
+                let Some(target) = clean_rel(&e.link, strip) else {
+                    continue;
+                };
+                let target = dest.join(target);
                 if let Some(parent) = path.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
@@ -111,6 +116,17 @@ pub fn extract_tar_filtered(
     }
     acropolis_events::add_written(stats.bytes);
     Ok(stats)
+}
+
+/// npm metadata without `integrity` (packages published before 2017) still carries the sha1 `shasum`.
+pub fn npm_dist_integrity(dist: &serde_json::Value) -> Result<acropolis_store::Integrity> {
+    if let Some(sri) = dist["integrity"].as_str() {
+        return Ok(acropolis_store::Integrity::parse_sri(sri)?);
+    }
+    match dist["shasum"].as_str() {
+        Some(hex) => Ok(acropolis_store::Integrity::parse_hex(acropolis_store::Algo::Sha1, hex)?),
+        None => bail!("registry metadata has neither integrity nor shasum"),
+    }
 }
 
 pub fn parse_shasums(text: &str, file: &str) -> Result<acropolis_store::Integrity> {
@@ -138,4 +154,25 @@ pub fn verify(blob: &acropolis_store::StoredBlob, expected: &acropolis_store::In
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acropolis_oci::tar::TarWriter;
+
+    #[test]
+    fn hardlink_cannot_point_outside_dest() {
+        let base = tempfile::tempdir().unwrap();
+        let dest = base.path().join("dest");
+        std::fs::write(base.path().join("secret"), b"s").unwrap();
+        let mut tw = TarWriter::new(Vec::new());
+        tw.file_bytes("pkg/ok", 0o644, b"y").unwrap();
+        tw.hardlink("pkg/leak", "pkg/../secret").unwrap();
+        tw.hardlink("pkg/same", "pkg/ok").unwrap();
+        let data = tw.finish().unwrap();
+        extract_tar_filtered(&mut std::io::Cursor::new(data), &dest, 1, &|_| true).unwrap();
+        assert_eq!(std::fs::read(dest.join("same")).unwrap(), b"y");
+        assert!(!dest.join("leak").exists());
+    }
 }

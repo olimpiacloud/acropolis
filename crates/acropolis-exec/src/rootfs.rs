@@ -31,11 +31,6 @@ struct Prepared {
     merged: CString,
     overlay_opts: CString,
     binds: Vec<(CString, CString, bool)>,
-    proc_target: CString,
-    dev_target: CString,
-    dev_nodes: Vec<(CString, CString)>,
-    dev_links: Vec<(CString, CString)>,
-    dev_shm: CString,
     sys_target: CString,
     resolv_src: Option<CString>,
     resolv_target: CString,
@@ -47,43 +42,15 @@ fn cpath(p: &Path) -> Result<CString> {
     Ok(CString::new(p.as_os_str().as_bytes())?)
 }
 
-fn check(rc: libc::c_int) -> std::io::Result<()> {
-    if rc != 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
 fn enter(p: &Prepared) -> std::io::Result<()> {
+    use crate::check;
     unsafe {
         let mut flags = libc::CLONE_NEWNS | libc::CLONE_NEWUTS | libc::CLONE_NEWIPC | libc::CLONE_NEWPID;
         if !p.network {
             flags |= libc::CLONE_NEWNET;
         }
         check(libc::unshare(flags))?;
-        let pid = libc::fork();
-        if pid < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        if pid > 0 {
-            if libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32) != 0 {
-                for fd in 3..4096 {
-                    libc::close(fd);
-                }
-            }
-            let mut status: libc::c_int = 0;
-            while libc::waitpid(pid, &mut status, 0) < 0 {
-                if *libc::__errno_location() != libc::EINTR {
-                    libc::_exit(70);
-                }
-            }
-            if libc::WIFEXITED(status) {
-                libc::_exit(libc::WEXITSTATUS(status));
-            }
-            libc::_exit(128 + libc::WTERMSIG(status));
-        }
-        libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+        crate::fork_into_pid_namespace()?;
         check(libc::mount(
             std::ptr::null(),
             c"/".as_ptr(),
@@ -98,61 +65,7 @@ fn enter(p: &Prepared) -> std::io::Result<()> {
             0,
             p.overlay_opts.as_ptr() as *const libc::c_void,
         ))?;
-        check(libc::mount(
-            c"proc".as_ptr(),
-            p.proc_target.as_ptr(),
-            c"proc".as_ptr(),
-            libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
-            std::ptr::null(),
-        ))?;
-        check(libc::mount(
-            c"tmpfs".as_ptr(),
-            p.dev_target.as_ptr(),
-            c"tmpfs".as_ptr(),
-            libc::MS_NOSUID | libc::MS_NOEXEC,
-            c"mode=755,size=65536k".as_ptr() as *const libc::c_void,
-        ))?;
-        for (host, target) in &p.dev_nodes {
-            let fd = libc::open(target.as_ptr(), libc::O_CREAT | libc::O_WRONLY | libc::O_CLOEXEC, 0o666);
-            if fd >= 0 {
-                libc::close(fd);
-                check(libc::mount(
-                    host.as_ptr(),
-                    target.as_ptr(),
-                    std::ptr::null(),
-                    libc::MS_BIND,
-                    std::ptr::null(),
-                ))?;
-            }
-        }
-        for (target, link) in &p.dev_links {
-            libc::symlink(target.as_ptr(), link.as_ptr());
-        }
-        if libc::mkdir(p.dev_shm.as_ptr(), 0o1777) == 0 {
-            let _ = libc::mount(
-                c"tmpfs".as_ptr(),
-                p.dev_shm.as_ptr(),
-                c"tmpfs".as_ptr(),
-                libc::MS_NOSUID | libc::MS_NODEV,
-                c"mode=1777".as_ptr() as *const libc::c_void,
-            );
-        }
-        if libc::mount(
-            c"/sys".as_ptr(),
-            p.sys_target.as_ptr(),
-            std::ptr::null(),
-            libc::MS_BIND | libc::MS_REC,
-            std::ptr::null(),
-        ) == 0
-        {
-            let _ = libc::mount(
-                std::ptr::null(),
-                p.sys_target.as_ptr(),
-                std::ptr::null(),
-                libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY,
-                std::ptr::null(),
-            );
-        }
+        crate::bind_readonly(c"/sys", &p.sys_target)?;
         if let Some(src) = &p.resolv_src {
             let _ = libc::mount(
                 src.as_ptr(),
@@ -163,41 +76,26 @@ fn enter(p: &Prepared) -> std::io::Result<()> {
             );
         }
         for (host, guest, ro) in &p.binds {
-            check(libc::mount(
-                host.as_ptr(),
-                guest.as_ptr(),
-                std::ptr::null(),
-                libc::MS_BIND | libc::MS_REC,
-                std::ptr::null(),
-            ))?;
             if *ro {
+                crate::bind_readonly(host, guest)?;
+            } else {
                 check(libc::mount(
-                    std::ptr::null(),
+                    host.as_ptr(),
                     guest.as_ptr(),
                     std::ptr::null(),
-                    libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY,
+                    libc::MS_BIND | libc::MS_REC,
                     std::ptr::null(),
                 ))?;
             }
         }
         check(libc::chroot(p.merged.as_ptr()))?;
         check(libc::chdir(p.cwd.as_ptr()))?;
-        crate::drop_dangerous_caps()?;
+        crate::mount_proc_and_dev()?;
         if !p.network {
-            let s = libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0);
-            if s >= 0 {
-                let mut req: libc::ifreq = std::mem::zeroed();
-                req.ifr_name[0] = b'l' as libc::c_char;
-                req.ifr_name[1] = b'o' as libc::c_char;
-                if libc::ioctl(s, libc::SIOCGIFFLAGS, &mut req) == 0 {
-                    req.ifr_ifru.ifru_flags |= (libc::IFF_UP | libc::IFF_RUNNING) as libc::c_short;
-                    libc::ioctl(s, libc::SIOCSIFFLAGS, &mut req);
-                }
-                libc::close(s);
-            }
+            crate::bring_up_lo();
         }
+        crate::drop_caps()
     }
-    Ok(())
 }
 
 pub async fn run(spec: RootfsRun) -> Result<Vec<String>> {
@@ -264,28 +162,6 @@ pub async fn run(spec: RootfsRun) -> Result<Vec<String>> {
         merged: cpath(&spec.merged)?,
         overlay_opts: CString::new(opts)?,
         binds,
-        proc_target: cpath(&spec.merged.join("proc"))?,
-        dev_target: cpath(&spec.merged.join("dev"))?,
-        dev_nodes: ["null", "zero", "full", "random", "urandom", "tty"]
-            .iter()
-            .map(|n| {
-                Ok((
-                    cpath(&Path::new("/dev").join(n))?,
-                    cpath(&spec.merged.join("dev").join(n))?,
-                ))
-            })
-            .collect::<Result<_>>()?,
-        dev_links: [
-            ("/proc/self/fd", "fd"),
-            ("/proc/self/fd/0", "stdin"),
-            ("/proc/self/fd/1", "stdout"),
-            ("/proc/self/fd/2", "stderr"),
-            ("pts/ptmx", "ptmx"),
-        ]
-        .iter()
-        .map(|(t, l)| Ok((CString::new(*t)?, cpath(&spec.merged.join("dev").join(l))?)))
-        .collect::<Result<_>>()?,
-        dev_shm: cpath(&spec.merged.join("dev/shm"))?,
         sys_target: cpath(&spec.merged.join("sys"))?,
         resolv_src,
         resolv_target: cpath(&spec.merged.join("etc/resolv.conf"))?,
@@ -319,4 +195,48 @@ pub async fn run(spec: RootfsRun) -> Result<Vec<String>> {
         return Err(crate::CommandFailed::new(&spec.argv, status, tail).into());
     }
     Ok(tail)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn rootfs_steps_are_isolated_and_keep_loopback() {
+        let busybox = Path::new("/usr/bin/busybox");
+        if unsafe { libc::geteuid() } != 0 || !busybox.exists() {
+            return;
+        }
+        let tmp = std::env::temp_dir().join(format!("acropolis-rootfs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let lower = tmp.join("lower");
+        std::fs::create_dir_all(lower.join("bin")).unwrap();
+        std::fs::copy(busybox, lower.join("bin/busybox")).unwrap();
+        let checks = [
+            "busybox test $$ -eq 1",
+            "busybox ip link show lo | busybox grep -q ',UP'",
+            "busybox grep -q '^CapBnd:[[:space:]]*00000000000004fb$' /proc/self/status",
+            "busybox test -c /dev/null && busybox test -z \"$(busybox find /dev -type b)\"",
+            "if echo x > /proc/sys/kernel/hostname; then exit 1; fi",
+            "if busybox mkdir /sys/fs/cgroup/acropolis-probe; then busybox rmdir /sys/fs/cgroup/acropolis-probe; exit 1; fi",
+        ];
+        for (i, c) in checks.iter().enumerate() {
+            let step = tmp.join(i.to_string());
+            let spec = RootfsRun {
+                step: "test".into(),
+                lower: vec![lower.clone()],
+                upper: step.join("upper"),
+                work: step.join("work"),
+                merged: step.join("merged"),
+                binds: Vec::new(),
+                argv: vec!["/bin/busybox".into(), "sh".into(), "-c".into(), c.to_string()],
+                env: [("PATH".to_string(), "/bin".to_string())].into_iter().collect(),
+                cwd: "/".into(),
+                network: false,
+            };
+            let r = run(spec).await;
+            assert!(r.is_ok(), "{c}: {r:?}");
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

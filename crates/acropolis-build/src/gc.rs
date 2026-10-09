@@ -141,12 +141,12 @@ fn units(home: &Path, rootfs: &Path) -> Vec<Unit> {
     out
 }
 
-fn locked(lock: &Path) -> bool {
+fn try_lock(lock: &Path) -> Result<Option<File>, ()> {
     let Ok(f) = File::options().write(true).open(lock) else {
-        return false;
+        return Ok(None);
     };
     let rc = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    rc != 0
+    if rc != 0 { Err(()) } else { Ok(Some(f)) }
 }
 
 fn remove(path: &Path) {
@@ -221,9 +221,9 @@ pub fn collect(home: &Path, rootfs: &Path, max_size: u64) -> Result<GcReport> {
         if now.duration_since(u.last_use).map(|d| d < grace).unwrap_or(true) {
             continue;
         }
-        if u.lock.as_deref().is_some_and(locked) {
+        let Ok(_held) = u.lock.as_deref().map_or(Ok(None), try_lock) else {
             continue;
-        }
+        };
         if let Some(m) = &u.marker {
             let _ = std::fs::remove_file(m);
         }
@@ -249,7 +249,11 @@ pub fn parse_size(s: &str) -> Option<u64> {
         'T' | 't' => (&s[..s.len() - 1], 1 << 40),
         _ => (s, 1),
     };
-    num.trim().parse::<f64>().ok().map(|n| (n * mul as f64) as u64)
+    num.trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|n| n.is_finite() && *n >= 0.0)
+        .map(|n| (n * mul as f64) as u64)
 }
 
 #[cfg(test)]
@@ -262,6 +266,8 @@ mod tests {
         assert_eq!(parse_size("512M"), Some(512 << 20));
         assert_eq!(parse_size("1.5g"), Some((1.5 * (1u64 << 30) as f64) as u64));
         assert_eq!(parse_size("100"), Some(100));
+        assert_eq!(parse_size("-1G"), None);
+        assert_eq!(parse_size("NaN"), None);
     }
 
     #[test]

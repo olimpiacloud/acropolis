@@ -3,6 +3,11 @@ name = "acropolis-build"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
 
 [dependencies]
 acropolis-events.workspace = true
@@ -26,7 +31,6 @@ rayon.workspace = true
 json5.workspace = true
 serde_yaml = "0.9"
 reqwest.workspace = true
-hex.workspace = true
 bytes.workspace = true
 libc.workspace = true
 zstd.workspace = true
@@ -34,3 +38,6 @@ flate2.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[lints]
+workspace = true

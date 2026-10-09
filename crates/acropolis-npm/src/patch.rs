@@ -1,5 +1,8 @@
+use crate::install::Inside;
 use anyhow::{Context, Result, anyhow, bail};
-use std::path::Path;
+use std::io::{Read, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::path::{Path, PathBuf};
 
 struct Hunk {
     old_start: usize,
@@ -131,23 +134,45 @@ fn find(lines: &[String], want: &[String], hint: usize) -> Option<usize> {
     None
 }
 
-fn apply_file(root: &Path, f: &FilePatch) -> Result<()> {
+fn checked(inside: &Inside, root: &Path, rel: &str) -> Result<PathBuf> {
+    let path = root.join(rel);
+    if let Some(parent) = path.parent()
+        && parent.exists()
+        && !inside.contains(parent)
+    {
+        bail!("patch: {rel} resolves outside the package directory");
+    }
+    Ok(path)
+}
+
+fn apply_file(inside: &Inside, root: &Path, f: &FilePatch) -> Result<()> {
     for p in [&f.old_path, &f.new_path].into_iter().flatten() {
-        if p.starts_with('/') || p.split('/').any(|c| c == "..") {
+        if p.starts_with('/') || p.contains('\0') || p.split('/').any(|c| c == "..") {
             bail!("patch touches unsafe path {p:?}");
         }
     }
     let Some(target) = f.new_path.as_ref().or(f.old_path.as_ref()) else {
         return Ok(());
     };
-    let path = root.join(target);
+    let path = checked(inside, root, target)?;
     if f.new_path.is_none() {
         let _ = std::fs::remove_file(&path);
         return Ok(());
     }
-    let source = match &f.old_path {
-        Some(old) => std::fs::read_to_string(root.join(old)).with_context(|| format!("patch: reading {old}"))?,
-        None => String::new(),
+    let (source, mode) = match &f.old_path {
+        Some(old) => {
+            let mut file = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(checked(inside, root, old)?)
+                .with_context(|| format!("patch: reading {old}"))?;
+            let mode = file.metadata()?.permissions().mode() & 0o777;
+            let mut text = String::new();
+            file.read_to_string(&mut text)
+                .with_context(|| format!("patch: reading {old}"))?;
+            (text, mode)
+        }
+        None => (String::new(), 0o644),
     };
     let had_eol = source.ends_with('\n');
     let mut lines: Vec<String> = source.split('\n').map(|s| s.to_string()).collect();
@@ -171,20 +196,31 @@ fn apply_file(root: &Path, f: &FilePatch) -> Result<()> {
         text.push('\n');
     }
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        inside.dir(parent)?;
     }
-    if f.old_path.is_some() && f.old_path != f.new_path {
-        let _ = std::fs::remove_file(root.join(f.old_path.as_ref().unwrap_or(target)));
+    if let Some(old) = &f.old_path
+        && old != target
+    {
+        let _ = std::fs::remove_file(root.join(old));
     }
     let _ = std::fs::remove_file(&path);
-    std::fs::write(&path, text).with_context(|| format!("patch: writing {target}"))?;
+    let mut out = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .mode(mode)
+        .open(&path)
+        .with_context(|| format!("patch: writing {target}"))?;
+    out.write_all(text.as_bytes())
+        .with_context(|| format!("patch: writing {target}"))?;
     Ok(())
 }
 
 pub fn apply(diff: &str, root: &Path) -> Result<usize> {
     let files = parse(diff)?;
+    let inside = Inside::new(root)?;
     for f in &files {
-        apply_file(root, f)?;
+        apply_file(&inside, root, f)?;
     }
     Ok(files.len())
 }
@@ -221,6 +257,31 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("new.txt")).unwrap(), "hello");
         assert!(apply("--- a/../x\n+++ b/../x\n@@ -1 +1 @@\n-a\n+b\n", &dir).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stays_inside_package_and_keeps_mode() {
+        let base = std::env::temp_dir().join(format!("acropolis-patch-escape-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let pkg = base.join("pkg");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(pkg.join("bin")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret"), "a\n").unwrap();
+        std::os::unix::fs::symlink(&outside, pkg.join("evil")).unwrap();
+        assert!(apply("--- /dev/null\n+++ b/evil/cron\n@@ -0,0 +1 @@\n+pwned\n", &pkg).is_err());
+        assert!(!outside.join("cron").exists());
+        assert!(apply("--- a/evil/secret\n+++ b/leak\n@@ -1 +1 @@\n-a\n+a\n", &pkg).is_err());
+        assert!(!pkg.join("leak").exists());
+        std::fs::write(pkg.join("bin/cli.js"), "old\n").unwrap();
+        std::fs::set_permissions(pkg.join("bin/cli.js"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        apply("--- a/bin/cli.js\n+++ b/bin/cli.js\n@@ -1 +1 @@\n-old\n+new\n", &pkg).unwrap();
+        assert_eq!(std::fs::read_to_string(pkg.join("bin/cli.js")).unwrap(), "new\n");
+        assert_eq!(
+            std::fs::metadata(pkg.join("bin/cli.js")).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

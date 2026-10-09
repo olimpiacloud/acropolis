@@ -46,11 +46,7 @@ pub fn plan(app: &GoApp, env: &Env, name: &str) -> Result<Plan> {
     }
     let mut run_env = BTreeMap::new();
     run_env.insert("CGO_ENABLED".to_string(), if app.cgo { "1" } else { "0" }.to_string());
-    for (k, v) in &env.vars {
-        if !k.starts_with("ACROPOLIS_") && !k.starts_with("RAILPACK_") {
-            run_env.insert(k.clone(), crate::env_ref(k, v));
-        }
-    }
+    run_env.extend(crate::user_env(env));
     let mut argv = vec!["go".to_string(), "build".to_string()];
     if vendored {
         argv.push("-mod=vendor".to_string());
