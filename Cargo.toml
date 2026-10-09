@@ -37,7 +37,7 @@ sha1 = "0.11"
 base64 = "0.22"
 hex = "0.4"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
-zstd = { version = "0.13", features = ["zstdmt"] }
+zstd = { version = "0.14", features = ["zstdmt"] }
 liblzma = "0.4"
 clap = { version = "4", features = ["derive", "env"] }
 semver = "1"
