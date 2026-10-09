@@ -192,6 +192,9 @@ fn build_info(
         "warnings": plan.map(|p| p.warnings.clone()).unwrap_or_default(),
         "success": res.is_some(),
         "error": err.map(|e| format!("{e:#}")),
+        // Same class and exit code as the process: lets a caller pick retry (infra) or fallback (config) from the file.
+        "errorClass": err.map(|e| acropolis_build::errors::classify(e).name()),
+        "exitCode": err.map(|e| acropolis_build::errors::classify(e).exit_code()),
     })
 }
 
