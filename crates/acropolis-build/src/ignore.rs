@@ -260,8 +260,9 @@ mod tests {
         let start = std::time::Instant::now();
         assert!(!evil.excluded(&deep));
         assert!(evil.excluded(&format!("{deep}/b")));
+        // Backtracking takes hours here; 2 s only guards against that without flaking on a loaded CI runner.
         assert!(
-            start.elapsed() < std::time::Duration::from_millis(100),
+            start.elapsed() < std::time::Duration::from_secs(2),
             "{:?}",
             start.elapsed()
         );

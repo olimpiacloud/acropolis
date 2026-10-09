@@ -14,7 +14,7 @@ docker run --rm --privileged -v "$PWD:/app:ro" -v /tmp/out:/out acropolis-builde
 
 Operator settings come from the container environment (`ACROPOLIS_CACHE_KEY`, `ACROPOLIS_BUILD_TIMEOUT`, `ACROPOLIS_STEP_TIMEOUT`, `ACROPOLIS_BUILD_ID`, registry credentials); app settings come from `-e` and the app's `railpack.json` or `acropolis.json`.
 
-Base images are pinned by digest; the comment at the top of the Dockerfile shows how to bump them. The Rust image must match `rust-version` in `Cargo.toml` (the minimum the locked dependencies accept). The build uses BuildKit cache mounts and `--locked`; the release profile already strips the binary.
+Base images are pinned by digest; the comment at the top of the Dockerfile shows how to bump them. The Rust image must be at least `rust-version` in `Cargo.toml` (the minimum the locked dependencies accept); Dependabot keeps it on the latest stable. The build uses BuildKit cache mounts and `--locked`; the release profile already strips the binary.
 
 ## Using it as a PaaS builder (Olimpia)
 
