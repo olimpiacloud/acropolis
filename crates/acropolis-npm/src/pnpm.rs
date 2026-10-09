@@ -69,14 +69,13 @@ fn dep_map(v: Option<&Value>) -> BTreeMap<String, String> {
     out
 }
 
-fn split_name_version(key: &str) -> (String, String) {
+pub(crate) fn split_name_version(key: &str) -> (String, String) {
     let key = key.trim_start_matches('/');
     let base = match key.find('(') {
         Some(i) => &key[..i],
         None => key,
     };
-    let at = base[1..].find('@').map(|i| i + 1);
-    match at {
+    match crate::lockfile::version_sep(base) {
         Some(i) => (base[..i].to_string(), base[i + 1..].to_string()),
         None => (base.to_string(), String::new()),
     }

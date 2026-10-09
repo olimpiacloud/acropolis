@@ -13,7 +13,7 @@ pub fn is_ruby(dir: &Path) -> bool {
 }
 
 fn read(dir: &Path, f: &str) -> String {
-    std::fs::read_to_string(dir.join(f)).unwrap_or_default()
+    crate::detect::read_app_file(dir, f).unwrap_or_default()
 }
 
 pub fn version(dir: &Path, env: &Env) -> VersionSpec {
@@ -196,20 +196,14 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
         "/usr/local/bundle",
         crate::extend::NATIVE_DEBS,
     ));
-    let mut run_env = BTreeMap::new();
-    for (k, v) in [
-        ("BUNDLE_WITHOUT", "development:test"),
+    let fixed_env = [
         ("BUNDLE_GEMFILE", "/app/Gemfile"),
-        ("RAILS_ENV", "production"),
+        ("BUNDLE_WITHOUT", "development:test"),
         ("RACK_ENV", "production"),
-    ] {
-        run_env.insert(k.to_string(), v.to_string());
-    }
-    for (k, v) in &env.vars {
-        if !k.starts_with("ACROPOLIS_") && !k.starts_with("RAILPACK_") {
-            run_env.insert(k.clone(), crate::env_ref(k, v));
-        }
-    }
+        ("RAILS_ENV", "production"),
+    ];
+    let mut run_env: BTreeMap<String, String> = fixed_env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    run_env.extend(crate::user_env(env));
     b.step(
         "install",
         format!("bundle install (in {build_image})"),
@@ -339,11 +333,8 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
         "layer-app".into(),
     ];
     b.plan.image.workdir = Some("/app".into());
-    let mut img_env: Vec<(String, String)> = run_env
-        .iter()
-        .filter(|(k, _)| k.starts_with("BUNDLE_") || *k == "RAILS_ENV" || *k == "RACK_ENV")
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
+    // Only acropolis' own values: user variables are `{env:NAME}` placeholders that exist only in build steps.
+    let mut img_env: Vec<(String, String)> = fixed_env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     img_env.push(("LD_PRELOAD".into(), "libjemalloc.so.2".into()));
     img_env.push(("RUBY_YJIT_ENABLE".into(), "1".into()));
     img_env.push(("RAILS_LOG_TO_STDOUT".into(), "enabled".into()));
@@ -360,4 +351,27 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
     b.plan.image.cmd = Some(super::shell_start(&start));
     b.plan.image.entrypoint = Some(vec![]);
     Ok(b.finish())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_variables_do_not_reach_the_image_env_as_placeholders() {
+        let dir = crate::detect::scratch_dir("ruby-env");
+        std::fs::write(dir.join("Gemfile"), "source 'https://rubygems.org'\n").unwrap();
+        std::fs::write(dir.join("config.ru"), "run ->(_) { [200, {}, ['ok']] }\n").unwrap();
+        let mut env = Env::default();
+        env.vars.insert("RAILS_ENV".into(), "staging".into());
+        env.vars.insert("BUNDLE_GITHUB__COM".into(), "token".into());
+        let p = plan(&dir, &env, "app").unwrap();
+        assert!(
+            p.image.env.iter().all(|(_, v)| !v.contains("{env:")),
+            "{:?}",
+            p.image.env
+        );
+        assert!(p.image.env.iter().any(|(k, v)| k == "RAILS_ENV" && v == "production"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

@@ -1,6 +1,8 @@
 use std::io::{self, Read, Write};
 
 const BLOCK: usize = 512;
+/// PAX and GNU long-name records are a few hundred bytes; the size field is attacker-controlled.
+const MAX_META: u64 = 1 << 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -288,6 +290,12 @@ impl<R: Read> TarReader<R> {
             let size = pax_size.take().unwrap_or(size);
             match flag {
                 b'x' | b'g' | b'L' | b'K' => {
+                    if size > MAX_META {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("tar metadata entry of {size} bytes"),
+                        ));
+                    }
                     let mut data = vec![0u8; size as usize];
                     self.inner.read_exact(&mut data)?;
                     let p = (BLOCK as u64 - size % BLOCK as u64) % BLOCK as u64;
@@ -368,7 +376,7 @@ impl<R: Read> TarReader<R> {
     }
 
     pub fn read_data(&mut self) -> io::Result<Vec<u8>> {
-        let mut v = Vec::with_capacity(self.remaining as usize);
+        let mut v = Vec::with_capacity(self.remaining.min(MAX_META) as usize);
         self.data().read_to_end(&mut v)?;
         Ok(v)
     }
@@ -468,6 +476,26 @@ pub fn normalize_mode(mode: u32, kind: Kind) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A header whose base-256 size field declares 1 TiB.
+    fn header_of_one_tib(flag: char) -> [u8; BLOCK] {
+        let mut h = [0u8; BLOCK];
+        fill(&mut h, flag, "entry", 0o644, 0, "", "", (0, 0));
+        h[124..136].fill(0);
+        h[124] = 0x80;
+        h[130] = 1;
+        h
+    }
+
+    #[test]
+    fn huge_declared_sizes_fail_without_allocating_them() {
+        let meta = header_of_one_tib('x');
+        assert!(TarReader::new(&meta[..]).next_entry().is_err());
+        let file = header_of_one_tib('0');
+        let mut r = TarReader::new(&file[..]);
+        assert_eq!(r.next_entry().unwrap().unwrap().size, 1 << 40);
+        assert!(r.read_data().is_err());
+    }
 
     #[test]
     fn roundtrip_long_paths() {

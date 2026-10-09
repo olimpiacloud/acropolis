@@ -3,7 +3,7 @@ use anyhow::{Result, anyhow, bail};
 use bytes::{Bytes, BytesMut};
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
-use reqwest::header::{HeaderMap, RANGE};
+use reqwest::header::{CONTENT_RANGE, HeaderMap, RANGE};
 use reqwest::{Client, StatusCode};
 use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
@@ -66,6 +66,14 @@ async fn fetch_range(
         StatusCode::OK => return Err(anyhow!(NoRanges)),
         s => bail!("range request {start}-{end} failed: {s}"),
     }
+    let range = resp
+        .headers()
+        .get(CONTENT_RANGE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !range.starts_with(&format!("bytes {start}-{end}/")) {
+        bail!("range request {start}-{end} answered with Content-Range {range:?}");
+    }
     let want = (end - start + 1) as usize;
     let mut buf = BytesMut::with_capacity(want);
     let mut stream = resp.bytes_stream();
@@ -77,6 +85,9 @@ async fn fetch_range(
                 let chunk = chunk?;
                 acropolis_events::add_downloaded(chunk.len() as u64);
                 buf.extend_from_slice(&chunk);
+                if buf.len() > want {
+                    bail!("range response longer than the {want} bytes requested");
+                }
             }
         }
     }
@@ -170,7 +181,10 @@ pub async fn download_sources<S: AsyncSink, A: std::future::Future<Output = Opti
                     }
                     Err(e) => {
                         if e.downcast_ref::<NoRanges>().is_some() {
-                            return Err(e);
+                            if written == 0 {
+                                return Err(e);
+                            }
+                            bail!("{url} stopped honoring range requests after {written} bytes");
                         }
                         let entry = in_flight.get_mut(&i).map(|x| { x.0 -= 1; x.0 });
                         if entry == Some(0) {

@@ -191,10 +191,9 @@ fn list(v: Option<&Value>) -> Option<Vec<String>> {
     }
 }
 
-fn real_name(alias: &str, range: &str) -> (String, String) {
+pub(crate) fn real_name(alias: &str, range: &str) -> (String, String) {
     if let Some(rest) = range.strip_prefix("npm:") {
-        let at = rest[1..].find('@').map(|i| i + 1);
-        return match at {
+        return match crate::lockfile::version_sep(rest) {
             Some(i) => (rest[..i].to_string(), rest[i + 1..].to_string()),
             None => (rest.to_string(), "*".to_string()),
         };

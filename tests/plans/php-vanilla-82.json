@@ -123,6 +123,7 @@
      "exclude": [
       "var/cache",
       "var/log",
+      "var/lib/apt/lists",
       "root"
      ],
      "include": [],

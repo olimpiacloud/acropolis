@@ -132,3 +132,38 @@ Cada entrada: qué se probó, qué número dio, qué quedó y qué se descartó.
 
 - Encontrado al medir una app real: el instalador propio ignoraba `patchedDependencies`, así que la imagen salía con el paquete sin parchear y sin ningún error. `bun install` y `pnpm install` (lo que corre Railpack) sí aplican el parche.
 - Quedó: después de materializar `node_modules` se aplican los parches de `package.json` (`patchedDependencies` y `pnpm.patchedDependencies`) y de `pnpm-workspace.yaml`, con un aplicador de diffs propio (los builders pueden no tener `patch` ni `git`), a cada copia instalada del paquete y versión. El contenido de los parches entra en el hash del paso de instalación, así que cambiar un parche invalida la caché de `node_modules`. Si hay parches, la capa de dependencias de producción se arma desde un árbol instalado y no directo desde los tarballs.
+
+## D22. Auditoría de seguridad del 2026-10-08: lo que corre como root sobre un repo ajeno
+
+Modelo: el repo, sus lockfiles, parches, configs y las variables `-e` los controla un atacante; el entorno del proceso `acropolis` es del operador. Cada hallazgo tiene un test que falla sin el arreglo.
+
+- Pasos en el host: namespace de PID propio con `/proc` nuevo (antes un `cat /proc/1/environ` en el script de build leía las credenciales del registry), `/proc/{sys,sysrq-trigger,irq,bus,fs}` de solo lectura (`core_pattern` y `modprobe` permiten salir al host sin capabilities), `/sys` de solo lectura recursivo con `mount_setattr(AT_RECURSIVE)` (con el remount de antes `/sys/fs/cgroup` seguía escribible), `/dev` en tmpfs con null, zero, full, random, urandom y tty (en un contenedor `--privileged` estaban los discos del host), capabilities por lista de las que quedan (CHOWN, DAC_OVERRIDE, FOWNER, FSETID, KILL, SETGID, SETUID, NET_BIND_SERVICE; antes quedaba `CAP_DAC_READ_SEARCH`, que permite `open_by_handle_at` fuera del namespace) y `$DOCKER_CONFIG`, `$HOME/.docker` y `/root/.docker` tapados con un tmpfs vacío. Si algo de esto falla, el paso no arranca. Lo mismo en el rootfs de imagen, donde además `lo` se levanta antes de quitar las capabilities (antes quedaba apagado).
+- Lecturas del repo: config, `package.json`, lockfiles, `go.sum`, `Cargo.toml`, `rust-toolchain`, parches, archivos de versión, `Caddyfile` y `Staticfile` solo se leen si resuelven dentro de la app y son archivos regulares. Con `.nvmrc -> /proc/self/environ` el entorno del proceso salía en el log, y con `Caddyfile -> /root/.docker/config.json` terminaba dentro de la imagen; los errores de json5, toml y yaml copian la línea del archivo.
+- Escrituras como root: `name` de `Cargo.lock`, módulo y versión de `go.sum`, `packageManager`, versiones de toolchain y `outDir` del SPA nativo se validan antes de armar rutas (`name = "../../usr/lib/x86_64-linux"` borraba ese directorio del host). Zips de módulos Go con rutas absolutas, hardlinks de tarballs con `..`, whiteouts `.wh..`, symlinks `.cargo-checksum.json` y parches que pasan por un symlink del lockfile se rechazan. El bundler de SPAs, que corre dentro del proceso, falla si un módulo, `@import`, `url()` o archivo de `public/` resuelve fuera de la app.
+- Recursos: metadatos PAX/GNU de hasta 1 MiB, zip de módulo de hasta 500 MiB descomprimido (`modzip.MaxZipFile` de Go), crate de hasta 512 MiB (cargo, CVE-2022-36114), respuestas en memoria de hasta 512 MiB, manifests, configs y tokens de registry de hasta 16 MiB.
+- Registry y red: credenciales por host destino (las de Docker Hub viajaban al mirror de D12), `Authorization` solo al host del registry (no a un `Location` de upload en otro host), realm de token solo https, digests solo `sha256:<64 hex>` en referencias, descriptores y en la caché de imágenes en disco, referencias validadas con la gramática de OCI distribution, `Content-Range` exacto en las descargas segmentadas, `GOPROXY` con la misma política que los registries npm (https y nada privado) e IPv4 dentro de IPv6 (`::ffff:`, NAT64) cuenta como privada.
+- Store compartido: los temporales llevan un nonce aleatorio y se crean con `O_EXCL`; con `{pid}-{seq}` dos contenedores (los dos con pid 1) escribían el mismo inodo y el blob quedaba envenenado.
+- Errores: la clase del fallo de un comando viaja tipada hasta el código de salida (antes un "JavaScript heap out of memory" en la salida daba 75 y un SIGKILL daba 70); SIGTERM/SIGINT es 75; un panic sale con 70 y el evento `build_failed`.
+- Raíz de confianza de los toolchains: Node (`SHASUMS256.txt`), Go (`.sha256`), Rust (manifiesto de canal), uv, bun y pnpm se verifican contra un checksum del mismo origen por HTTPS, sin firma. Protege contra corrupción, CDNs y mirrors, no contra un compromiso de nodejs.org, dl.google.com o static.rust-lang.org.
+- Pendiente: seccomp (keyctl, bpf, userfaultfd, perf_event_open, `unshare(CLONE_NEWUSER)`), `pivot_root` en vez de `chroot`, tope de tamaño por entrada en `read_tarball` de npm, nombres DNS que resuelven a IPs privadas en lo que baja Acropolis (la defensa real es la red del builder, ver README).
+
+## D23. Perfil release sin símbolos
+
+- Medido: el binario release pesaba 194,8 MB con `debug = "line-tables-only"`; 39,5 MB sin debuginfo y 31,3 MB con `strip = "symbols"`, igual que el `strip` que ya hacía el Dockerfile. Los mensajes de panic conservan archivo y línea; para backtraces, `CARGO_PROFILE_RELEASE_STRIP=none`. El perfil `fast` no se toca.
+- Del `.text` (24,3 MB), el bundler (oxc, rolldown, lightningcss) ocupa ~37 % (D14), TLS con aws-lc 1,45 MB y el código propio 2,2 MB. `bench` y `e2e` son 238 KB: quedan en el binario, ocultos de `--help`.
+- Pendiente medir: rustls con ring en vez de aws-lc (~1,4 MB y sin compilar C) y `codegen-units = 1`.
+
+## D24. MSRV 1.96
+
+- oxc 0.152 (vía rolldown, D14) pide rustc 1.96; con `rust-version = "1.90"` y `rust:1.90-bookworm` la imagen de builder no compilaba con `--locked`. La CI chequea la MSRV que declara `Cargo.toml`.
+
+## D25. Releases y CI
+
+- release-plz en modo `git_only` (no se publica en crates.io): un solo tag `v{{version}}` lo crea `acropolis-cli`; las bibliotecas no tienen tag propio pero sus commits suben la versión y entran en `CHANGELOG.md` (con `release = false` quedarían afuera). Los títulos de PR siguen Conventional Commits y se integra con squash.
+- Los binarios del release se compilan dentro de `rust:<versión>-bookworm` (glibc 2.36, D9) para x86_64 y arm64, con `SHA256SUMS` y atestación de procedencia; la imagen de builder va a `ghcr.io/olimpiacloud/acropolis-builder` con SBOM.
+- La CI corre los tests como root (`sudo -E` como runner de cargo) para que los del sandbox no se salteen, y compara los snapshots de planes contra los ejemplos de Railpack fijados a un commit en un runner con glibc 2.39, porque los planes de Rust dependen de la glibc del host (D9). Los 131 planes no usan red.
+
+## D26. Next standalone: cuándo se respeta el `output` propio
+
+- Con `output: 'standalone'` en la config, la imagen arranca con `server.js` solo si el start es `next start [-p|-H]` (y respeta `-p`); con un servidor propio (`node server.js`) se usa ese start, como Railpack. Antes el `server.js` generado pisaba el del usuario y el puerto quedaba en 3000.
+- Con `outputFileTracingRoot` no se fuerza standalone y se arranca con `next start`: `server.js` queda anidado en un directorio que no se puede predecir.

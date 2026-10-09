@@ -51,24 +51,14 @@ fn str_or_list(v: Option<&Value>) -> Option<Vec<String>> {
 }
 
 fn split_spec(spec: &str) -> (String, String) {
-    let at = spec[1..].find('@').map(|i| i + 1).unwrap_or(spec.len());
-    (spec[..at].to_string(), spec.get(at + 1..).unwrap_or("").to_string())
+    match crate::lockfile::version_sep(spec) {
+        Some(at) => (spec[..at].to_string(), spec[at + 1..].to_string()),
+        None => (spec.to_string(), String::new()),
+    }
 }
 
 pub fn key_to_path(key: &str) -> String {
-    let parts: Vec<&str> = key.split('/').collect();
-    let mut names: Vec<String> = Vec::new();
-    let mut i = 0;
-    while i < parts.len() {
-        if parts[i].starts_with('@') && i + 1 < parts.len() {
-            names.push(format!("{}/{}", parts[i], parts[i + 1]));
-            i += 2;
-        } else {
-            names.push(parts[i].to_string());
-            i += 1;
-        }
-    }
-    names
+    key_segments(key)
         .iter()
         .map(|n| format!("node_modules/{n}"))
         .collect::<Vec<_>>()
@@ -319,6 +309,14 @@ mod tests {
             "node_modules/@babel/core/node_modules/semver"
         );
         assert_eq!(key_to_path("@a/b"), "node_modules/@a/b");
+    }
+
+    #[test]
+    fn malformed_specs_do_not_panic() {
+        assert!(BunLock::parse(r#"{"packages": {"a": [], "b": ["é@1"]}}"#).is_ok());
+        assert_eq!(split_spec("@s/x@1.0.0"), ("@s/x".to_string(), "1.0.0".to_string()));
+        assert_eq!(crate::pnpm::split_name_version(""), (String::new(), String::new()));
+        assert_eq!(crate::resolve::real_name("x", "npm:"), (String::new(), "*".to_string()));
     }
 
     #[test]

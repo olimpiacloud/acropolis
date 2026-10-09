@@ -32,6 +32,9 @@ pub fn app_dir(home: &Path, key: &str) -> PathBuf {
 }
 
 fn lock(dir: &Path) -> Result<File> {
+    if dir.ends_with("cache/apps") {
+        bail!("the cache key must not be empty");
+    }
     std::fs::create_dir_all(dir)?;
     let f = File::options()
         .create(true)
@@ -80,7 +83,7 @@ pub fn import(home: &Path, key: &str, input: &Path) -> Result<u64> {
         1 << 20,
         File::open(input).with_context(|| format!("opening {}", input.display()))?,
     ))?;
-    let n = acropolis_oci::unpack::unpack_for_overlay(reader, &staging)?;
+    let n = acropolis_oci::unpack::unpack_plain(reader, &staging)?;
     for e in std::fs::read_dir(&staging)? {
         let e = e?;
         let target = dir.join(e.file_name());
@@ -126,6 +129,9 @@ mod tests {
             PathBuf::from("x/obj")
         );
         assert!(!got.join("src").exists());
+        assert!(export(&a, "", &base.join("all.tar.zst")).is_err());
+        assert!(import(&b, "", &file).is_err());
+        assert!(!app_dir(&b, "").join("gocache").exists());
         let _ = std::fs::remove_dir_all(&base);
     }
 }

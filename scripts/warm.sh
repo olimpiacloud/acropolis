@@ -4,6 +4,8 @@ A=${ACROPOLIS:-$(cd "$(dirname "$0")/.." && pwd)/target/release/acropolis}
 H=/tmp/warm/home
 for app in "$@"; do
   rm -rf "/tmp/warm/$app" "$H"
+  mkdir -p /tmp/warm
+  f=
   cp -r "$(cd "$(dirname "$0")/.." && pwd)/bench/apps/$app" "/tmp/warm/$app"
   for phase in cold same change; do
     if [ $phase = change ]; then

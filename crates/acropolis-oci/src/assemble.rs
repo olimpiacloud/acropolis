@@ -62,7 +62,9 @@ pub fn assemble(base: Option<&ResolvedImage>, layers: &[Layer], patch: &ConfigPa
     if cfg.is_null() {
         *cfg = json!({});
     }
-    let cfg = cfg.as_object_mut().unwrap();
+    let cfg = cfg
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("image config field `config` is not an object"))?;
     if !patch.env.is_empty() {
         let mut env: Vec<String> = cfg
             .get("Env")
@@ -127,11 +129,8 @@ pub fn assemble(base: Option<&ResolvedImage>, layers: &[Layer], patch: &ConfigPa
         .or_insert_with(|| json!({"type": "layers", "diff_ids": []}));
     let diff_ids = rootfs
         .as_object_mut()
-        .unwrap()
-        .entry("diff_ids")
-        .or_insert_with(|| json!([]))
-        .as_array_mut()
-        .unwrap();
+        .and_then(|r| r.entry("diff_ids").or_insert_with(|| json!([])).as_array_mut())
+        .ok_or_else(|| anyhow::anyhow!("image config field `rootfs.diff_ids` is not an array"))?;
     for l in layers {
         diff_ids.push(json!(l.diff_id.to_oci()));
     }

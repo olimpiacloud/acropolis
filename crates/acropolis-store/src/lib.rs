@@ -179,6 +179,7 @@ pub fn hash_bytes(algo: Algo, data: &[u8]) -> Integrity {
 pub struct Store {
     root: PathBuf,
     seq: AtomicU64,
+    nonce: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -194,9 +195,12 @@ impl Store {
         let root = root.into();
         fs::create_dir_all(root.join("blobs"))?;
         fs::create_dir_all(root.join("tmp"))?;
+        let nonce =
+            std::hash::BuildHasher::hash_one(&std::collections::hash_map::RandomState::new(), std::process::id());
         Ok(Store {
             root,
             seq: AtomicU64::new(0),
+            nonce,
         })
     }
 
@@ -234,16 +238,17 @@ impl Store {
         })
     }
 
+    /// Unique even across stores on the same root whose processes share a PID (one per PID namespace).
     pub fn temp_path(&self, tag: &str) -> PathBuf {
         let n = self.seq.fetch_add(1, Ordering::Relaxed);
         self.root
             .join("tmp")
-            .join(format!("{}-{}-{}", std::process::id(), n, tag))
+            .join(format!("{}-{:016x}-{}-{}", std::process::id(), self.nonce, n, tag))
     }
 
     pub fn writer(&self, what: impl Into<String>, expected: Option<Integrity>) -> Result<BlobWriter<'_>> {
         let tmp = self.temp_path("blob");
-        let file = File::create(&tmp)?;
+        let file = File::options().write(true).create_new(true).open(&tmp)?;
         let extra = expected
             .as_ref()
             .filter(|e| e.algo != Algo::Sha256)
@@ -450,5 +455,19 @@ mod tests {
         let err = store.put_bytes("bad", b"tampered", Some(good.clone())).unwrap_err();
         assert!(matches!(err, Error::IntegrityMismatch { .. }));
         assert_eq!(fs::read_dir(store.tmp_dir()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn stores_sharing_a_root_do_not_share_temp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (Store::open(dir.path()).unwrap(), Store::open(dir.path()).unwrap());
+        let mut wa = a.writer("a", None).unwrap();
+        let mut wb = b.writer("b", None).unwrap();
+        wa.write_all(b"aaaa").unwrap();
+        wb.write_all(b"bb").unwrap();
+        let blob_a = wa.commit().unwrap();
+        let blob_b = wb.commit().unwrap();
+        assert_eq!(fs::read(&blob_a.path).unwrap(), b"aaaa");
+        assert_eq!(fs::read(&blob_b.path).unwrap(), b"bb");
     }
 }

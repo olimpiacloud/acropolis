@@ -100,7 +100,7 @@ fn restore_node_caches(cache: &Path, cwd: &Path) {
     for rel in NODE_CACHE_DIRS {
         let saved = cache.join("node").join(rel.replace('/', "__"));
         let live = cwd.join(rel);
-        if saved.is_dir() && !live.exists() {
+        if saved.is_dir() && !symlink_on_the_way(cwd, rel) && std::fs::symlink_metadata(&live).is_err() {
             if let Some(parent) = live.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
@@ -112,7 +112,7 @@ fn restore_node_caches(cache: &Path, cwd: &Path) {
 fn save_node_caches(cache: &Path, cwd: &Path) {
     for rel in NODE_CACHE_DIRS {
         let live = cwd.join(rel);
-        if live.is_dir() {
+        if !symlink_on_the_way(cwd, rel) && std::fs::symlink_metadata(&live).is_ok_and(|m| m.is_dir()) {
             let saved = cache.join("node").join(rel.replace('/', "__"));
             let _ = std::fs::create_dir_all(cache.join("node"));
             let _ = std::fs::remove_dir_all(&saved);
@@ -187,6 +187,9 @@ fn restore_node_modules(cache: &Path, src: &Path, key: &str) -> bool {
         let Some((i, rel)) = line.split_once('\t') else {
             continue;
         };
+        if clean_relative(rel).is_err() || symlink_on_the_way(src, rel) {
+            return false;
+        }
         let dest = src.join(rel);
         if let Some(parent) = dest.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -216,6 +219,23 @@ struct Ctx {
 
 type StepFuture = Shared<BoxFuture<'static, Result<(), Arc<anyhow::Error>>>>;
 
+/// A step error shared between the futures that await it. Keeps the original
+/// chain so `errors::classify` still finds the typed `CommandFailed`.
+#[derive(Debug)]
+struct StepError(Arc<anyhow::Error>);
+
+impl std::fmt::Display for StepError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&**self.0, f)
+    }
+}
+
+impl std::error::Error for StepError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.source()
+    }
+}
+
 impl Ctx {
     fn cache_path(&self, kind: &str) -> PathBuf {
         match &self.cache {
@@ -231,7 +251,7 @@ impl Ctx {
     async fn await_late(&self, step: &Step) -> Result<()> {
         let late = self.late.lock().unwrap().remove(&step.id).unwrap_or_default();
         for f in late {
-            f.await.map_err(|e| anyhow!("{e:#}"))?;
+            f.await.map_err(|e| anyhow::Error::new(StepError(e)))?;
         }
         Ok(())
     }
@@ -270,7 +290,11 @@ impl Ctx {
             let start = from + i;
             let Some(end) = out[start..].find('}') else { break };
             let name = out[start + 5..start + end].to_string();
-            let value = self.opts.env.vars.get(&name).cloned().unwrap_or_default();
+            let value = if crate::detect::operator_key(&name) {
+                String::new()
+            } else {
+                self.opts.env.vars.get(&name).cloned().unwrap_or_default()
+            };
             out.replace_range(start..start + end + 1, &value);
             from = start + value.len();
         }
@@ -474,6 +498,7 @@ pub async fn execute(plan: Plan, opts: BuildOptions, exec: Arc<dyn Executor>) ->
         }
     };
     tokio::pin!(deadline);
+    let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     loop {
         let interrupted: Option<String> = tokio::select! {
@@ -494,9 +519,9 @@ pub async fn execute(plan: Plan, opts: BuildOptions, exec: Arc<dyn Executor>) ->
                     None
                 }
             },
-            _ = &mut deadline => Some(format!("build timed out after {}s (ACROPOLIS_BUILD_TIMEOUT)", build_timeout.map(|t| t.as_secs()).unwrap_or(0))),
-            _ = tokio::signal::ctrl_c() => Some("build interrupted (SIGINT)".to_string()),
-            _ = sigterm.recv() => Some("build interrupted (SIGTERM)".to_string()),
+            _ = &mut deadline, if first_err.is_none() => Some(format!("build timed out after {}s (ACROPOLIS_BUILD_TIMEOUT)", build_timeout.map(|t| t.as_secs()).unwrap_or(0))),
+            _ = sigint.recv(), if first_err.is_none() => Some("build interrupted (SIGINT)".to_string()),
+            _ = sigterm.recv(), if first_err.is_none() => Some("build interrupted (SIGTERM)".to_string()),
         };
         if let Some(reason) = interrupted
             && first_err.is_none()
@@ -528,7 +553,7 @@ pub async fn execute(plan: Plan, opts: BuildOptions, exec: Arc<dyn Executor>) ->
         let _ = tokio::task::spawn_blocking(move || crate::gc::collect(&home, &rootfs, max)).await;
     }
     if let Some(e) = first_err {
-        return Err(anyhow!("{e:#}"));
+        return Err(anyhow::Error::new(StepError(e)));
     }
     let layers: Vec<Layer> = plan
         .image
@@ -603,7 +628,7 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                 "node" => {
                     let fuzzy = acropolis_semver::fuzzy_version(spec);
                     let version = acropolis_toolchain::node::resolve(fetcher, &fuzzy).await?;
-                    let dest = ctx.opts.home.join("toolchains").join(format!("node-{version}"));
+                    let dest = toolchain_dir(&ctx.opts.home, &format!("node-{version}"))?;
                     let marker = dest.join(".acropolis-complete");
                     if marker.exists() {
                         return Ok(Out::Tool(Installed {
@@ -633,7 +658,7 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                 }
                 "go" => {
                     let version = acropolis_toolchain::go::resolve(fetcher, spec).await?;
-                    let dest = ctx.opts.home.join("toolchains").join(format!("go-{version}"));
+                    let dest = toolchain_dir(&ctx.opts.home, &format!("go-{version}"))?;
                     let marker = dest.join(".acropolis-complete");
                     if marker.exists() {
                         if ctx.opts.env.flag("PREWARM") {
@@ -664,11 +689,7 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                 }
                 "bun" => {
                     let release = acropolis_toolchain::bun::resolve(fetcher, spec).await?;
-                    let dest = ctx
-                        .opts
-                        .home
-                        .join("toolchains")
-                        .join(format!("bun-{}", release.version));
+                    let dest = toolchain_dir(&ctx.opts.home, &format!("bun-{}", release.version))?;
                     let marker = dest.join(".acropolis-complete");
                     if !marker.exists() {
                         let tmp = staging(&dest);
@@ -685,7 +706,7 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                     }))
                 }
                 "yarn-berry" => {
-                    let dest = ctx.opts.home.join("toolchains").join(format!("yarn-berry-{spec}"));
+                    let dest = toolchain_dir(&ctx.opts.home, &format!("yarn-berry-{spec}"))?;
                     if !dest.join(".acropolis-complete").exists() {
                         let tmp = staging(&dest);
                         let url = format!("https://repo.yarnpkg.com/{spec}/packages/yarnpkg-cli/bin/yarn.js");
@@ -746,7 +767,7 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                     } else {
                         format!("v{}", spec.trim_start_matches('v'))
                     };
-                    let dest = ctx.opts.home.join("toolchains").join(format!("mise-{tag}"));
+                    let dest = toolchain_dir(&ctx.opts.home, &format!("mise-{tag}"))?;
                     if !dest.join(".acropolis-complete").exists() {
                         let tmp = staging(&dest);
                         let arch = if std::env::consts::ARCH == "aarch64" {
@@ -778,11 +799,10 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                 t if t.starts_with("npm:") => {
                     let pkg = &t[4..];
                     let release = acropolis_toolchain::npmpkg::resolve(fetcher, pkg, spec).await?;
-                    let dest = ctx.opts.home.join("toolchains").join(format!(
-                        "npm-{}-{}",
-                        pkg.replace('/', "+"),
-                        release.version
-                    ));
+                    let dest = toolchain_dir(
+                        &ctx.opts.home,
+                        &format!("npm-{}-{}", pkg.replace('/', "+"), release.version),
+                    )?;
                     if !dest.join(".acropolis-complete").exists() {
                         let tmp = staging(&dest);
                         acropolis_toolchain::npmpkg::install(fetcher, &release, &tmp).await?;
@@ -799,7 +819,7 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                 }
                 "uv" => {
                     let release = acropolis_toolchain::uv::resolve(fetcher, spec).await?;
-                    let dest = ctx.opts.home.join("toolchains").join(format!("uv-{}", release.version));
+                    let dest = toolchain_dir(&ctx.opts.home, &format!("uv-{}", release.version))?;
                     let marker = dest.join(".acropolis-complete");
                     if !marker.exists() {
                         let tmp = staging(&dest);
@@ -821,14 +841,10 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                     } else {
                         spec.clone()
                     };
-                    let dest = ctx
-                        .opts
-                        .home
-                        .join("toolchains")
-                        .join(format!("python-standalone-{key}"));
+                    let dest = toolchain_dir(&ctx.opts.home, &format!("python-standalone-{key}"))?;
                     if !dest.join(".acropolis-complete").exists() {
                         let uv = acropolis_toolchain::uv::resolve(fetcher, "").await?;
-                        let uv_dest = ctx.opts.home.join("toolchains").join(format!("uv-{}", uv.version));
+                        let uv_dest = toolchain_dir(&ctx.opts.home, &format!("uv-{}", uv.version))?;
                         if !uv_dest.join(".acropolis-complete").exists() {
                             let tmp = staging(&uv_dest);
                             acropolis_toolchain::uv::install(fetcher, &uv, &tmp).await?;
@@ -840,7 +856,7 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                         let mut cmd = tokio::process::Command::new(uv_dest.join("bin/uv"));
                         cmd.arg("python").arg("install").arg("--install-dir").arg(&install_dir);
                         if !spec.is_empty() {
-                            cmd.arg(spec);
+                            cmd.arg("--").arg(spec);
                         }
                         let out = cmd
                             .env("UV_CACHE_DIR", ctx.work.join("uv-cache"))
@@ -869,12 +885,15 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                         }
                         publish(&tmp, &dest)?;
                     }
-                    let version = std::process::Command::new(dest.join("bin/python3"))
+                    let version = tokio::process::Command::new(dest.join("bin/python3"))
                         .arg("-c")
                         .arg("import platform; print(platform.python_version())")
                         .output()
+                        .await
                         .ok()
+                        .filter(|o| o.status.success())
                         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                        .filter(|v| !v.is_empty())
                         .unwrap_or(key);
                     acropolis_events::log(&step.id, format!("python {version} (standalone)"));
                     Ok(Out::Tool(Installed {
@@ -887,11 +906,7 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                 }
                 "rust" => {
                     let release = acropolis_cargo::resolve(fetcher, spec, &[]).await?;
-                    let dest = ctx
-                        .opts
-                        .home
-                        .join("toolchains")
-                        .join(format!("rust-{}", release.version));
+                    let dest = toolchain_dir(&ctx.opts.home, &format!("rust-{}", release.version))?;
                     let marker = dest.join(".acropolis-complete");
                     if !marker.exists() {
                         let tmp = staging(&dest);
@@ -1045,8 +1060,10 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                     }
                 }
             }
-            if target != "src" {
-                let _ = std::fs::copy(ctx.opts.app_dir.join("package.json"), root.join("package.json"));
+            if target != "src"
+                && let Ok(pj) = read_app_file(&ctx.opts.app_dir, "package.json")
+            {
+                std::fs::write(root.join("package.json"), pj)?;
             }
             let r2 = root.clone();
             let s2 = state.clone();
@@ -1059,7 +1076,10 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             for line in apply_patched_dependencies(&ctx.opts.app_dir, &state.plan, &root)? {
                 acropolis_events::log(&step.id, line);
             }
-            if manager == "pnpm" && !root.join("node_modules/.modules.yaml").exists() {
+            if manager == "pnpm"
+                && !symlink_on_the_way(&root, "node_modules/.modules.yaml")
+                && !root.join("node_modules/.modules.yaml").exists()
+            {
                 std::fs::create_dir_all(root.join("node_modules"))?;
                 std::fs::write(
                     root.join("node_modules/.modules.yaml"),
@@ -1088,7 +1108,7 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             Ok(Out::None)
         }
         Action::GoModules { .. } => {
-            let text = std::fs::read_to_string(ctx.opts.app_dir.join("go.sum"))?;
+            let text = String::from_utf8(read_app_file(&ctx.opts.app_dir, "go.sum")?).context("go.sum is not UTF-8")?;
             let sum = acropolis_gomod::parse_go_sum(&text)?;
             let cache = acropolis_gomod::ModCache {
                 root: ctx.cache_path("gomodcache"),
@@ -1098,9 +1118,12 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                 .env
                 .vars
                 .get("GOPROXY")
-                .map(|p| p.split(',').next().unwrap_or("").to_string())
+                .map(|p| p.split([',', '|']).next().unwrap_or("").to_string())
                 .filter(|p| p.starts_with("http"))
                 .unwrap_or_else(|| "https://proxy.golang.org".to_string());
+            if !ctx.opts.env.flag("ALLOW_PRIVATE_REGISTRY") {
+                check_fetch_url("GOPROXY", &proxy)?;
+            }
             let stats = acropolis_gomod::download_all(&ctx.fetcher, &sum, &cache, &proxy).await?;
             acropolis_events::log(
                 &step.id,
@@ -1115,6 +1138,8 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                 platform: Default::default(),
             };
             let plan = install_plan_for(manager, &ctx.opts.app_dir, lockfile, &opts)?;
+            check_package_urls(&plan, &ctx.opts.env)?;
+            let out = clean_relative(out)?.trim_end_matches('/').to_string();
             let root = ctx.work.join("bundle");
             let app = ctx.opts.app_dir.clone();
             let r2 = root.clone();
@@ -1126,13 +1151,26 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                 )
             })
             .await??;
-            let mut env = BTreeMap::new();
-            for (k, v) in &ctx.opts.env.vars {
-                env.insert(k.clone(), v.clone());
+            let out_dir = root.join(&out);
+            if matches!(out.as_str(), "" | ".") || symlink_on_the_way(&root, &out) {
+                bail!("output directory {out:?} must stay inside the app directory");
             }
+            match std::fs::symlink_metadata(&out_dir) {
+                Ok(m) if m.is_dir() => std::fs::remove_dir_all(&out_dir)?,
+                Ok(_) => std::fs::remove_file(&out_dir)?,
+                Err(_) => {}
+            }
+            let env = ctx
+                .opts
+                .env
+                .vars
+                .iter()
+                .filter(|(k, _)| !crate::detect::operator_key(k))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
             let res = acropolis_bundle::build_spa(acropolis_bundle::SpaInput {
                 root: root.clone(),
-                out_dir: root.join(out),
+                out_dir,
                 plan: Arc::new(plan),
                 fetcher: ctx.fetcher.clone(),
                 base: "/".into(),
@@ -1155,7 +1193,8 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
             Ok(Out::None)
         }
         Action::CargoVendor { .. } => {
-            let text = std::fs::read_to_string(ctx.opts.app_dir.join("Cargo.lock"))?;
+            let text = String::from_utf8(read_app_file(&ctx.opts.app_dir, "Cargo.lock")?)
+                .context("Cargo.lock is not UTF-8")?;
             let lock = acropolis_cargo::parse_lock(&text)?;
             let vendor_dir = ctx.cache_path("cargo-vendor");
             let stats = acropolis_cargo::vendor(&ctx.fetcher, &lock, &vendor_dir).await?;
@@ -1462,6 +1501,9 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                 })
                 .collect::<Result<_>>()?;
             let spec = &ctx.plan.image;
+            if let Some((k, _)) = spec.env.iter().find(|(_, v)| v.contains("{env:")) {
+                bail!("internal error: image env {k} still holds an {{env:}} placeholder");
+            }
             let mut labels = BTreeMap::new();
             labels.insert("dev.acropolis.plan".to_string(), ctx.plan.hash.clone());
             let patch = ConfigPatch {
@@ -1513,6 +1555,19 @@ fn contained(base: &Path, path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn read_app_file(app_dir: &Path, rel: &str) -> Result<Vec<u8>> {
+    let path = app_dir.join(rel);
+    contained(app_dir, &path)?;
+    std::fs::read(&path).with_context(|| format!("reading {rel}"))
+}
+
+fn toolchain_dir(home: &Path, name: &str) -> Result<PathBuf> {
+    if name.contains(['/', '\0']) || name.starts_with('.') {
+        bail!("invalid toolchain version in {name:?}");
+    }
+    Ok(home.join("toolchains").join(name))
+}
+
 fn symlink_on_the_way(root: &Path, rel: &str) -> bool {
     let mut cur = root.to_path_buf();
     let parts: Vec<&str> = rel.split('/').filter(|p| !p.is_empty()).collect();
@@ -1542,22 +1597,46 @@ fn private_host(host: &str) -> bool {
     if h == "localhost" || h.ends_with(".localhost") || h.ends_with(".internal") || h == "metadata.google.internal" {
         return true;
     }
-    match h.parse::<std::net::IpAddr>() {
-        Ok(std::net::IpAddr::V4(ip)) => {
+    h.parse::<std::net::IpAddr>().is_ok_and(private_ip)
+}
+
+fn private_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
             ip.is_private()
                 || ip.is_loopback()
                 || ip.is_link_local()
                 || ip.is_unspecified()
                 || ip.octets()[0] == 100 && (ip.octets()[1] & 0xc0) == 64
         }
-        Ok(std::net::IpAddr::V6(ip)) => {
+        std::net::IpAddr::V6(ip) => {
+            let s = ip.segments();
+            let nat64 = s[..6] == [0x64, 0xff9b, 0, 0, 0, 0];
+            let embedded = if nat64 {
+                Some(std::net::Ipv4Addr::from((u32::from(s[6]) << 16) | u32::from(s[7])))
+            } else {
+                ip.to_ipv4()
+            };
             ip.is_loopback()
                 || ip.is_unspecified()
-                || (ip.segments()[0] & 0xfe00) == 0xfc00
-                || (ip.segments()[0] & 0xffc0) == 0xfe80
+                || (s[0] & 0xfe00) == 0xfc00
+                || (s[0] & 0xffc0) == 0xfe80
+                || embedded.is_some_and(|v4| private_ip(v4.into()))
         }
-        Err(_) => false,
     }
+}
+
+fn check_fetch_url(what: &str, url: &str) -> Result<()> {
+    let Ok(u) = url::Url::parse(url) else { return Ok(()) };
+    if u.scheme() == "http" {
+        bail!("{what} is fetched over plain http ({url}); use https or set ACROPOLIS_ALLOW_PRIVATE_REGISTRY=1");
+    }
+    if u.host_str().is_some_and(private_host) {
+        bail!(
+            "{what} points at a private or link-local address ({url}); set ACROPOLIS_ALLOW_PRIVATE_REGISTRY=1 if this registry is intended"
+        );
+    }
+    Ok(())
 }
 
 fn check_package_urls(plan: &InstallPlan, env: &crate::Env) -> Result<()> {
@@ -1565,22 +1644,8 @@ fn check_package_urls(plan: &InstallPlan, env: &crate::Env) -> Result<()> {
         return Ok(());
     }
     for p in &plan.packages {
-        let url = match &p.source {
-            acropolis_npm::Source::Registry { url, .. } | acropolis_npm::Source::Git { url } => url,
-            _ => continue,
-        };
-        let Ok(u) = url::Url::parse(url) else { continue };
-        if u.scheme() == "http" {
-            bail!(
-                "{} is fetched over plain http ({url}); use https or set ACROPOLIS_ALLOW_PRIVATE_REGISTRY=1",
-                p.path
-            );
-        }
-        if u.host_str().is_some_and(private_host) {
-            bail!(
-                "{} points at a private or link-local address ({url}); set ACROPOLIS_ALLOW_PRIVATE_REGISTRY=1 if this registry is intended",
-                p.path
-            );
+        if let acropolis_npm::Source::Registry { url, .. } | acropolis_npm::Source::Git { url } = &p.source {
+            check_fetch_url(&p.path, url)?;
         }
     }
     Ok(())
@@ -1604,7 +1669,10 @@ pub fn patched_dependencies(app_dir: &Path) -> Vec<(String, String)> {
             }
         }
     }
-    if let Ok(text) = std::fs::read_to_string(app_dir.join("pnpm-workspace.yaml")) {
+    if let Some(text) = read_app_file(app_dir, "pnpm-workspace.yaml")
+        .ok()
+        .and_then(|b| String::from_utf8(b).ok())
+    {
         let mut inside = false;
         for line in text.lines() {
             if !line.starts_with(' ') && !line.starts_with('\t') {
@@ -1628,8 +1696,9 @@ fn apply_patched_dependencies(app_dir: &Path, plan: &InstallPlan, root: &Path) -
     let mut log = Vec::new();
     for (spec, file) in patched_dependencies(app_dir) {
         let rel = clean_relative(&file)?;
-        let diff =
-            std::fs::read_to_string(app_dir.join(rel)).with_context(|| format!("reading patch {file} for {spec}"))?;
+        let diff = read_app_file(app_dir, rel)
+            .and_then(|b| Ok(String::from_utf8(b)?))
+            .with_context(|| format!("reading patch {file} for {spec}"))?;
         let (name, version) = acropolis_npm::patch::targets(&spec);
         let mut applied = 0;
         for p in plan
@@ -1639,6 +1708,7 @@ fn apply_patched_dependencies(app_dir: &Path, plan: &InstallPlan, root: &Path) -
         {
             let dir = root.join(&p.path);
             if dir.is_dir() {
+                contained(root, &dir)?;
                 acropolis_npm::patch::apply(&diff, &dir).with_context(|| format!("applying {file} to {}", p.path))?;
                 applied += 1;
             }
@@ -1679,7 +1749,7 @@ pub fn install_plan_scoped(
     opts: &InstallOptions,
     workspaces: &[String],
 ) -> Result<InstallPlan> {
-    let bytes = std::fs::read(app_dir.join(lockfile)).with_context(|| format!("reading {lockfile}"))?;
+    let bytes = read_app_file(app_dir, lockfile)?;
     match manager {
         "npm" => InstallPlan::from_lock(&PackageLock::parse(&bytes)?, opts),
         "pnpm" => {
@@ -1688,7 +1758,7 @@ pub fn install_plan_scoped(
         }
         "yarn" => {
             let text = String::from_utf8(bytes).context("yarn.lock is not UTF-8")?;
-            let pj: serde_json::Value = serde_json::from_slice(&std::fs::read(app_dir.join("package.json"))?)?;
+            let pj: serde_json::Value = serde_json::from_slice(&read_app_file(app_dir, "package.json")?)?;
             let ws = acropolis_npm::yarn::expand_workspaces(app_dir, &pj);
             acropolis_npm::yarn::YarnLock::parse(&text)?.install_plan(&pj, &ws, opts)
         }
@@ -1840,11 +1910,15 @@ async fn image_rootfs(ctx: &Arc<Ctx>, image: &str) -> Result<(Vec<PathBuf>, BTre
         let reference = resolved.reference.clone();
         let d = d.clone();
         async move {
+            if !acropolis_oci::reference::valid_digest(&d.digest) {
+                bail!("invalid layer digest {:?} in {}", d.digest, reference);
+            }
             let hex = d.digest.trim_start_matches("sha256:").to_string();
             let rootfs_root = std::env::var("ACROPOLIS_ROOTFS")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| ctx.opts.home.join("rootfs"));
-            std::fs::create_dir_all(&rootfs_root)?;
+            std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
+                .create(&rootfs_root)?;
             let dir = rootfs_root.join(&hex);
             let marker = rootfs_root.join(format!("{hex}.complete"));
             if marker.exists() {
@@ -1889,7 +1963,7 @@ fn npm_lock_out_of_sync(app_dir: &Path, lockfile: &str) -> bool {
     let Ok(pj) = crate::detect::read_package_json(app_dir) else {
         return false;
     };
-    let Ok(bytes) = std::fs::read(app_dir.join(lockfile)) else {
+    let Ok(bytes) = read_app_file(app_dir, lockfile) else {
         return false;
     };
     let Ok(lock) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
@@ -1921,13 +1995,13 @@ fn with_config_excludes(ctx: &Ctx, base: &[String]) -> Vec<String> {
 }
 
 fn staging(dest: &Path) -> PathBuf {
-    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    use std::hash::{BuildHasher, Hasher};
+    let nonce = std::collections::hash_map::RandomState::new().build_hasher().finish();
     let name = dest
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    dest.with_file_name(format!(".{name}.staging-{}-{n}", std::process::id()))
+    dest.with_file_name(format!(".{name}.staging-{}-{nonce:016x}", std::process::id()))
 }
 
 const GO_STD_CACHE: &str = ".acropolis-std-cgo0";
@@ -1999,7 +2073,7 @@ fn publish(staged: &Path, dest: &Path) -> Result<()> {
             return Ok(());
         }
         if dest.exists() {
-            let stale = staging(dest).with_extension("stale");
+            let stale = PathBuf::from(format!("{}.stale", staging(dest).display()));
             if std::fs::rename(dest, &stale).is_ok() {
                 std::thread::spawn(move || {
                     let _ = std::fs::remove_dir_all(stale);
@@ -2041,7 +2115,12 @@ fn load_cached_image(ctx: &Ctx, image: &str) -> Option<ResolvedImage> {
     let config_raw = bytes::Bytes::from(std::fs::read(base.with_extension("config")).ok()?);
     let config_digest = acropolis_store::sha256_bytes(&config_raw).to_oci();
     let manifest: acropolis_oci::image::Manifest = serde_json::from_value(v.get("manifest")?.clone()).ok()?;
-    if manifest.config.digest != config_digest {
+    if manifest.config.digest != config_digest
+        || !manifest
+            .layers
+            .iter()
+            .all(|l| acropolis_oci::reference::valid_digest(&l.digest))
+    {
         return None;
     }
     Some(ResolvedImage {
@@ -2595,5 +2674,157 @@ async fn build_layer(ctx: &Arc<Ctx>, step: &Step, dest: &str, from: &LayerFrom) 
             })
             .await?
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn toolchain_versions_cannot_leave_the_toolchains_dir() {
+        let home = Path::new("/h");
+        assert_eq!(
+            toolchain_dir(home, "yarn-berry-4.1.0").unwrap(),
+            PathBuf::from("/h/toolchains/yarn-berry-4.1.0")
+        );
+        assert!(toolchain_dir(home, "yarn-berry-../../../../4.1.0").is_err());
+        assert!(toolchain_dir(home, "mise-v1/../../x").is_err());
+        let dest = home.join("toolchains/node-22.1.0");
+        assert_ne!(staging(&dest), staging(&dest));
+    }
+
+    #[test]
+    fn private_hosts_include_ipv4_embedded_in_ipv6() {
+        for h in [
+            "169.254.169.254",
+            "[::ffff:169.254.169.254]",
+            "[::ffff:a9fe:a9fe]",
+            "[64:ff9b::a9fe:a9fe]",
+            "[::ffff:10.0.0.5]",
+            "localhost",
+            "[fd00::1]",
+        ] {
+            assert!(private_host(h), "{h}");
+        }
+        for h in [
+            "registry.npmjs.org",
+            "8.8.8.8",
+            "[64:ff9b::808:808]",
+            "[2606:4700::1111]",
+        ] {
+            assert!(!private_host(h), "{h}");
+        }
+        assert!(check_fetch_url("GOPROXY", "https://[::ffff:169.254.169.254]/").is_err());
+        assert!(check_fetch_url("GOPROXY", "http://proxy.example.com").is_err());
+        assert!(check_fetch_url("GOPROXY", "https://proxy.golang.org").is_ok());
+    }
+
+    #[test]
+    fn shared_step_errors_keep_the_command_class() {
+        use std::os::unix::process::ExitStatusExt;
+        let failed = acropolis_exec::CommandFailed::new(
+            &["/bin/sh".into(), "-c".into(), "vite build".into()],
+            std::process::ExitStatus::from_raw(1 << 8),
+            vec!["FATAL ERROR: JavaScript heap out of memory".into()],
+        );
+        let original = anyhow::Error::new(failed).context("step build (run vite build)");
+        let text = format!("{original:#}");
+        let shared = anyhow::Error::new(StepError(Arc::new(original)));
+        assert_eq!(format!("{shared:#}"), text);
+        assert_eq!(crate::errors::classify(&shared), crate::errors::ErrorClass::User);
+    }
+
+    #[test]
+    fn app_files_behind_symlinks_out_of_the_app_are_not_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = tmp.path().join("app");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(tmp.path().join("secret.json"), br#"{"auths":{}}"#).unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("secret.json"), app.join("package-lock.json")).unwrap();
+        let opts = InstallOptions {
+            include_dev: true,
+            include_optional: true,
+            platform: Default::default(),
+        };
+        let err = install_plan_for("npm", &app, "package-lock.json", &opts).unwrap_err();
+        assert_eq!(
+            crate::errors::classify(&err),
+            crate::errors::ErrorClass::Config,
+            "{err:#}"
+        );
+        std::fs::write(app.join("ok.lock"), b"x").unwrap();
+        assert_eq!(read_app_file(&app, "ok.lock").unwrap(), b"x");
+    }
+
+    #[test]
+    fn node_modules_restore_stays_inside_src() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (cache, src) = (tmp.path().join("cache"), tmp.path().join("src"));
+        std::fs::create_dir_all(cache.join("nm-prev/0")).unwrap();
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(cache.join("nm-prev/.key"), "k").unwrap();
+        std::fs::write(cache.join("nm-prev/.list"), "0\t../escape/node_modules").unwrap();
+        assert!(!restore_node_modules(&cache, &src, "k"));
+        assert!(!tmp.path().join("escape").exists());
+        std::os::unix::fs::symlink(tmp.path(), src.join("pkg")).unwrap();
+        std::fs::write(cache.join("nm-prev/.list"), "0\tpkg/node_modules").unwrap();
+        assert!(!restore_node_modules(&cache, &src, "k"));
+        assert!(!tmp.path().join("node_modules").exists());
+    }
+
+    struct Sleeper;
+
+    impl Executor for Sleeper {
+        fn name(&self) -> &'static str {
+            "sleeper"
+        }
+        fn hermetic(&self) -> bool {
+            false
+        }
+        fn run(&self, _cmd: Cmd) -> BoxFuture<'_, Result<acropolis_exec::Output>> {
+            Box::pin(async {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                Ok(acropolis_exec::Output { tail: vec![] })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn build_timeout_fails_the_build_instead_of_panicking() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = tmp.path().join("app");
+        std::fs::create_dir_all(&app).unwrap();
+        let mut b = crate::plan::PlanBuilder::new("t", "test");
+        for i in 0..8 {
+            b.step(
+                &format!("s{i}"),
+                "sleep",
+                Action::Run {
+                    argv: vec!["true".into()],
+                    env: BTreeMap::new(),
+                    network: false,
+                    cwd: "@app".into(),
+                },
+                &[],
+            );
+        }
+        let mut env = Env::default();
+        env.vars.insert("ACROPOLIS_BUILD_TIMEOUT".into(), "1".into());
+        env.vars.insert("ACROPOLIS_NO_CACHE".into(), "1".into());
+        let opts = BuildOptions {
+            app_dir: app,
+            home: tmp.path().join("home"),
+            target: None,
+            env,
+            layer: LayerOptions::default(),
+            mirrors: vec![],
+            concurrency: 2,
+            keep_work: false,
+            platform: acropolis_oci::image::host_platform(),
+            oci_out: None,
+        };
+        let err = execute(b.finish(), opts, Arc::new(Sleeper)).await.unwrap_err();
+        assert!(format!("{err:#}").contains("ACROPOLIS_BUILD_TIMEOUT"), "{err:#}");
     }
 }

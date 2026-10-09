@@ -1,4 +1,5 @@
 use acropolis_fetch::Fetcher;
+use acropolis_npm::install::Inside;
 use acropolis_npm::{InstallPackage, InstallPlan};
 use anyhow::{Context, Result, anyhow, bail};
 use rolldown::plugin::{
@@ -21,6 +22,7 @@ use pkgindex::PkgIndex;
 struct LazyPackages {
     started: Instant,
     root: PathBuf,
+    inside: Inside,
     by_path: HashMap<String, InstallPackage>,
     fetcher: Fetcher,
     cells: Mutex<HashMap<String, Arc<OnceCell<Arc<PkgIndex>>>>>,
@@ -117,15 +119,18 @@ impl LazyPackages {
             .get_or_try_init(|| async {
                 let (url, integrity) = match &pkg.source {
                     acropolis_npm::Source::Registry { url, integrity } => (url.clone(), integrity.clone()),
+                    acropolis_npm::Source::Git { url } => (
+                        acropolis_npm::install::git_tarball_url(url).ok_or_else(|| anyhow!("git dependency {path} ({url}) is only supported for GitHub repositories pinned to a commit"))?,
+                        None,
+                    ),
                     other => bail!("cannot lazily fetch {path}: {other:?}"),
                 };
                 let blob = self.fetcher.blob(&pkg.name, &url, integrity).await?;
                 let t0 = Instant::now();
                 let blob_path = blob.path.clone();
-                let entries =
-                    tokio::task::spawn_blocking(move || acropolis_npm::install::read_tarball(&blob_path)).await??;
+                let entries = tokio::task::spawn_blocking(move || acropolis_npm::install::read_tarball(&blob_path)).await??;
                 let idx = Arc::new(PkgIndex::new(entries));
-                idx.materialize(&self.root.join(path), "package.json")?;
+                idx.materialize(&self.inside, &self.root.join(path), "package.json")?;
                 let mut s = self.stats.lock().unwrap();
                 s.extract_ms += t0.elapsed().as_millis() as u64;
                 s.last_fetch_ms = s.last_fetch_ms.max(self.started.elapsed().as_millis() as u64);
@@ -143,7 +148,7 @@ impl LazyPackages {
         }
         let root = self.root.join(path);
         for rel in idx.files.keys() {
-            idx.materialize(&root, rel)?;
+            idx.materialize(&self.inside, &root, rel)?;
         }
         self.stats.lock().unwrap().full_extractions += 1;
         Ok(())
@@ -151,8 +156,8 @@ impl LazyPackages {
 
     fn write(&self, path: &str, idx: &PkgIndex, rel: &str) -> Result<String> {
         let root = self.root.join(path);
-        idx.materialize_package_jsons(&root, rel)?;
-        idx.materialize(&root, rel)?;
+        idx.materialize_package_jsons(&self.inside, &root, rel)?;
+        idx.materialize(&self.inside, &root, rel)?;
         self.stats.lock().unwrap().files_written += 1;
         Ok(root.join(rel).to_string_lossy().into_owned())
     }
@@ -337,6 +342,9 @@ impl Plugin for LazyInstallPlugin {
             }));
         }
         let path = args.id.split('?').next().unwrap_or(args.id);
+        if !args.id.starts_with('\0') && Path::new(path).is_absolute() && !self.lazy.inside.contains(Path::new(path)) {
+            bail!("refusing to bundle {path}: it is missing or resolves outside the app directory");
+        }
         let ext = Path::new(path)
             .extension()
             .map(|e| e.to_string_lossy().to_ascii_lowercase())
@@ -420,12 +428,11 @@ fn html_entries(html: &str) -> Vec<String> {
         };
         let tag = &html[start..=end];
         let tag_lower = &lower[start..=end];
-        if tag_lower.contains("type=\"module\"") || tag_lower.contains("type='module'") {
-            if let Some(src) = attr(tag, "src") {
-                if !src.starts_with("http") {
-                    out.push(src);
-                }
-            }
+        if (tag_lower.contains("type=\"module\"") || tag_lower.contains("type='module'"))
+            && let Some(src) = attr(tag, "src")
+            && !src.starts_with("http")
+        {
+            out.push(src);
         }
         pos = end + 1;
     }
@@ -481,6 +488,7 @@ pub async fn build_spa(input: SpaInput) -> Result<SpaOutput> {
     if entries.is_empty() {
         bail!("index.html has no module script entry");
     }
+    input.plan.check_paths()?;
     let mut by_path = HashMap::new();
     for p in &input.plan.packages {
         by_path.insert(p.path.clone(), p.clone());
@@ -488,6 +496,7 @@ pub async fn build_spa(input: SpaInput) -> Result<SpaOutput> {
     let lazy = Arc::new(LazyPackages {
         started: Instant::now(),
         root: input.root.clone(),
+        inside: Inside::new(&input.root)?,
         by_path,
         fetcher: input.fetcher.clone(),
         cells: Mutex::new(HashMap::new()),
@@ -500,7 +509,7 @@ pub async fn build_spa(input: SpaInput) -> Result<SpaOutput> {
     for l in &input.plan.links {
         let dest = input.root.join(&l.path);
         if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
+            lazy.inside.dir(parent)?;
         }
         let _ = std::fs::remove_file(&dest);
         let _ = std::os::unix::fs::symlink(&l.target, &dest);
@@ -603,6 +612,7 @@ pub async fn build_spa(input: SpaInput) -> Result<SpaOutput> {
         for id in &ordered {
             let path = PathBuf::from(id.split('?').next().unwrap_or(id));
             combined.push_str(&process_css(
+                &lazy.inside,
                 &path,
                 &css_contents[id],
                 &input.out_dir,
@@ -633,7 +643,7 @@ pub async fn build_spa(input: SpaInput) -> Result<SpaOutput> {
     std::fs::write(input.out_dir.join("index.html"), out_html)?;
     let public = input.root.join("public");
     if public.is_dir() {
-        copy_dir(&public, &input.out_dir)?;
+        copy_dir(&lazy.inside, &public, &input.out_dir, 0)?;
     }
     let stats = lazy.stats.lock().unwrap().clone();
     Ok(SpaOutput {
@@ -655,6 +665,7 @@ fn short_hash(data: &[u8]) -> String {
 }
 
 fn process_css(
+    inside: &Inside,
     path: &Path,
     text: &str,
     out_dir: &Path,
@@ -698,9 +709,15 @@ fn process_css(
                     continue;
                 }
                 let target = dir.join(&imp.url);
+                if !inside.contains(&target) {
+                    bail!(
+                        "@import {} from {filename} is missing or resolves outside the app directory",
+                        imp.url
+                    );
+                }
                 let t =
                     std::fs::read_to_string(&target).with_context(|| format!("@import {} from {filename}", imp.url))?;
-                prefix.push_str(&process_css(&target, &t, out_dir, base, copied, depth + 1)?);
+                prefix.push_str(&process_css(inside, &target, &t, out_dir, base, copied, depth + 1)?);
             }
             Dependency::Url(u) => {
                 let url = u.url.clone();
@@ -717,6 +734,9 @@ fn process_css(
                     match copied.get(&src) {
                         Some(r) => r.clone(),
                         None => {
+                            if !inside.contains(&src) {
+                                bail!("url({url}) in {filename} is missing or resolves outside the app directory");
+                            }
                             let data = std::fs::read(&src).with_context(|| format!("url({url}) in {filename}"))?;
                             let stem = src
                                 .file_stem()
@@ -742,14 +762,20 @@ fn process_css(
     Ok(format!("{prefix}{code}"))
 }
 
-fn copy_dir(from: &Path, to: &Path) -> Result<()> {
+fn copy_dir(inside: &Inside, from: &Path, to: &Path, depth: usize) -> Result<()> {
+    if depth > 32 {
+        bail!("{} is nested too deep (symlink loop?)", from.display());
+    }
     std::fs::create_dir_all(to)?;
     for e in std::fs::read_dir(from)? {
         let e = e?;
         let p = e.path();
+        if !inside.contains(&p) {
+            bail!("{} is a broken link or points outside the app directory", p.display());
+        }
         let t = to.join(e.file_name());
         if p.is_dir() {
-            copy_dir(&p, &t)?;
+            copy_dir(inside, &p, &t, depth + 1)?;
         } else {
             std::fs::copy(&p, &t)?;
         }
@@ -765,15 +791,15 @@ pub fn simple_vite_config(root: &Path) -> bool {
     let mut imports: Vec<String> = Vec::new();
     for line in cfg.lines() {
         let l = line.trim();
-        if l.starts_with("import ") {
-            if let Some(from) = l.rsplit(" from ").next() {
-                imports.push(
-                    from.trim()
-                        .trim_end_matches(';')
-                        .trim_matches(|c| c == '\'' || c == '"')
-                        .to_string(),
-                );
-            }
+        if l.starts_with("import ")
+            && let Some(from) = l.rsplit(" from ").next()
+        {
+            imports.push(
+                from.trim()
+                    .trim_end_matches(';')
+                    .trim_matches(|c| c == '\'' || c == '"')
+                    .to_string(),
+            );
         }
     }
     let allowed = [
@@ -817,5 +843,48 @@ mod tests {
         assert_eq!(package_name("./x"), None);
         let out = remove_entry_scripts(html, &["/src/main.tsx".to_string()]);
         assert!(!out.contains("main.tsx"));
+    }
+
+    #[test]
+    fn css_and_public_reads_stay_inside_root() {
+        let base = std::env::temp_dir().join(format!("acropolis-bundle-inside-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("app");
+        std::fs::create_dir_all(root.join("public")).unwrap();
+        std::fs::write(base.join("secret.png"), "s").unwrap();
+        std::os::unix::fs::symlink(base.join("secret.png"), root.join("public/x.png")).unwrap();
+        let inside = Inside::new(&root).unwrap();
+        let out = root.join("dist");
+        assert!(copy_dir(&inside, &root.join("public"), &out, 0).is_err());
+        assert!(!out.join("x.png").exists());
+        let mut copied = HashMap::new();
+        assert!(
+            process_css(
+                &inside,
+                &root.join("a.css"),
+                "a{background:url(../secret.png)}",
+                &out,
+                "/",
+                &mut copied,
+                0
+            )
+            .is_err()
+        );
+        assert!(
+            process_css(
+                &inside,
+                &root.join("a.css"),
+                "@import '../secret.png';",
+                &out,
+                "/",
+                &mut copied,
+                0
+            )
+            .is_err()
+        );
+        std::fs::remove_file(root.join("public/x.png")).unwrap();
+        std::os::unix::fs::symlink(&root, root.join("public/loop")).unwrap();
+        assert!(copy_dir(&inside, &root.join("public"), &out, 0).is_err());
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

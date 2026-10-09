@@ -7,6 +7,15 @@ pub mod ruby;
 pub mod rust;
 pub mod simple;
 
+/// A version from the repo or the app env that becomes part of an image tag: without this check
+/// `elixir:{v}` with `v = "80/x"` would be parsed as the registry host `elixir:80`.
+pub fn tag_part(what: &str, v: &str) -> anyhow::Result<String> {
+    if v.is_empty() || v.len() > 64 || !v.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) {
+        anyhow::bail!("invalid {what} version {v:?}: an image tag allows only letters, digits, '.', '_' and '-'");
+    }
+    Ok(v.to_string())
+}
+
 pub fn shell_start(start: &str) -> Vec<String> {
     let t = start.trim();
     let first = t.split_whitespace().next().unwrap_or("");

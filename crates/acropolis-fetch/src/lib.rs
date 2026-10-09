@@ -13,7 +13,7 @@ pub mod segmented;
 
 const MAX_ATTEMPTS: u32 = 5;
 const STALL: Duration = Duration::from_secs(6);
-const MAX_BUFFERED: u64 = 256 << 20;
+const MAX_BUFFERED: u64 = 512 << 20;
 const HEDGE_AFTER: Duration = Duration::from_millis(1500);
 
 enum Probe {
@@ -104,6 +104,9 @@ impl Fetcher {
         struct Collect<'a>(&'a mut bytes::BytesMut);
         impl AsyncSink for Collect<'_> {
             async fn push(&mut self, b: Bytes) -> Result<()> {
+                if (self.0.len() + b.len()) as u64 > MAX_BUFFERED {
+                    bail!("response is larger than {} MB", MAX_BUFFERED >> 20);
+                }
                 self.0.extend_from_slice(&b);
                 Ok(())
             }
@@ -124,7 +127,7 @@ impl Fetcher {
         serde_json::from_slice(&b).with_context(|| format!("parsing JSON from {url}"))
     }
 
-    async fn attempt(&self, client: &Client, url: &str, headers: &HeaderMap) -> Result<Probe> {
+    async fn attempt(&self, client: &Client, url: &str, headers: &HeaderMap, segment: bool) -> Result<Probe> {
         acropolis_events::add_request();
         let r = match tokio::time::timeout(STALL * 2, client.get(url).headers(headers.clone()).send()).await {
             Err(_) => return Err(anyhow!(Stalled)),
@@ -156,7 +159,7 @@ impl Fetcher {
             .map(|v| v.as_bytes() == b"bytes")
             .unwrap_or(false);
         if len >= segmented::MIN_SEGMENTED {
-            if ranges {
+            if ranges && segment {
                 return Ok(Probe::Large {
                     len,
                     url: r.url().to_string(),
@@ -188,11 +191,11 @@ impl Fetcher {
         Ok(Probe::Small(buf.freeze()))
     }
 
-    async fn race(&self, url: &str, headers: &HeaderMap) -> Result<Probe> {
-        let primary = self.attempt(&self.client, url, headers);
+    async fn race(&self, url: &str, headers: &HeaderMap, segment: bool) -> Result<Probe> {
+        let primary = self.attempt(&self.client, url, headers, segment);
         let hedge = async {
             tokio::time::sleep(HEDGE_AFTER).await;
-            self.attempt(&self.seg_client, url, headers).await
+            self.attempt(&self.seg_client, url, headers, segment).await
         };
         tokio::pin!(primary);
         tokio::pin!(hedge);
@@ -232,8 +235,9 @@ impl Fetcher {
         F: AsyncSink,
     {
         let mut failures = 0;
+        let mut segment = true;
         loop {
-            let probe = match self.race(url, headers).await {
+            let probe = match self.race(url, headers, segment).await {
                 Ok(p) => p,
                 Err(e) if e.downcast_ref::<Fatal>().is_none() && failures < MAX_ATTEMPTS => {
                     failures += 1;
@@ -256,7 +260,7 @@ impl Fetcher {
                     } else {
                         HeaderMap::new()
                     };
-                    return segmented::download(
+                    match segmented::download(
                         &self.seg_client,
                         &final_url,
                         &seg_headers,
@@ -265,7 +269,13 @@ impl Fetcher {
                         &mut sink,
                     )
                     .await
-                    .with_context(|| format!("GET {url}"));
+                    {
+                        Err(e) if e.downcast_ref::<segmented::NoRanges>().is_some() => {
+                            segment = false;
+                            continue;
+                        }
+                        r => return r.with_context(|| format!("GET {url}")),
+                    }
                 }
                 Probe::Stream(mut r) => {
                     let mut offset = 0u64;
@@ -460,4 +470,77 @@ fn retryable(s: StatusCode) -> bool {
 
 fn backoff(attempt: u32) -> Duration {
     Duration::from_millis(200u64 * (1 << attempt.min(5)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Serves `body` with `Accept-Ranges: bytes`. Range requests get a 200 with the whole body,
+    /// or with `misplaced` a 206 whose bytes and `Content-Range` start at offset 0.
+    fn serve(body: Vec<u8>, misplaced: bool) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let body = Arc::new(body);
+        std::thread::spawn(move || {
+            for conn in listener.incoming() {
+                let Ok(mut conn) = conn else { continue };
+                let body = body.clone();
+                std::thread::spawn(move || {
+                    let mut req = Vec::new();
+                    let mut b = [0u8; 1];
+                    while !req.ends_with(b"\r\n\r\n") {
+                        if conn.read(&mut b).unwrap_or(0) == 0 {
+                            return;
+                        }
+                        req.push(b[0]);
+                    }
+                    let req = String::from_utf8_lossy(&req).to_ascii_lowercase();
+                    let range = req.lines().find_map(|l| l.strip_prefix("range: bytes=")).and_then(|r| {
+                        let (a, b) = r.trim().split_once('-')?;
+                        Some(b.parse::<usize>().ok()? - a.parse::<usize>().ok()? + 1)
+                    });
+                    let (status, part, extra) = match range {
+                        Some(n) if misplaced => (
+                            "206 Partial Content",
+                            &body[..n],
+                            format!("Content-Range: bytes 0-{}/{}\r\n", n - 1, body.len()),
+                        ),
+                        _ => ("200 OK", &body[..], String::new()),
+                    };
+                    let head = format!(
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\n{extra}Connection: close\r\n\r\n",
+                        part.len()
+                    );
+                    let _ = conn.write_all(head.as_bytes());
+                    let _ = conn.write_all(part);
+                });
+            }
+        });
+        format!("http://{addr}/blob")
+    }
+
+    fn fetcher(dir: &std::path::Path) -> Fetcher {
+        Fetcher::new(Arc::new(Store::open(dir).unwrap()), 4).unwrap()
+    }
+
+    fn large_body() -> Vec<u8> {
+        (0..segmented::MIN_SEGMENTED + 12345).map(|i| (i % 251) as u8).collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn server_ignoring_range_falls_back_to_one_stream() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = large_body();
+        let url = serve(body.clone(), false);
+        let got = fetcher(dir.path()).bytes(&url).await.unwrap();
+        assert!(got[..] == body[..]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_answered_for_another_offset_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = serve(large_body(), true);
+        assert!(fetcher(dir.path()).bytes(&url).await.is_err());
+    }
 }

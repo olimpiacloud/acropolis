@@ -7,7 +7,7 @@ use std::path::Path;
 pub fn staticfile_root(dir: &Path, env: &Env) -> Option<(String, bool)> {
     let mut root: Option<String> = None;
     let mut fallback = false;
-    if let Ok(text) = std::fs::read_to_string(dir.join("Staticfile")) {
+    if let Some(text) = crate::detect::read_app_file(dir, "Staticfile") {
         for line in text.lines() {
             if let Some((k, v)) = line.split_once(':') {
                 let v = v.trim().trim_matches('"').trim_matches('\'').to_string();
@@ -43,9 +43,11 @@ pub fn plan_static(dir: &Path, env: &Env, name: &str, root: &str, fallback: bool
     );
     b.step("copy-base", "copy base layers", Action::CopyBase, &["base"]);
     let mut files = BTreeMap::new();
-    let custom = dir.join("Caddyfile");
-    let caddyfile = if custom.exists() {
-        std::fs::read_to_string(custom)?.replace("{{.DIST_DIR}}", "/app/dist")
+    let caddyfile = if dir.join("Caddyfile").exists() {
+        let Some(t) = crate::detect::read_app_file(dir, "Caddyfile") else {
+            anyhow::bail!("Caddyfile must be a regular file inside the app directory")
+        };
+        t.replace("{{.DIST_DIR}}", "/app/dist")
     } else {
         super::node::spa_caddyfile("/app/dist", fallback)
     };
@@ -170,7 +172,12 @@ pub fn plan_shell(dir: &Path, env: &Env, name: &str, script: &str) -> Result<Pla
                 from: LayerFrom::Upper {
                     step: "build".into(),
                     include: vec![],
-                    exclude: vec!["var/cache".into(), "var/log".into(), "root".into()],
+                    exclude: vec![
+                        "var/cache".into(),
+                        "var/log".into(),
+                        "var/lib/apt/lists".into(),
+                        "root".into(),
+                    ],
                 },
             },
             &["build"],

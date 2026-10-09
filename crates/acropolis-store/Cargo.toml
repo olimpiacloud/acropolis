@@ -3,6 +3,11 @@ name = "acropolis-store"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
 
 [dependencies]
 acropolis-events.workspace = true
@@ -11,7 +16,9 @@ sha1.workspace = true
 base64.workspace = true
 hex.workspace = true
 thiserror.workspace = true
-libc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[lints]
+workspace = true

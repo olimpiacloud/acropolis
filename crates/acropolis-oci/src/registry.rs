@@ -3,7 +3,7 @@ use crate::reference::Reference;
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine;
 use bytes::Bytes;
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, HeaderValue, LOCATION, WWW_AUTHENTICATE};
 use reqwest::{Client, Method, RequestBuilder, Response, StatusCode};
 use std::collections::HashMap;
@@ -43,6 +43,8 @@ pub const HUB_FALLBACK: &str = "mirror.gcr.io";
 const HEDGE_TAG_MS: u64 = 2500;
 const HEDGE_DIGEST_MS: u64 = 1200;
 const SLOW_REQUEST_MS: u128 = 1500;
+/// Manifests, image configs and token responses are read into memory: cap what a registry can send.
+const MAX_JSON_BODY: usize = 16 << 20;
 
 pub struct ResolvedImage {
     pub reference: Reference,
@@ -162,8 +164,10 @@ impl Registry {
         format!("{scheme}://{host}")
     }
 
-    fn cred_for(&self, r: &Reference) -> Option<Basic> {
-        let keys: Vec<String> = if r.registry == "docker.io" {
+    /// Credentials are looked up by the host the request goes to, never by the reference's
+    /// registry: with a mirror or the Docker Hub fallback those differ.
+    fn cred_for(&self, host: &str) -> Option<Basic> {
+        let keys: Vec<String> = if host == "registry-1.docker.io" {
             vec![
                 "https://index.docker.io/v1/".into(),
                 "index.docker.io".into(),
@@ -171,11 +175,7 @@ impl Registry {
                 "registry-1.docker.io".into(),
             ]
         } else {
-            vec![
-                r.registry.clone(),
-                format!("https://{}", r.registry),
-                format!("http://{}", r.registry),
-            ]
+            vec![host.to_string(), format!("https://{host}"), format!("http://{host}")]
         };
         keys.iter().find_map(|k| self.creds.get(k).cloned())
     }
@@ -201,7 +201,7 @@ impl Registry {
                 && !authed
                 && let Some(challenge) = known_challenge(&key.0)
             {
-                let header = match self.authenticate(r, challenge, &key.1).await {
+                let header = match self.authenticate(r, &key.0, challenge, &key.1).await {
                     Ok(h) => h,
                     Err(e) => {
                         let net = e
@@ -221,13 +221,15 @@ impl Registry {
                 token = Some(header);
                 authed = true;
             }
-            let mut req = build(client);
-            if let Some(t) = &token {
-                req = req.header(AUTHORIZATION, t.clone());
+            let mut req = build(client).build()?;
+            if let Some(t) = &token
+                && authority(req.url()) == key.0
+            {
+                req.headers_mut().insert(AUTHORIZATION, HeaderValue::from_str(t)?);
             }
             acropolis_events::add_request();
             let started = std::time::Instant::now();
-            let res = req.send().await;
+            let res = client.execute(req).await;
             let elapsed = started.elapsed().as_millis();
             if elapsed > SLOW_REQUEST_MS {
                 acropolis_events::log(
@@ -243,7 +245,7 @@ impl Registry {
                         .and_then(|v| v.to_str().ok())
                         .map(|s| s.to_string())
                         .unwrap_or_default();
-                    let header = self.authenticate(r, &challenge, &key.1).await?;
+                    let header = self.authenticate(r, &key.0, &challenge, &key.1).await?;
                     self.tokens.lock().unwrap().insert(key.clone(), header);
                     authed = true;
                 }
@@ -269,11 +271,11 @@ impl Registry {
         }
     }
 
-    async fn authenticate(&self, r: &Reference, challenge: &str, scope: &str) -> Result<String> {
-        let basic = self.cred_for(r);
+    async fn authenticate(&self, r: &Reference, host: &str, challenge: &str, scope: &str) -> Result<String> {
+        let basic = self.cred_for(host);
         let lower = challenge.to_ascii_lowercase();
         if lower.starts_with("basic") {
-            let b = basic.ok_or_else(|| anyhow!("{} requires credentials", r.registry))?;
+            let b = basic.ok_or_else(|| anyhow!("{host} requires credentials"))?;
             let enc = base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", b.user, b.pass));
             return Ok(format!("Basic {enc}"));
         }
@@ -282,6 +284,9 @@ impl Registry {
             .get("realm")
             .ok_or_else(|| anyhow!("no realm in challenge {challenge:?}"))?;
         let mut url = url::Url::parse(realm)?;
+        if url.scheme() != "https" && !(url.scheme() == "http" && r.insecure()) {
+            bail!("{host} sent a token realm that is not https: {realm}");
+        }
         {
             let mut q = url.query_pairs_mut();
             if let Some(s) = params.get("service") {
@@ -298,7 +303,7 @@ impl Registry {
         if !resp.status().is_success() {
             bail!("token request to {realm} failed: {}", resp.status());
         }
-        let v: serde_json::Value = resp.json().await?;
+        let v: serde_json::Value = serde_json::from_slice(&read_capped(resp, "token response").await?)?;
         let token = v
             .get("token")
             .or_else(|| v.get("access_token"))
@@ -355,10 +360,10 @@ impl Registry {
             .unwrap_or("")
             .trim()
             .to_string();
-        let body = resp.bytes().await?;
+        let body = read_capped(resp, "manifest").await?;
         acropolis_events::add_downloaded(body.len() as u64);
         let digest = acropolis_store::sha256_bytes(&body).to_oci();
-        if reference.starts_with("sha256:") && digest != reference {
+        if reference.contains(':') && digest != reference {
             bail!("manifest digest mismatch for {r}: expected {reference}, got {digest}");
         }
         let mt = if mt.is_empty() || mt == "application/json" || mt == "text/plain" {
@@ -396,12 +401,21 @@ impl Registry {
             let idx: Index = serde_json::from_slice(&body).context("parsing image index")?;
             let chosen = select_platform(&idx.manifests, platform)
                 .ok_or_else(|| anyhow!("{r} has no manifest for {}/{}", platform.os, platform.architecture))?;
+            if !crate::reference::valid_digest(&chosen.digest) {
+                bail!("{r}: unsupported manifest digest {:?}", chosen.digest);
+            }
             let (b, _, d) = self.get_manifest(r, &chosen.digest).await?;
             (b, d)
         } else {
             (body, digest)
         };
         let manifest: Manifest = serde_json::from_slice(&body).context("parsing image manifest")?;
+        if let Some(d) = std::iter::once(&manifest.config)
+            .chain(&manifest.layers)
+            .find(|d| !crate::reference::valid_digest(&d.digest))
+        {
+            bail!("{r}: unsupported blob digest {:?}", d.digest);
+        }
         Ok((r.with_digest(&digest), manifest, digest))
     }
 
@@ -422,7 +436,7 @@ impl Registry {
     }
 
     pub async fn get_blob_bytes(&self, r: &Reference, digest: &str) -> Result<Bytes> {
-        let what = format!("blob {}@{}", r.repository, &digest[..digest.len().min(19)]);
+        let what = format!("blob {}@{}", r.repository, digest.get(..19).unwrap_or(digest));
         let alt = self.hedge_target(r);
         self.hedged(
             alt,
@@ -436,7 +450,7 @@ impl Registry {
 
     async fn get_blob_bytes_once(&self, r: &Reference, digest: &str) -> Result<Bytes> {
         let resp = self.get_blob(r, digest).await?;
-        let b = resp.bytes().await?;
+        let b = read_capped(resp, "blob").await?;
         acropolis_events::add_downloaded(b.len() as u64);
         let actual = acropolis_store::sha256_bytes(&b).to_oci();
         if actual != digest {
@@ -520,18 +534,11 @@ impl Registry {
             return Ok(false);
         }
         let path = path.to_path_buf();
-        let file = tokio::fs::File::open(&path).await?;
-        let cell = Mutex::new(Some(file));
         self.put_upload(r, digest, size, || {
-            let f = cell.lock().unwrap().take();
-            match f {
-                Some(f) => reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::with_capacity(f, 256 * 1024)),
-                None => {
-                    let p = path.clone();
-                    let s = futures::stream::once(async move { tokio::fs::read(p).await.map(Bytes::from) });
-                    reqwest::Body::wrap_stream(s)
-                }
-            }
+            let s = futures::stream::once(tokio::fs::File::open(path.clone()))
+                .map_ok(|f| tokio_util::io::ReaderStream::with_capacity(f, 256 * 1024))
+                .try_flatten();
+            reqwest::Body::wrap_stream(s)
         })
         .await?;
         Ok(true)
@@ -541,14 +548,14 @@ impl Registry {
         if self.blob_exists(dst, &desc.digest).await? {
             return Ok(false);
         }
-        if src.registry == dst.registry && src.repository != dst.repository {
-            if self
+        if src.registry == dst.registry
+            && src.repository != dst.repository
+            && self
                 .mount_blob(dst, &desc.digest, &src.repository)
                 .await
                 .unwrap_or(false)
-            {
-                return Ok(false);
-            }
+        {
+            return Ok(false);
         }
         if desc.size >= acropolis_fetch::segmented::MIN_SEGMENTED {
             match self.copy_blob_segmented(src, dst, desc).await {
@@ -687,6 +694,16 @@ impl Registry {
     }
 }
 
+/// `host[:port]` as `host_for` spells it: the token of a registry only goes to that registry,
+/// not to an upload `Location` on another host.
+fn authority(u: &reqwest::Url) -> String {
+    let host = u.host_str().unwrap_or("");
+    match u.port() {
+        Some(p) => format!("{host}:{p}"),
+        None => host.to_string(),
+    }
+}
+
 fn known_challenge(host: &str) -> Option<&'static str> {
     match host {
         "registry-1.docker.io" => Some(r#"Bearer realm="https://auth.docker.io/token",service="registry.docker.io""#),
@@ -705,20 +722,19 @@ pub fn select_platform<'a>(ms: &'a [Descriptor], p: &Platform) -> Option<&'a Des
                 .unwrap_or(false)
         })
         .collect();
-    if let Some(v) = &p.variant {
-        if let Some(d) = matching
+    if let Some(v) = &p.variant
+        && let Some(d) = matching
             .iter()
             .find(|d| d.platform.as_ref().and_then(|q| q.variant.as_ref()) == Some(v))
-        {
-            return Some(d);
-        }
+    {
+        return Some(d);
     }
     matching.first().copied()
 }
 
 fn parse_challenge(s: &str) -> HashMap<String, String> {
     let mut out = HashMap::new();
-    let rest = s.splitn(2, ' ').nth(1).unwrap_or("");
+    let rest = s.split_once(' ').map(|x| x.1).unwrap_or("");
     let mut chars = rest.chars().peekable();
     loop {
         while matches!(chars.peek(), Some(' ') | Some(',')) {
@@ -793,6 +809,34 @@ fn load_docker_creds() -> HashMap<String, Basic> {
     out
 }
 
+async fn capped_text(mut resp: reqwest::Response) -> String {
+    let mut raw = Vec::new();
+    while raw.len() < 8192 {
+        match tokio::time::timeout(std::time::Duration::from_secs(10), resp.chunk()).await {
+            Ok(Ok(Some(c))) => raw.extend_from_slice(&c),
+            _ => break,
+        }
+    }
+    String::from_utf8_lossy(&raw).into_owned()
+}
+
+async fn read_capped(mut resp: Response, what: &str) -> Result<Bytes> {
+    let host = resp.url().host_str().unwrap_or("").to_string();
+    let too_big = || anyhow!("{what} from {host} is larger than {} MiB", MAX_JSON_BODY >> 20);
+    let declared = resp.content_length().unwrap_or(0);
+    if declared > MAX_JSON_BODY as u64 {
+        return Err(too_big());
+    }
+    let mut buf = Vec::with_capacity(declared as usize);
+    while let Some(c) = resp.chunk().await? {
+        if buf.len() + c.len() > MAX_JSON_BODY {
+            return Err(too_big());
+        }
+        buf.extend_from_slice(&c);
+    }
+    Ok(Bytes::from(buf))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -805,15 +849,100 @@ mod tests {
         assert_eq!(m["realm"], "https://auth.docker.io/token");
         assert_eq!(m["service"], "registry.docker.io");
     }
-}
 
-async fn capped_text(mut resp: reqwest::Response) -> String {
-    let mut raw = Vec::new();
-    while raw.len() < 8192 {
-        match tokio::time::timeout(std::time::Duration::from_secs(10), resp.chunk()).await {
-            Ok(Ok(Some(c))) => raw.extend_from_slice(&c),
-            _ => break,
-        }
+    fn client() -> Client {
+        Client::builder().no_proxy().build().unwrap()
     }
-    String::from_utf8_lossy(&raw).into_owned()
+
+    /// Answers every connection on 127.0.0.1 with `response` and records the request heads.
+    fn serve(response: Vec<u8>) -> (u16, std::sync::Arc<Mutex<Vec<String>>>) {
+        use std::io::{Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for s in l.incoming() {
+                let Ok(mut s) = s else { return };
+                let (mut req, mut buf) = (Vec::new(), [0u8; 1024]);
+                while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match s.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => req.extend_from_slice(&buf[..n]),
+                    }
+                }
+                log.lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&req).to_ascii_lowercase());
+                let _ = s.write_all(&response);
+            }
+        });
+        (port, seen)
+    }
+
+    #[tokio::test]
+    async fn registry_token_is_not_sent_to_an_upload_location_on_another_host() {
+        let reg = Registry::new(client());
+        let (storage, stored) =
+            serve(b"HTTP/1.1 201 Created\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec());
+        let accepted = format!(
+            "HTTP/1.1 202 Accepted\r\nLocation: http://127.0.0.1:{storage}/upload?id=1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        let (registry, started) = serve(accepted.into_bytes());
+        let r = Reference::parse(&format!("localhost:{registry}/app")).unwrap();
+        reg.tokens.lock().unwrap().insert(
+            (reg.host_for(&r), "repository:app:pull,push".into()),
+            "Bearer secret".into(),
+        );
+        reg.put_upload(&r, "sha256:00", 0, || reqwest::Body::from(Vec::new()))
+            .await
+            .unwrap();
+        assert!(started.lock().unwrap()[0].contains("authorization: bearer secret"));
+        let stored = stored.lock().unwrap();
+        assert_eq!(stored.len(), 1);
+        assert!(!stored[0].contains("authorization"), "{}", stored[0]);
+    }
+
+    #[test]
+    fn hub_credentials_never_go_to_the_fallback_mirror() {
+        let mut reg = Registry::new(client());
+        reg.creds = HashMap::from([(
+            "docker.io".to_string(),
+            Basic {
+                user: "u".into(),
+                pass: "p".into(),
+            },
+        )]);
+        let r = Reference::parse("node:22").unwrap();
+        assert!(reg.cred_for(&reg.host_for(&r)).is_some());
+        reg.hub_down.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(reg.host_for(&r), HUB_FALLBACK);
+        assert!(reg.cred_for(&reg.host_for(&r)).is_none());
+    }
+
+    #[tokio::test]
+    async fn token_realm_must_be_https() {
+        let reg = Registry::new(client());
+        let r = Reference::parse("registry.example.com/app").unwrap();
+        let challenge = r#"Bearer realm="http://169.254.169.254/latest/meta-data/",service="x""#;
+        let err = reg
+            .authenticate(&r, "registry.example.com", challenge, "repository:app:pull")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not https"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn manifests_by_digest_are_verified_and_bodies_are_capped() {
+        let reg = Registry::new(client());
+        let (ok, _) = serve(b"HTTP/1.1 200 OK\r\nContent-Type: application/vnd.oci.image.manifest.v1+json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".to_vec());
+        let r = Reference::parse(&format!("localhost:{ok}/app")).unwrap();
+        assert!(reg.get_manifest_once(&r, "latest").await.is_ok());
+        let err = reg.get_manifest_once(&r, "sha512:0123").await.unwrap_err();
+        assert!(err.to_string().contains("digest mismatch"), "{err}");
+        let (huge, _) = serve(b"HTTP/1.1 200 OK\r\nContent-Length: 1000000000\r\nConnection: close\r\n\r\n{}".to_vec());
+        let r = Reference::parse(&format!("localhost:{huge}/app")).unwrap();
+        let err = reg.get_manifest_once(&r, "latest").await.unwrap_err();
+        assert!(err.to_string().contains("larger than"), "{err}");
+    }
 }

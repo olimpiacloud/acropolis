@@ -35,7 +35,7 @@ pub fn is_python(dir: &Path) -> bool {
 }
 
 fn read(dir: &Path, f: &str) -> String {
-    std::fs::read_to_string(dir.join(f)).unwrap_or_default()
+    crate::detect::read_app_file(dir, f).unwrap_or_default()
 }
 
 pub fn manager(dir: &Path) -> Manager {
@@ -156,9 +156,12 @@ fn django_settings_text(dir: &Path) -> String {
         for e in rd.flatten() {
             let p = e.path();
             let name = e.file_name().to_string_lossy().into_owned();
-            if p.is_dir() && !name.starts_with('.') && name != "node_modules" && name != "__pycache__" {
+            // file_type() does not follow symlinks: a link to `.` would loop and one to /dev/zero would never end.
+            let Ok(ft) = e.file_type() else { continue };
+            if ft.is_dir() && !name.starts_with('.') && name != "node_modules" && name != "__pycache__" {
                 stack.push(p);
-            } else if name.ends_with(".py")
+            } else if ft.is_file()
+                && name.ends_with(".py")
                 && let Ok(t) = std::fs::read_to_string(&p)
                 && t.contains("django.db.backends.")
             {
@@ -185,9 +188,10 @@ fn django_app(dir: &Path) -> Option<String> {
         for e in rd.flatten() {
             let p = e.path();
             let name = e.file_name().to_string_lossy().into_owned();
-            if p.is_dir() && !name.starts_with('.') && name != "node_modules" && name != ".venv" {
+            let Ok(ft) = e.file_type() else { continue };
+            if ft.is_dir() && !name.starts_with('.') && name != "node_modules" && name != ".venv" {
                 stack.push(p);
-            } else if name == "settings.py" {
+            } else if ft.is_file() && name == "settings.py" {
                 let text = std::fs::read_to_string(&p).unwrap_or_default();
                 for line in text.lines() {
                     if let Some(rest) = line.trim().strip_prefix("WSGI_APPLICATION") {
@@ -294,7 +298,7 @@ fn wheel_fits(wheel: &str, (major, minor): (u32, u32), ft: bool) -> bool {
     let plat_ok = plat == "any"
         || plat
             .split('.')
-            .any(|p| (p.starts_with("manylinux") || p.starts_with("linux")) && p.ends_with("x86_64"));
+            .any(|p| (p.starts_with("manylinux") || p.starts_with("linux")) && p.ends_with(std::env::consts::ARCH));
     if !plat_ok {
         return false;
     }
@@ -444,16 +448,17 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
         env_map.insert(k.to_string(), v.to_string());
     }
     env_map.insert("UV_PYTHON".into(), "/usr/local/bin/python3".into());
-    for (k, v) in &env.vars {
-        if !k.starts_with("ACROPOLIS_") && !k.starts_with("RAILPACK_") {
-            env_map.insert(k.clone(), crate::env_ref(k, v));
-        }
-    }
+    env_map.extend(crate::user_env(env));
     let text = deps_text(dir);
     let mut build_pkgs: Vec<&str> = Vec::new();
     let mut runtime_pkgs: Vec<&str> = Vec::new();
     let binary_psycopg = uses(dir, "psycopg2-binary") || text.contains("psycopg[binary");
-    let django_db = |backend: &str| django_settings_text(dir).contains(&format!("django.db.backends.{backend}"));
+    let django_text = std::cell::OnceCell::new();
+    let django_db = |backend: &str| {
+        django_text
+            .get_or_init(|| django_settings_text(dir))
+            .contains(&format!("django.db.backends.{backend}"))
+    };
     if !binary_psycopg && (uses(dir, "psycopg2") || uses(dir, "psycopg") || django_db("postgresql")) {
         build_pkgs.push("libpq-dev");
         runtime_pkgs.push("libpq5");
@@ -665,6 +670,19 @@ pub fn plan(dir: &Path, env: &Env, name: &str) -> Result<Plan> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn django_scan_ignores_symlinks() {
+        let dir = crate::detect::scratch_dir("python-loop");
+        std::fs::create_dir_all(dir.join("site")).unwrap();
+        std::fs::write(dir.join("site/settings.py"), "DB = 'django.db.backends.postgresql'\n").unwrap();
+        for l in ["a", "b", "c"] {
+            std::os::unix::fs::symlink(".", dir.join(l)).unwrap();
+        }
+        std::os::unix::fs::symlink("/dev/zero", dir.join("zero.py")).unwrap();
+        assert_eq!(django_settings_text(&dir).matches("postgresql").count(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn freethreaded_spec() {

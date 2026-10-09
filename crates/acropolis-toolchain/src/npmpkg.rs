@@ -11,7 +11,7 @@ pub struct NpmRelease {
     pub name: String,
     pub version: String,
     pub tarball: String,
-    pub integrity: Option<Integrity>,
+    pub integrity: Integrity,
     pub bin: serde_json::Value,
 }
 
@@ -45,7 +45,7 @@ pub async fn resolve(fetcher: &Fetcher, name: &str, spec: &str) -> Result<NpmRel
             .as_str()
             .ok_or_else(|| anyhow!("{name}@{version} has no tarball"))?
             .to_string(),
-        integrity: dist["integrity"].as_str().map(Integrity::parse_sri).transpose()?,
+        integrity: crate::npm_dist_integrity(dist).with_context(|| format!("{name}@{version}"))?,
         bin: meta["bin"].clone(),
     })
 }
@@ -59,7 +59,7 @@ pub async fn install(fetcher: &Fetcher, release: &NpmRelease, dest: &Path) -> Re
             &release.name,
             &release.tarball,
             &headers,
-            release.integrity.clone(),
+            Some(release.integrity.clone()),
             move |r| {
                 let mut gz = flate2::read::GzDecoder::new(r);
                 crate::extract_tar_filtered(&mut gz, &pkg2, 1, &|_| true)
@@ -79,11 +79,16 @@ pub async fn install(fetcher: &Fetcher, release: &NpmRelease, dest: &Path) -> Re
     };
     for (name, target) in bins {
         let target = target.trim_start_matches("./");
+        if name.is_empty() || name.contains('/') || name == ".." || target.split('/').any(|c| c == "..") {
+            continue;
+        }
         let link = bin_dir.join(&name);
         let _ = std::fs::remove_file(&link);
         std::os::unix::fs::symlink(format!("../lib/node_modules/{}/{target}", release.name), &link)?;
         let full = pkg_dir.join(target);
-        if let Ok(meta) = std::fs::metadata(&full) {
+        if let Ok(meta) = std::fs::symlink_metadata(&full)
+            && meta.is_file()
+        {
             use std::os::unix::fs::PermissionsExt;
             let mut p = meta.permissions();
             p.set_mode(0o755);

@@ -240,8 +240,14 @@ fn next_output(cfg: &str) -> Option<String> {
     None
 }
 
-fn next_standalone(app: &NodeApp) -> bool {
-    next_config(app).and_then(|c| next_output(&c)).as_deref() == Some("standalone")
+/// `output: 'standalone'` set by the app: `Some(port)` when `node server.js` can replace the start script.
+fn next_standalone(app: &NodeApp) -> Option<Option<String>> {
+    let cfg = next_config(app)?;
+    // A custom tracing root moves server.js to an unknown subdirectory of .next/standalone.
+    if next_output(&cfg).as_deref() != Some("standalone") || cfg.contains("outputFileTracingRoot") {
+        return None;
+    }
+    next_start_port(app.script("start").unwrap_or("next start"))
 }
 
 fn next_major(app: &NodeApp) -> Option<u32> {
@@ -370,7 +376,11 @@ fn force_next_standalone(app: &NodeApp, env: &Env) -> Option<Option<String>> {
         return None;
     }
     let cfg = next_config(app).unwrap_or_default();
-    if next_output(&cfg).is_some() || ["distDir", "RuntimeConfig", "PHASE_"].iter().any(|k| cfg.contains(k)) {
+    if next_output(&cfg).is_some()
+        || ["distDir", "RuntimeConfig", "PHASE_", "outputFileTracingRoot"]
+            .iter()
+            .any(|k| cfg.contains(k))
+    {
         return None;
     }
     next_start_port(app.script("start").unwrap_or("next start"))
@@ -548,11 +558,12 @@ fn runtime(app: &NodeApp, env: &Env) -> Result<Runtime> {
         }
     }
     match app.framework {
-        Framework::Next if next_standalone(app) && has_build && !custom_start => {
-            return Ok(Runtime::NextStandalone {
-                forced: false,
-                port: None,
-            });
+        Framework::Next
+            if has_build
+                && !custom_start
+                && let Some(port) = next_standalone(app) =>
+        {
+            return Ok(Runtime::NextStandalone { forced: false, port });
         }
         Framework::Next
             if has_build
@@ -1239,11 +1250,7 @@ fn plan_inner(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
             if let Some(n) = app.package_json.get("name").and_then(|n| n.as_str()) {
                 run_env.insert("npm_package_name".to_string(), n.to_string());
             }
-            for (k, v) in &env.vars {
-                if !k.starts_with("ACROPOLIS_") && !k.starts_with("RAILPACK_") {
-                    run_env.insert(k.clone(), crate::env_ref(k, v));
-                }
-            }
+            run_env.extend(crate::user_env(env));
             if matches!(rt, Runtime::NextStandalone { forced: true, .. }) {
                 run_env.insert("NEXT_PRIVATE_STANDALONE".to_string(), "1".to_string());
             }
@@ -1429,18 +1436,8 @@ fn plan_inner(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
                         &[],
                     );
                     b.step("copy-base", "copy base layers", Action::CopyBase, &["base"]);
-                    let custom = ["Caddyfile", "Caddyfile.template"]
-                        .iter()
-                        .any(|f| app.dir.join(f).exists());
                     let mut files = BTreeMap::new();
-                    let caddyfile = if custom {
-                        std::fs::read_to_string(app.dir.join("Caddyfile"))
-                            .or_else(|_| std::fs::read_to_string(app.dir.join("Caddyfile.template")))?
-                            .replace("{{.DIST_DIR}}", "/app/dist")
-                    } else {
-                        spa_caddyfile("/app/dist", spa_fallback(app, env))
-                    };
-                    files.insert("Caddyfile".to_string(), caddyfile);
+                    files.insert("Caddyfile".to_string(), spa_caddyfile_for(app, env)?);
                     b.step(
                         "layer-caddy",
                         "layer Caddyfile",
@@ -2227,7 +2224,10 @@ fn add_package_manager(b: &mut PlanBuilder, app: &NodeApp, env: &Env, image_env:
 
 fn spa_caddyfile_for(app: &NodeApp, env: &Env) -> Result<String> {
     for f in ["Caddyfile", "Caddyfile.template"] {
-        if let Ok(t) = std::fs::read_to_string(app.dir.join(f)) {
+        if app.dir.join(f).exists() {
+            let Some(t) = crate::detect::read_app_file(&app.dir, f) else {
+                bail!("{f} must be a regular file inside the app directory")
+            };
             return Ok(t.replace("{{.DIST_DIR}}", "/app/dist"));
         }
     }
@@ -2272,7 +2272,7 @@ fn bun_spec(app: &NodeApp, env: &Env) -> String {
     if let Some(v) = crate::detect::tool_version(&app.dir, "bun") {
         return v.spec;
     }
-    if let Ok(t) = std::fs::read_to_string(app.dir.join(".bun-version"))
+    if let Some(t) = crate::detect::read_app_file(&app.dir, ".bun-version")
         && let Some(v) = t
             .lines()
             .next()
@@ -2550,6 +2550,54 @@ pub fn spa_caddyfile(root: &str, fallback: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn next_app(dir: &std::path::Path, start: &str, config: &str) -> NodeApp {
+        let pj = serde_json::json!({ "dependencies": { "next": "15.3.0" }, "scripts": { "build": "next build", "start": start } });
+        std::fs::write(dir.join("package.json"), pj.to_string()).unwrap();
+        std::fs::write(dir.join("next.config.js"), config).unwrap();
+        crate::detect::detect_node(dir, &Env::default()).unwrap()
+    }
+
+    #[test]
+    fn standalone_only_when_server_js_can_replace_the_start_script() {
+        let dir = crate::detect::scratch_dir("node-standalone");
+        let standalone = "module.exports = { output: 'standalone' }";
+        let rt = |start: &str, cfg: &str| match runtime(&next_app(&dir, start, cfg), &Env::default()).unwrap() {
+            Runtime::NextStandalone { forced, port } => Some((forced, port)),
+            _ => None,
+        };
+        assert_eq!(rt("next start -p 4000", standalone), Some((false, Some("4000".into()))));
+        assert_eq!(rt("node server.js", standalone), None);
+        assert_eq!(
+            rt(
+                "next start",
+                "module.exports = { output: 'standalone', outputFileTracingRoot: require('path').join(__dirname, '..') }"
+            ),
+            None
+        );
+        assert_eq!(
+            rt("next start", "module.exports = { outputFileTracingRoot: __dirname }"),
+            None
+        );
+        assert_eq!(rt("next start", "module.exports = {}"), Some((true, None)));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn caddyfile_symlink_cannot_copy_host_files_into_the_image() {
+        let base = crate::detect::scratch_dir("node-caddy");
+        let dir = base.join("app");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(base.join("secret"), "TOKEN").unwrap();
+        std::fs::write(dir.join("package.json"), "{}").unwrap();
+        std::os::unix::fs::symlink("../secret", dir.join("Caddyfile")).unwrap();
+        let app = crate::detect::detect_node(&dir, &Env::default()).unwrap();
+        assert!(spa_caddyfile_for(&app, &Env::default()).is_err());
+        std::fs::remove_file(dir.join("Caddyfile")).unwrap();
+        std::fs::write(dir.join("Caddyfile"), ":80 {{.DIST_DIR}}").unwrap();
+        assert_eq!(spa_caddyfile_for(&app, &Env::default()).unwrap(), ":80 /app/dist");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
 
     #[test]
     fn next_output_detection() {

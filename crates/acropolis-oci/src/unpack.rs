@@ -48,7 +48,17 @@ pub fn open_layer(path: &Path, media_type: &str) -> Result<Box<dyn Read>> {
     })
 }
 
+/// Unpacks an image layer for use as an overlay lowerdir: OCI whiteouts become overlay ones.
 pub fn unpack_for_overlay<R: Read>(reader: R, dest: &Path) -> Result<u64> {
+    unpack(reader, dest, true)
+}
+
+/// Unpacks a tar as plain files: `.wh.*` names are ordinary files (e.g. inside an app cache).
+pub fn unpack_plain<R: Read>(reader: R, dest: &Path) -> Result<u64> {
+    unpack(reader, dest, false)
+}
+
+fn unpack<R: Read>(reader: R, dest: &Path, whiteouts: bool) -> Result<u64> {
     std::fs::create_dir_all(dest)?;
     let mut tr = TarReader::new(BufReader::with_capacity(256 * 1024, reader));
     let mut total = 0u64;
@@ -56,7 +66,7 @@ pub fn unpack_for_overlay<R: Read>(reader: R, dest: &Path) -> Result<u64> {
     let mut dir_modes: Vec<(PathBuf, u32)> = Vec::new();
     while let Some(e) = tr.next_entry()? {
         let Some(path) = safe_join(dest, &e.path) else { continue };
-        if symlinked_ancestor(dest, &path) {
+        if symlinked_ancestor(dest, &path) || (path == dest && e.kind != Kind::Dir) {
             continue;
         }
         let name = path
@@ -66,7 +76,7 @@ pub fn unpack_for_overlay<R: Read>(reader: R, dest: &Path) -> Result<u64> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        if name == ".wh..wh..opq" {
+        if whiteouts && name == ".wh..wh..opq" {
             if let Some(parent) = path.parent() {
                 let p = cstr(parent);
                 unsafe {
@@ -81,13 +91,18 @@ pub fn unpack_for_overlay<R: Read>(reader: R, dest: &Path) -> Result<u64> {
             }
             continue;
         }
-        if let Some(target) = name.strip_prefix(".wh.") {
+        if let Some(target) = name.strip_prefix(".wh.")
+            && whiteouts
+        {
+            if matches!(target, "" | "." | "..") {
+                continue;
+            }
             let wpath = path.with_file_name(target);
             let _ = std::fs::remove_dir_all(&wpath);
             let _ = std::fs::remove_file(&wpath);
             let p = cstr(&wpath);
             unsafe {
-                libc::mknod(p.as_ptr(), libc::S_IFCHR | 0o000, libc::makedev(0, 0));
+                libc::mknod(p.as_ptr(), libc::S_IFCHR, libc::makedev(0, 0));
             }
             continue;
         }
@@ -192,6 +207,47 @@ mod tests {
                 .file_type()
                 .is_symlink()
         );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn whiteouts_and_root_entries_stay_inside_the_destination() {
+        let base = std::env::temp_dir().join(format!("acropolis-unpack-wh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let dest = base.join("dest");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(base.join("sibling"), b"keep").unwrap();
+        std::fs::write(dest.join("kept"), b"keep").unwrap();
+        let mut tw = TarWriter::new(Vec::new());
+        tw.file_bytes(".wh...", 0o644, b"").unwrap();
+        tw.file_bytes(".wh..", 0o644, b"").unwrap();
+        tw.file_bytes(".wh.", 0o644, b"").unwrap();
+        tw.file_bytes(".", 0o644, b"x").unwrap();
+        tw.file_bytes("sub/file", 0o644, b"y").unwrap();
+        let data = tw.finish().unwrap();
+        unpack_for_overlay(std::io::Cursor::new(data), &dest).unwrap();
+        assert_eq!(std::fs::read(base.join("sibling")).unwrap(), b"keep");
+        assert_eq!(std::fs::read(dest.join("kept")).unwrap(), b"keep");
+        assert_eq!(std::fs::read(dest.join("sub/file")).unwrap(), b"y");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn plain_unpack_keeps_whiteout_names_as_files() {
+        let base = std::env::temp_dir().join(format!("acropolis-unpack-plain-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let mut tw = TarWriter::new(Vec::new());
+        tw.file_bytes("foo", 0o644, b"foo").unwrap();
+        tw.file_bytes(".wh.foo", 0o644, b"wh").unwrap();
+        tw.file_bytes("d/.wh..wh..opq", 0o644, b"opq").unwrap();
+        tw.symlink("link", "/etc").unwrap();
+        tw.file_bytes("link/pwned", 0o644, b"x").unwrap();
+        let data = tw.finish().unwrap();
+        unpack_plain(std::io::Cursor::new(data), &base).unwrap();
+        assert_eq!(std::fs::read(base.join("foo")).unwrap(), b"foo");
+        assert_eq!(std::fs::read(base.join(".wh.foo")).unwrap(), b"wh");
+        assert_eq!(std::fs::read(base.join("d/.wh..wh..opq")).unwrap(), b"opq");
+        assert!(!Path::new("/etc/pwned").exists());
         let _ = std::fs::remove_dir_all(&base);
     }
 }
