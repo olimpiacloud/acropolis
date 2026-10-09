@@ -41,7 +41,7 @@ zstd = { version = "0.14", features = ["zstdmt"] }
 liblzma = "0.4"
 clap = { version = "4", features = ["derive", "env"] }
 semver = "1"
-json5 = "0.4"
+json5 = "1.3"
 tempfile = "3"
 rayon = "1"
 libc = "0.2"
