@@ -275,15 +275,22 @@ pub fn tool_version(dir: &Path, tool: &str) -> Option<VersionSpec> {
     None
 }
 
+/// Railpack precedence: Go and Rust win over Node when both are present; a forced provider picks among them.
 pub fn detect(dir: &Path, env: &Env) -> Result<App> {
-    if has_package_json(dir) {
-        return Ok(App::Node(detect_node(dir, env)?));
-    }
-    if dir.join("go.mod").exists() || dir.join("go.work").exists() || dir.join("main.go").exists() {
+    let forced = env.config("PROVIDER").map(|(p, _)| p);
+    let forced = forced.as_deref().filter(|f| matches!(*f, "node" | "go" | "rust"));
+    let pick = |provider: &str, found: bool| forced.map_or(found, |f| f == provider);
+    if pick(
+        "go",
+        dir.join("go.mod").exists() || dir.join("go.work").exists() || dir.join("main.go").exists(),
+    ) {
         return Ok(App::Go(detect_go(dir, env)?));
     }
-    if dir.join("Cargo.toml").exists() {
+    if pick("rust", dir.join("Cargo.toml").exists()) {
         return Ok(App::Rust(crate::providers::rust::detect(dir, env)?));
+    }
+    if pick("node", has_package_json(dir)) {
+        return Ok(App::Node(detect_node(dir, env)?));
     }
     bail!(
         "could not detect how to build {}: no package.json or go.mod",

@@ -149,6 +149,31 @@ impl BunLock {
         None
     }
 
+    /// Install path of a lock key. A key under a workspace member (`pkg-a/abbrev`) is installed in the member's own
+    /// node_modules (`packages/pkg-a/node_modules/abbrev`), not through the `node_modules/pkg-a` symlink.
+    fn install_path(&self, key: &str) -> String {
+        let segs = key_segments(key);
+        if segs.len() > 1
+            && let Some(dir) = self
+                .entries
+                .get(&segs[0])
+                .and_then(|e| e.spec.strip_prefix("workspace:"))
+        {
+            let dir = dir.trim_start_matches("./").trim_end_matches('/');
+            let nested = segs[1..]
+                .iter()
+                .map(|n| format!("node_modules/{n}"))
+                .collect::<Vec<_>>()
+                .join("/");
+            return if dir.is_empty() || dir == "." {
+                nested
+            } else {
+                format!("{dir}/{nested}")
+            };
+        }
+        key_to_path(key)
+    }
+
     pub fn install_plan(&self, opts: &InstallOptions) -> Result<InstallPlan> {
         self.install_plan_scoped(opts, &[])
     }
@@ -224,7 +249,7 @@ impl BunLock {
         let mut bin_dirs: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for k in &reachable {
             let e = &self.entries[k];
-            let path = key_to_path(k);
+            let path = self.install_path(k);
             let nm = path
                 .rsplit_once("/node_modules/")
                 .map(|(a, _)| format!("{a}/node_modules"))
@@ -370,5 +395,41 @@ mod tests {
             .unwrap();
         assert_eq!(scoped.links.len(), 1);
         assert_eq!(scoped.packages.len(), 1);
+    }
+
+    #[test]
+    fn workspace_member_nested_deps_go_to_member_dir() {
+        let text = r#"{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": { "name": "root", "dependencies": { "abbrev": "^2.0.0", "pkg-a": "workspace:*", }, },
+    "packages/pkg-a": { "name": "pkg-a", "dependencies": { "abbrev": "^3.0.0", }, },
+  },
+  "packages": {
+    "abbrev": ["abbrev@2.0.0", "", {}, "sha512-AO2ac6pjRB3SJmGJo+v5/aK6Omggp6fsLrs6wN9bd35ulu4cCwaAU9+7ZhXjeqHVkaHThLuzH0nZr0YpCDhygg=="],
+    "pkg-a": ["pkg-a@workspace:packages/pkg-a"],
+    "pkg-a/abbrev": ["abbrev@3.0.1", "", {}, "sha512-AO2ac6pjRB3SJmGJo+v5/aK6Omggp6fsLrs6wN9bd35ulu4cCwaAU9+7ZhXjeqHVkaHThLuzH0nZr0YpCDhygg=="],
+  }
+}"#;
+        let plan = BunLock::parse(text)
+            .unwrap()
+            .install_plan(&InstallOptions {
+                include_dev: false,
+                include_optional: true,
+                platform: Default::default(),
+            })
+            .unwrap();
+        plan.check_paths().unwrap();
+        let mut paths: Vec<&str> = plan.packages.iter().map(|p| p.path.as_str()).collect();
+        paths.sort();
+        assert_eq!(paths, ["node_modules/abbrev", "packages/pkg-a/node_modules/abbrev"]);
+        assert_eq!(plan.links.len(), 1);
+        assert_eq!(plan.links[0].path, "node_modules/pkg-a");
+        assert!(
+            plan.bin_dirs
+                .iter()
+                .any(|d| d.dir == "packages/pkg-a/node_modules"
+                    && d.packages == ["packages/pkg-a/node_modules/abbrev"])
+        );
     }
 }

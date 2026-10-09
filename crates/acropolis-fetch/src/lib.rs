@@ -53,9 +53,21 @@ pub struct Fetcher {
     inflight: Arc<std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
+/// Installs rustls' ring provider as the process default (reqwest is built with `rustls-no-provider`, so
+/// building a `reqwest::Client` before this panics). Idempotent; call it before every `Client::builder()`.
+pub fn ensure_tls() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // Err only if another provider is already installed, which serves as well.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 pub fn segment_client() -> Result<Client> {
+    ensure_tls();
     Ok(Client::builder()
         .user_agent(concat!("acropolis/", env!("CARGO_PKG_VERSION")))
+        .redirect(redirect_policy())
         .http1_only()
         .pool_max_idle_per_host(16)
         .connect_timeout(Duration::from_secs(10))
@@ -65,8 +77,10 @@ pub fn segment_client() -> Result<Client> {
 
 impl Fetcher {
     pub fn new(store: Arc<Store>, concurrency: usize) -> Result<Self> {
+        ensure_tls();
         let client = Client::builder()
             .user_agent(concat!("acropolis/", env!("CARGO_PKG_VERSION")))
+            .redirect(redirect_policy())
             .pool_max_idle_per_host(64)
             .connect_timeout(Duration::from_secs(5))
             .read_timeout(Duration::from_secs(60))
@@ -103,6 +117,11 @@ impl Fetcher {
         let mut out = bytes::BytesMut::new();
         struct Collect<'a>(&'a mut bytes::BytesMut);
         impl AsyncSink for Collect<'_> {
+            fn reserve(&mut self, len: u64) {
+                if len <= MAX_BUFFERED {
+                    self.0.reserve(len as usize);
+                }
+            }
             async fn push(&mut self, b: Bytes) -> Result<()> {
                 if (self.0.len() + b.len()) as u64 > MAX_BUFFERED {
                     bail!("response is larger than {} MB", MAX_BUFFERED >> 20);
@@ -260,6 +279,7 @@ impl Fetcher {
                     } else {
                         HeaderMap::new()
                     };
+                    sink.reserve(len);
                     match segmented::download(
                         &self.seg_client,
                         &final_url,
@@ -278,6 +298,7 @@ impl Fetcher {
                     }
                 }
                 Probe::Stream(mut r) => {
+                    sink.reserve(r.content_length().unwrap_or(0));
                     let mut offset = 0u64;
                     loop {
                         let chunk = match tokio::time::timeout(STALL * 3, r.chunk()).await {
@@ -429,13 +450,83 @@ impl std::fmt::Display for Stalled {
 impl std::error::Error for Stalled {}
 
 pub trait AsyncSink {
-    fn push(&mut self, b: Bytes) -> impl std::future::Future<Output = Result<()>>;
+    fn push(&mut self, b: Bytes) -> impl Future<Output = Result<()>>;
+
+    /// Hint that the whole body is `len` bytes, so buffering sinks can allocate once.
+    fn reserve(&mut self, _len: u64) {}
 }
 
 impl<S: AsyncSink> AsyncSink for &mut S {
     async fn push(&mut self, b: Bytes) -> Result<()> {
         (**self).push(b).await
     }
+
+    fn reserve(&mut self, len: u64) {
+        (**self).reserve(len)
+    }
+}
+
+/// Loopback, private, link-local, CGNAT (100.64/10), unique-local, unspecified, and IPv6 forms embedding such
+/// an IPv4 address (mapped, compatible, NAT64 64:ff9b::/96).
+pub fn private_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            let o = ip.octets();
+            ip.is_private() || ip.is_loopback() || ip.is_link_local() || o[0] == 0 || o[0] == 100 && (o[1] & 0xc0) == 64
+        }
+        std::net::IpAddr::V6(ip) => {
+            let s = ip.segments();
+            let embedded = if s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+                Some(std::net::Ipv4Addr::from((u32::from(s[6]) << 16) | u32::from(s[7])))
+            } else {
+                ip.to_ipv4()
+            };
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || (s[0] & 0xfe00) == 0xfc00
+                || (s[0] & 0xffc0) == 0xfe80
+                || embedded.is_some_and(|v4| private_ip(v4.into()))
+        }
+    }
+}
+
+/// `private_ip` literals (bracketed IPv6 accepted) and names that resolve locally by convention.
+pub fn private_host(host: &str) -> bool {
+    let h = host.trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
+    if h == "localhost" || h.ends_with(".localhost") || h.ends_with(".internal") {
+        return true;
+    }
+    h.parse::<std::net::IpAddr>().is_ok_and(private_ip)
+}
+
+const MAX_REDIRECTS: usize = 10;
+
+/// Redirects come from servers named by the (untrusted) app, so they may not hop onto private hosts or downgrade
+/// https to http. A request that already targeted a private host (operator mirror) is not restricted.
+fn redirect_error(previous: &[reqwest::Url], next: &reqwest::Url) -> Option<&'static str> {
+    if previous.len() >= MAX_REDIRECTS {
+        return Some("too many redirects");
+    }
+    if previous
+        .first()
+        .is_some_and(|u| private_host(u.host_str().unwrap_or("")))
+    {
+        return None;
+    }
+    if private_host(next.host_str().unwrap_or("")) {
+        return Some("redirect to a private address");
+    }
+    if next.scheme() == "http" && previous.iter().any(|u| u.scheme() == "https") {
+        return Some("redirect from https to plain http");
+    }
+    None
+}
+
+fn redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| match redirect_error(attempt.previous(), attempt.url()) {
+        Some(e) => attempt.error(e),
+        None => attempt.follow(),
+    })
 }
 
 pub struct ChannelReader {
@@ -542,5 +633,79 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let url = serve(large_body(), true);
         assert!(fetcher(dir.path()).bytes(&url).await.is_err());
+    }
+
+    #[test]
+    fn private_addresses() {
+        for ip in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "100.127.255.255",
+            "0.0.0.0",
+            "::",
+            "::1",
+            "fc00::1",
+            "fd12::1",
+            "fe80::1",
+            "::ffff:127.0.0.1",
+            "::ffff:169.254.169.254",
+            "::10.0.0.1",
+            "64:ff9b::a9fe:a9fe",
+        ] {
+            assert!(private_ip(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in [
+            "8.8.8.8",
+            "100.128.0.1",
+            "172.32.0.1",
+            "2606:4700::1",
+            "::ffff:8.8.8.8",
+            "64:ff9b::808:808",
+        ] {
+            assert!(!private_ip(ip.parse().unwrap()), "{ip}");
+        }
+        assert!(private_host("[::1]") && private_host("LOCALHOST") && private_host("metadata.google.internal"));
+        assert!(!private_host("registry.npmjs.org"));
+    }
+
+    #[test]
+    fn redirect_decisions() {
+        let u = |s: &str| reqwest::Url::parse(s).unwrap();
+        let public = [u("https://registry.npmjs.org/a.tgz")];
+        assert_eq!(redirect_error(&public, &u("https://cdn.example.com/a.tgz")), None);
+        for next in [
+            "https://127.0.0.1/a",
+            "https://[::ffff:10.0.0.1]/a",
+            "http://169.254.169.254/latest/meta-data",
+            "https://localhost/a",
+        ] {
+            assert_eq!(
+                redirect_error(&public, &u(next)),
+                Some("redirect to a private address"),
+                "{next}"
+            );
+        }
+        assert_eq!(
+            redirect_error(&public, &u("http://cdn.example.com/a.tgz")),
+            Some("redirect from https to plain http")
+        );
+        assert_eq!(
+            redirect_error(&[u("http://example.com/a")], &u("http://cdn.example.com/a")),
+            None
+        );
+        // An operator mirror on a private address may redirect anywhere.
+        let mirror = [u("https://10.0.0.5/npm/a.tgz")];
+        assert_eq!(redirect_error(&mirror, &u("http://10.0.0.6/a.tgz")), None);
+        let chain: Vec<_> = (0..MAX_REDIRECTS)
+            .map(|i| u(&format!("https://h{i}.example.com/")))
+            .collect();
+        assert_eq!(
+            redirect_error(&chain, &u("https://cdn.example.com/")),
+            Some("too many redirects")
+        );
     }
 }

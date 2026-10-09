@@ -1,124 +1,124 @@
 # Acropolis
 
-![Acropolis: una acrópolis que se arma por capas frente a la bahía de Buenos Aires](docs/assets/acropolis-banner.jpg)
+![Acropolis: an acropolis built up in layers facing the bay of Buenos Aires](docs/assets/acropolis-banner.jpg)
 
 [![CI](https://github.com/olimpiacloud/acropolis/actions/workflows/ci.yml/badge.svg)](https://github.com/olimpiacloud/acropolis/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/olimpiacloud/acropolis)](https://github.com/olimpiacloud/acropolis/releases/latest)
-[![Licencia: Apache-2.0 o MIT](https://img.shields.io/badge/licencia-Apache--2.0%20o%20MIT-blue)](#licencia)
+[![License: Apache-2.0 or MIT](https://img.shields.io/badge/license-Apache--2.0%20or%20MIT-blue)](#license)
 
-Acropolis toma el código de una app y devuelve una imagen OCI lista para correr, sin Dockerfile y sin daemon. Detecta el lenguaje y el framework, baja toolchains y dependencias verificadas, compila y arma la imagen. Es un único binario en Rust (`acropolis`) y es el builder de [Olimpia](https://olimpia.dev).
+Acropolis takes an app's source code and returns an OCI image ready to run, with no Dockerfile and no daemon. It detects the language and framework, downloads verified toolchains and dependencies, compiles, and assembles the image. It is a single Rust binary (`acropolis`) and it is the builder behind [Olimpia](https://olimpia.dev).
 
 ```
-acropolis build ./mi-app -t registry.example.com/equipo/mi-app:latest
-acropolis build ./mi-app --oci imagen.tar --info info.json
-acropolis plan ./mi-app
+acropolis build ./my-app -t registry.example.com/team/my-app:latest
+acropolis build ./my-app --oci image.tar --info info.json
+acropolis plan ./my-app
 ```
 
-Lo escribimos porque en un PaaS cada build arranca en una máquina vacía, y ahí las herramientas que había eran lentas, pesadas o hacían imágenes enormes.
+We wrote it because on a PaaS every build starts on an empty machine, and the tools available there were slow, heavy, or produced huge images.
 
-## Cómo nos aseguramos de que anda
+## How we make sure it works
 
-No confiamos en nuestras propias apps de prueba: usamos los tests de otros builders tal como los publican. Cada caso construye la imagen con Acropolis, la corre con `docker run` y chequea la salida o un pedido HTTP, con los mismos tiempos que el original.
+We don't trust our own test apps: we use other builders' tests as they publish them. Each case builds the image with Acropolis, runs it with `docker run`, and checks the output or an HTTP request, with the same timeouts as the original.
 
-| suite | qué es | resultado |
+| suite | what it is | result |
 |---|---|---|
-| Ejemplos de [Railpack](https://github.com/railwayapp/railpack/tree/main/examples) | 131 apps y 156 casos: Node (npm, pnpm, yarn, bun, Next, Nuxt, Astro, SvelteKit, Remix, Angular, Nx, Turborepo), Python (pip, uv, poetry, pdm), Go, Rust, Ruby/Rails, PHP/Laravel, Java, .NET, Elixir, Gleam, Deno, sitios estáticos y scripts | **154 pasan**; los 2 restantes son para arm64 y se saltean en x86 |
-| Next.js y Turbopack (`tests/suites/next`) | Next 15 con `--turbopack`, Next 16 con Turbopack por defecto, `--webpack`, `output: standalone`, `output: export`, `next/image`, lecturas de archivos en runtime y un monorepo Turborepo; con npm, pnpm, yarn y bun | **8/8** |
-| Tests de [Nixpacks](https://github.com/railwayapp/nixpacks) (`scripts/nixpacks-suite.py`) | 73 casos convertidos de `tests/docker_run_tests.rs` | **37 pasan**; el resto son lenguajes que tampoco soporta Railpack (Clojure, Crystal, Dart, Haskell, Scala, Scheme, Swift, Zig), configs propias de Nixpacks (`nixpacks.toml`, `NIXPACKS_*`) o apps que esperan el compilador dentro de la imagen final |
-| Snapshots de planes (`tests/plans`) | `acropolis plan --json` de los 131 ejemplos de Railpack | cualquier cambio de detección aparece como diff antes de construir nada |
-| Tests unitarios | instalación de paquetes, capas, sandbox, registry, rutas que salen de la app, errores | 103 |
+| [Railpack](https://github.com/railwayapp/railpack/tree/main/examples) examples | 131 apps and 156 cases: Node (npm, pnpm, yarn, bun, Next, Nuxt, Astro, SvelteKit, Remix, Angular, Nx, Turborepo), Python (pip, uv, poetry, pdm), Go, Rust, Ruby/Rails, PHP/Laravel, Java, .NET, Elixir, Gleam, Deno, static sites and scripts | **154 pass**; the other 2 are for arm64 and are skipped on x86 |
+| Next.js and Turbopack (`tests/suites/next`) | Next 15 with `--turbopack`, Next 16 with Turbopack by default, `--webpack`, `output: standalone`, `output: export`, `next/image`, file reads at runtime and a Turborepo monorepo; with npm, pnpm, yarn and bun | **8/8** |
+| [Nixpacks](https://github.com/railwayapp/nixpacks) tests (`scripts/nixpacks-suite.py`) | 73 cases converted from `tests/docker_run_tests.rs` | **37 pass**; the rest are languages Railpack doesn't support either (Clojure, Crystal, Dart, Haskell, Scala, Scheme, Swift, Zig), Nixpacks-specific configs (`nixpacks.toml`, `NIXPACKS_*`), or apps that expect the compiler inside the final image |
+| Plan snapshots (`tests/plans`) | `acropolis plan --json` for the 131 Railpack examples | any detection change shows up as a diff before anything is built |
+| Unit tests | package installation, layers, sandbox, registry, paths that escape the app, errors | 103 |
 
-Esas suites encontraron bugs que nuestras apps nunca habrían mostrado: yarn v1 instalando binarios de todas las plataformas (177 MB de `sharp` para darwin, windows y arm en una imagen linux), los `node_modules` de los miembros de un workspace pnpm que no llegaban a la imagen, Next 15 que necesitaba `typescript` en runtime para leer `next.config.ts`, parches de `patchedDependencies` que no se aplicaban, hardlinks duplicados que inflaban las capas, Go sin `go.mod` y Java con un Gradle viejo.
+These suites found bugs our own apps would never have shown: yarn v1 installing binaries for every platform (177 MB of `sharp` for darwin, windows and arm in a linux image), `node_modules` of pnpm workspace members not reaching the image, Next 15 needing `typescript` at runtime to read `next.config.ts`, `patchedDependencies` patches not being applied, duplicate hardlinks inflating layers, Go without `go.mod`, and Java with an old Gradle.
 
-Las imágenes se prueban con `docker pull` desde un registry local; con `E2E_OCI=1` el harness además carga el `--oci` tar con `docker load`, que es como las consume Olimpia.
+Images are tested with `docker pull` from a local registry; with `E2E_OCI=1` the harness also loads the `--oci` tar with `docker load`, which is how Olimpia consumes them.
 
-## Qué vimos que nadie resolvía
+## What we saw nobody solving
 
-- **El build en frío es lento.** En nuestro benchmark Railpack tarda de 54 a 170 s porque primero baja su imagen de builder y BuildKit no reintenta una descarga que se queda colgada: vimos una capa de 68 MB bajar a 200 KB/s durante 10 minutos. Docker es más rápido, pero solo si alguien escribió un Dockerfile multistage a mano.
-- **Las imágenes vienen infladas.** Railpack deja en la imagen las devDependencies, la caché y su gestor de toolchains: una app Next de ejemplo pesa 345 MB contra 105 MB con un Dockerfile bien hecho.
-- **Se usa mucha memoria para poco.** Railpack pasa los 2,9 GB de RAM para construir un servidor Express con 7,5 MB de dependencias.
-- **Los rebuilds no aprovechan nada.** Con Docker, cambiar una línea de una app Go recompila todo (41 s).
-- **En un builder efímero no sobrevive ninguna caché.**
+- **Cold builds are slow.** In our benchmark Railpack takes 54 to 170 s because it first downloads its builder image, and BuildKit does not retry a download that hangs: we saw a 68 MB layer download at 200 KB/s for 10 minutes. Docker is faster, but only if someone wrote a multi-stage Dockerfile by hand.
+- **Images are bloated.** Railpack leaves devDependencies, the cache and its toolchain manager in the image: a sample Next app weighs 345 MB against 105 MB with a well-made Dockerfile.
+- **A lot of memory for little work.** Railpack uses more than 2.9 GB of RAM to build an Express server with 7.5 MB of dependencies.
+- **Rebuilds reuse nothing.** With Docker, changing one line of a Go app recompiles everything (41 s).
+- **No cache survives on an ephemeral builder.**
 
-## Qué resultó
+## What came out of it
 
-Benchmark en frío y en rebuild con 2 CPUs, las tres herramientas el mismo día y en las mismas condiciones, mediana de 2 corridas. Docker usa un Dockerfile multistage idiomático para cada app (`bench/dockerfiles`).
+Cold and rebuild benchmark with 2 CPUs, all three tools on the same day under the same conditions, median of 2 runs. Docker uses an idiomatic multi-stage Dockerfile for each app (`bench/dockerfiles`).
 
-| app | tiempo en frío (Docker / Railpack / **Acropolis**) | imagen (Docker / Railpack / **Acropolis**) | RAM pico (Docker / Railpack / **Acropolis**) |
+| app | cold time (Docker / Railpack / **Acropolis**) | image (Docker / Railpack / **Acropolis**) | peak RAM (Docker / Railpack / **Acropolis**) |
 |---|---|---|---|
-| Express | 16,1 s / 53,7 s / **6,6 s** | 81,2 / 147,5 / **54,6 MB** | 562 / 2955 / **83 MB** |
-| Go | 77,9 s / 85,3 s / **41,7 s** | 4,3 / 40,8 / **4,2 MB** | 2221 / 2944 / **1088 MB** |
-| Rust | 75,3 s / 112,4 s / **48,2 s** | 10,0 / 38,0 / **11,4 MB** | 2910 / 4523 / **1509 MB** |
-| Vite + React | 23,0 s / 55,3 s / **5,2 s** | 26,4 / 54,7 / **25,0 MB** | 933 / 2863 / **594 MB** |
-| Vite + MUI | 48,3 s / 77,8 s / **8,4 s** | 26,5 / 54,7 / **25,0 MB** | 1329 / 3262 / **898 MB** |
-| TanStack Start | 26,8 s / 78,1 s / **8,1 s** | 80,1 / 203,0 / **53,6 MB** | 1242 / 3575 / **960 MB** |
-| Next 15 | 118,1 s / 170,5 s / **47,5 s** | 105,4 / 345,6 / **69,8 MB** | 3075 / 4560 / **1936 MB** |
+| Express | 16.1 s / 53.7 s / **6.6 s** | 81.2 / 147.5 / **54.6 MB** | 562 / 2955 / **83 MB** |
+| Go | 77.9 s / 85.3 s / **41.7 s** | 4.3 / 40.8 / **4.2 MB** | 2221 / 2944 / **1088 MB** |
+| Rust | 75.3 s / 112.4 s / **48.2 s** | 10.0 / 38.0 / **11.4 MB** | 2910 / 4523 / **1509 MB** |
+| Vite + React | 23.0 s / 55.3 s / **5.2 s** | 26.4 / 54.7 / **25.0 MB** | 933 / 2863 / **594 MB** |
+| Vite + MUI | 48.3 s / 77.8 s / **8.4 s** | 26.5 / 54.7 / **25.0 MB** | 1329 / 3262 / **898 MB** |
+| TanStack Start | 26.8 s / 78.1 s / **8.1 s** | 80.1 / 203.0 / **53.6 MB** | 1242 / 3575 / **960 MB** |
+| Next 15 | 118.1 s / 170.5 s / **47.5 s** | 105.4 / 345.6 / **69.8 MB** | 3075 / 4560 / **1936 MB** |
 
-En rebuild, después de cambiar un archivo: Go 41 s / 5,8 s / **1,1 s**, Rust 49 s / 15 s / **6,5 s** y Next 71 s / 81 s / **24,8 s**.
+Rebuild after changing one file: Go 41 s / 5.8 s / **1.1 s**, Rust 49 s / 15 s / **6.5 s** and Next 71 s / 81 s / **24.8 s**.
 
-La RAM pico incluye page cache. La memoria anónima, que no se puede liberar, queda pareja con Docker en frío y por debajo en rebuild: el grueso es el compilador de cada lenguaje, no Acropolis.
+Peak RAM includes page cache. Anonymous memory, which cannot be reclaimed, is on par with Docker on cold builds and below it on rebuilds: most of it is each language's compiler, not Acropolis.
 
-Lo que más pesó:
+What mattered most:
 
-- **Nada de imagen de builder.** Node, Go y Rust se bajan de sus fuentes oficiales con checksum y corren directo; las dependencias (npm, pnpm, yarn, bun, módulos de Go, crates) las instala Acropolis desde los lockfiles, verificadas mientras bajan.
-- **Descargas que no se cuelgan.** Los blobs grandes se bajan en segmentos en paralelo, y si uno se atrasa se lanza un duplicado y gana el primero.
-- **La base nunca se descomprime.** Las capas de la imagen base se copian de registry a registry por digest; solo se comprimen las capas nuevas, en paralelo.
-- **Runtimes chicos.** Node y Bun corren sobre distroless con un shell mínimo cuando no hace falta nada de Debian, y las apps Next 15+ sin `output` configurado se construyen como standalone.
-- **Cachés que se pueden llevar.** Go, Cargo, `.next/cache` y demás quedan en una caché por app que se exporta e importa como un `tar.zst` (`acropolis cache export|import`), para guardarla entre builders efímeros.
+- **No builder image.** Node, Go and Rust are downloaded from their official sources with a checksum and run directly; dependencies (npm, pnpm, yarn, bun, Go modules, crates) are installed by Acropolis from the lockfiles, verified while they download.
+- **Downloads that don't hang.** Large blobs are downloaded in parallel segments, and if one falls behind a duplicate is started and the first to finish wins.
+- **The base is never decompressed.** Base image layers are copied registry to registry by digest; only the new layers are compressed, in parallel.
+- **Small runtimes.** Node and Bun run on distroless with a minimal shell when nothing from Debian is needed, and Next 15+ apps without `output` configured are built as standalone.
+- **Portable caches.** Go, Cargo, `.next/cache` and the rest live in a per-app cache that is exported and imported as a `tar.zst` (`acropolis cache export|import`), to keep it between ephemeral builders.
 
-Las mediciones y lo que probamos y descartamos están en [`docs/decisions.md`](docs/decisions.md).
+The measurements, and what we tried and discarded, are in [`docs/decisions.md`](docs/decisions.md).
 
-## Qué soporta
+## What it supports
 
-| ecosistema | runtime de la imagen |
+| ecosystem | image runtime |
 |---|---|
-| Node: npm, pnpm, yarn 1, yarn berry, bun; Next, Nuxt, Astro, SvelteKit, Remix, React Router, TanStack Start, Angular, Vite, Nx, Turborepo | distroless con shell mínimo cuando se puede; si no, `node:<versión>-bookworm-slim`. Next standalone, Nitro, SPA sobre Caddy |
-| Bun | `distroless/cc` + bun, o Debian slim |
+| Node: npm, pnpm, yarn 1, yarn berry, bun; Next, Nuxt, Astro, SvelteKit, Remix, React Router, TanStack Start, Angular, Vite, Nx, Turborepo | distroless with a minimal shell when possible; otherwise `node:<version>-bookworm-slim`. Next standalone, Nitro, SPA on Caddy |
+| Bun | `distroless/cc` + bun, or Debian slim |
 | Go | `distroless/static` |
 | Rust | `distroless/cc` |
-| Python: uv, poetry, pdm, pipenv, pip | `python:<versión>-slim` |
-| Ruby, PHP/Laravel, Java, .NET, Elixir, Gleam, Deno, C/C++ | la imagen oficial slim de cada uno |
-| Sitios estáticos y scripts | Caddy, Debian slim |
+| Python: uv, poetry, pdm, pipenv, pip | `python:<version>-slim` |
+| Ruby, PHP/Laravel, Java, .NET, Elixir, Gleam, Deno, C/C++ | the official slim image of each one |
+| Static sites and scripts | Caddy, Debian slim |
 
-Respeta `railpack.json` y `acropolis.json`: pasos propios, paquetes extra, `buildAptPackages`, `deploy.aptPackages`, `deploy.paths` y `deploy.inputs`.
+It honors `railpack.json` and `acropolis.json`: custom steps, extra packages, `buildAptPackages`, `deploy.aptPackages`, `deploy.paths` and `deploy.inputs`.
 
-## Instalación
+## Installation
 
-Acropolis corre en Linux x86_64 y arm64 con glibc 2.36 o más nueva (Debian 12, Ubuntu 24.04 o más nuevos). Cada [release](https://github.com/olimpiacloud/acropolis/releases) trae el binario, sus checksums y una atestación de procedencia firmada por GitHub Actions:
+Acropolis runs on Linux x86_64 and arm64 with glibc 2.36 or newer (Debian 12, Ubuntu 24.04 or newer). Each [release](https://github.com/olimpiacloud/acropolis/releases) ships the binary, its checksums, and a provenance attestation signed by GitHub Actions:
 
 ```
-v=v0.1.0 target=x86_64-unknown-linux-gnu   # o aarch64-unknown-linux-gnu
+v=v0.1.0 target=x86_64-unknown-linux-gnu   # or aarch64-unknown-linux-gnu
 gh release download "$v" -R olimpiacloud/acropolis -p "acropolis-$v-$target.tar.gz" -p SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS
 gh attestation verify "acropolis-$v-$target.tar.gz" -R olimpiacloud/acropolis
 tar xzf "acropolis-$v-$target.tar.gz" && sudo install "acropolis-$v-$target/acropolis" /usr/local/bin/
 ```
 
-La imagen de builder (ver abajo) se publica como `ghcr.io/olimpiacloud/acropolis-builder:<versión>`. Desde el código: `cargo build --release --bin acropolis` deja el binario en `target/release/acropolis`.
+The builder image (see below) is published as `ghcr.io/olimpiacloud/acropolis-builder:<version>`. From source: `cargo build --release --bin acropolis` leaves the binary in `target/release/acropolis`.
 
-## En producción
+## In production
 
-- **Un build por contenedor.** Acropolis corre como root porque usa namespaces de mount y PID y overlayfs. Cada paso de build corre en su propio namespace de PID (no ve a Acropolis ni sus variables), con todo el sistema de archivos de solo lectura salvo su directorio de trabajo, la caché de su app y `/tmp`, `/proc/sys` y `/sys` de solo lectura, un `/dev` mínimo, solo las capabilities de un contenedor sin privilegios, sin los directorios de credenciales de Docker y con su propio namespace de red si no necesita red. Lo que Acropolis procesa como root (config, lockfiles, parches, capas de imágenes, cachés, rutas de la config) se valida para que no pueda escribir ni leer fuera de su árbol. Aun así no es una frontera de VM: para builds de distintos clientes, un contenedor desechable por build.
-- **Red del builder.** Los pasos con red (instalación con scripts, `next build`) pueden hablar con cualquier host que alcance el contenedor. Bloqueá desde afuera el endpoint de metadata de la nube (`169.254.169.254`) y la red interna; Acropolis solo rechaza registries privados o `http://` en lo que descarga él mismo (`ACROPOLIS_ALLOW_PRIVATE_REGISTRY=1` lo permite).
-- **Ajustes del operador.** `ACROPOLIS_CACHE_KEY`, `ACROPOLIS_CACHE_MAX`, `ACROPOLIS_BUILD_TIMEOUT` (1 h por defecto), `ACROPOLIS_STEP_TIMEOUT` y `ACROPOLIS_BUILD_ID` se leen solo del entorno del proceso; si llegan por `-e` o por la config del repo se ignoran.
-- **Salida.** `-t` pushea a un registry, `--oci` escribe un tar cargable con `docker load` y `--info` deja un resumen en JSON. Con `--events json` cada línea de stderr es un evento con versión de esquema y `build_id`.
-- **Códigos de salida.** 0 ok, 1 falló el build de la app, 70 bug de Acropolis (también un panic), 75 problema de infraestructura (se puede reintentar; incluye SIGTERM/SIGINT y pasos matados con SIGKILL), 78 la app no se puede construir así como está configurada (incluye rutas que salen de la app y registries privados).
-- **Imagen de builder.** [`deploy/builder`](deploy/builder) tiene una imagen Debian 12 con las herramientas de compilación nativa y los toolchains precalentados.
+- **One build per container.** Acropolis runs as root because it uses mount and PID namespaces and overlayfs. Each build step runs in its own PID namespace (it can't see Acropolis or its variables), with the whole filesystem read-only except its working directory, its app's cache and `/tmp`, read-only `/proc/sys` and `/sys`, a minimal `/dev`, only the capabilities of an unprivileged container, a seccomp filter modeled on Docker's default profile (no new namespaces, mounts, ptrace, kernel keyring or BPF), without the Docker credential directories, and with its own network namespace if it doesn't need network. What Acropolis processes as root (config, lockfiles, patches, image layers, caches, config paths) is validated so it cannot write or read outside its tree. Still, this is not a VM boundary: for builds from different customers, use one throwaway container per build.
+- **Builder network.** Steps with network (installs with scripts, `next build`) can talk to any host the container can reach. Block the cloud metadata endpoint (`169.254.169.254`) and the internal network from outside; Acropolis only rejects private registries or `http://` for what it downloads itself (`ACROPOLIS_ALLOW_PRIVATE_REGISTRY=1` allows them).
+- **Operator settings.** `ACROPOLIS_CACHE_KEY`, `ACROPOLIS_CACHE_MAX`, `ACROPOLIS_BUILD_TIMEOUT` (1 h by default), `ACROPOLIS_STEP_TIMEOUT` and `ACROPOLIS_BUILD_ID` are read only from the process environment; if they come through `-e` or the repo config they are ignored.
+- **Output.** `-t` pushes to a registry, `--oci` writes a tar loadable with `docker load`, and `--info` writes a JSON summary. With `--events json` each stderr line is an event with a schema version and `build_id`.
+- **Exit codes.** 0 ok, 1 the app build failed, 70 Acropolis bug (including a panic), 75 infrastructure problem (retryable; includes SIGTERM/SIGINT and steps killed with SIGKILL), 78 the app cannot be built as configured (includes paths that escape the app and private registries).
+- **Builder image.** [`deploy/builder`](deploy/builder) has a Debian 12 image with native build tools and prewarmed toolchains.
 
-## Desarrollo
+## Development
 
-[`CONTRIBUTING.md`](CONTRIBUTING.md) explica cómo compilar y probar con `cargo` a secas, cómo correr los snapshots de planes y el e2e, y cómo se arman los PR y las versiones. En la VM del equipo usamos estos atajos:
+[`CONTRIBUTING.md`](CONTRIBUTING.md) explains how to build and test with plain `cargo`, how to run the plan snapshots and the e2e, and how PRs and releases work. On the team VM we use these shortcuts:
 
 ```
-scripts/build.sh               # compila target/fast/acropolis
-scripts/test.sh --workspace    # tests unitarios
-scripts/plans.sh               # compara los planes de los ejemplos de Railpack
-scripts/e2e.sh                 # corre los ejemplos de Railpack (ACROPOLIS_EXT apunta al clon)
-scripts/bench.sh               # benchmark contra Docker y Railpack
+scripts/build.sh               # builds target/fast/acropolis
+scripts/test.sh --workspace    # unit tests
+scripts/plans.sh               # compares the plans of the Railpack examples
+scripts/e2e.sh                 # runs the Railpack examples (ACROPOLIS_EXT points to the clone)
+scripts/bench.sh               # benchmark against Docker and Railpack
 ```
 
-Los scripts esperan, junto al repo, un directorio `acropolis-ext` con el clon de Railpack y su binario (o la ruta en `ACROPOLIS_EXT`). Las vulnerabilidades se reportan en privado: ver [`SECURITY.md`](SECURITY.md).
+The scripts expect, next to the repo, an `acropolis-ext` directory with the Railpack clone and its binary (or the path in `ACROPOLIS_EXT`). Vulnerabilities are reported privately: see [`SECURITY.md`](SECURITY.md).
 
-## Licencia
+## License
 
-A elección de quien lo use, [Apache-2.0](LICENSE-APACHE) o [MIT](LICENSE-MIT). Salvo que se diga lo contrario, cualquier contribución se publica bajo esas mismas dos licencias.
+At your option, [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT). Unless stated otherwise, any contribution is published under those same two licenses.

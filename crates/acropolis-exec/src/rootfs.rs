@@ -82,13 +82,17 @@ fn enter(p: &Prepared) -> std::io::Result<()> {
                 ))?;
             }
         }
-        check(libc::chroot(p.merged.as_ptr()))?;
+        // pivot_root rather than chroot: the host root leaves the step's mount namespace entirely.
+        check(libc::chdir(p.merged.as_ptr()))?;
+        check(libc::syscall(libc::SYS_pivot_root, c".".as_ptr(), c".".as_ptr()) as libc::c_int)?;
+        check(libc::umount2(c".".as_ptr(), libc::MNT_DETACH))?;
         check(libc::chdir(p.cwd.as_ptr()))?;
         crate::mount_proc_and_dev()?;
         if !p.network {
             crate::bring_up_lo();
         }
-        crate::drop_caps()
+        crate::drop_caps()?;
+        crate::seccomp::install()
     }
 }
 
@@ -193,18 +197,33 @@ pub async fn run(spec: RootfsRun) -> Result<Vec<String>> {
         .with_context(|| format!("starting {} in image rootfs", spec.argv[0]))?;
     let group = crate::ProcessGroup::of(&child);
     let (status, tail) = crate::wait_with_output(&spec.step, &mut child, group).await?;
-    for b in &spec.binds {
-        let target = spec.upper.join(b.guest.trim_start_matches('/'));
-        if b.host.is_file() {
-            let _ = std::fs::remove_file(&target);
-        } else {
-            let _ = std::fs::remove_dir(&target);
-        }
-    }
+    remove_bind_targets(&spec.upper, &spec.binds);
     if !status.success() {
         return Err(crate::CommandFailed::new(&spec.argv, status, tail).into());
     }
     Ok(tail)
+}
+
+/// Removes the mount points `run` created in `upper` for the binds. The step may have replaced one
+/// of their parents with a symlink to a host path (`upper/root -> /etc`): never follow one.
+fn remove_bind_targets(upper: &Path, binds: &[Bind]) {
+    for b in binds {
+        let rel = Path::new(b.guest.trim_start_matches('/'));
+        let mut dir = upper.to_path_buf();
+        let real_parents = rel.parent().into_iter().flat_map(Path::components).all(|c| {
+            dir.push(c);
+            std::fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir())
+        });
+        if !real_parents {
+            continue;
+        }
+        let target = upper.join(rel);
+        let _ = if b.host.is_file() {
+            std::fs::remove_file(&target)
+        } else {
+            std::fs::remove_dir(&target)
+        };
+    }
 }
 
 #[cfg(test)]
@@ -229,6 +248,11 @@ mod tests {
             "busybox test -c /dev/null && busybox test -z \"$(busybox find /dev -type b)\"",
             "if echo x > /proc/sys/kernel/hostname; then exit 1; fi",
             "if busybox mkdir /sys/fs/cgroup/acropolis-probe; then busybox rmdir /sys/fs/cgroup/acropolis-probe; exit 1; fi",
+            "busybox grep -q '^Seccomp:[[:space:]]*2$' /proc/self/status",
+            "if busybox unshare -U /bin/busybox true; then exit 1; fi",
+            "if busybox unshare -m /bin/busybox true; then exit 1; fi",
+            "busybox mkdir -p /mnt && if busybox mount -t tmpfs x /mnt; then exit 1; fi",
+            "echo ok && busybox ls / > /dev/null",
         ];
         for (i, c) in checks.iter().enumerate() {
             let step = tmp.join(i.to_string());
@@ -247,6 +271,36 @@ mod tests {
             let r = run(spec).await;
             assert!(r.is_ok(), "{c}: {r:?}");
         }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn bind_cleanup_does_not_follow_symlinks_left_by_the_step() {
+        let tmp = std::env::temp_dir().join(format!("acropolis-rootfs-clean-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let upper = tmp.join("upper");
+        let victim = tmp.join("victim");
+        std::fs::create_dir_all(victim.join(".cache")).unwrap();
+        std::fs::write(victim.join("hosts"), b"keep").unwrap();
+        std::fs::create_dir_all(upper.join("app")).unwrap();
+        std::os::unix::fs::symlink(&victim, upper.join("root")).unwrap();
+        std::os::unix::fs::symlink(&victim, upper.join("etc")).unwrap();
+        let bind = |host: &Path, guest: &str| Bind {
+            host: host.to_path_buf(),
+            guest: guest.into(),
+            readonly: false,
+        };
+        let file = tmp.join("file");
+        std::fs::write(&file, b"").unwrap();
+        let binds = [
+            bind(&tmp, "/root/.cache"),
+            bind(&file, "/etc/hosts"),
+            bind(&tmp, "/app"),
+        ];
+        remove_bind_targets(&upper, &binds);
+        assert!(victim.join(".cache").is_dir());
+        assert_eq!(std::fs::read(victim.join("hosts")).unwrap(), b"keep");
+        assert!(!upper.join("app").exists());
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

@@ -77,6 +77,7 @@ const CONFIG: &[&str] = &[
     "over plain http",
     "private or link-local",
     "invalid toolchain version",
+    "is not valid utf-8; rename it",
 ];
 
 pub fn classify(err: &anyhow::Error) -> ErrorClass {

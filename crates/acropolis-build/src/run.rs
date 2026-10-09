@@ -94,6 +94,196 @@ fn open_app_cache(opts: &BuildOptions) -> Option<AppCache> {
     Some(AppCache { dir, _lock: lock })
 }
 
+/// sha256 of `packages/yarnpkg-cli/bin/yarn.js` for every yarn 2.x tag on repo.yarnpkg.com
+/// (2.x has no checksummed source; 2.4.3 is not on npm). Each matched the file at the
+/// `@yarnpkg/cli/<version>` tag on GitHub; 2.4.1 and 2.4.2 also match npm's `@yarnpkg/cli-dist`.
+const YARN2_SHA256: &[(&str, &str)] = &[
+    (
+        "2.4.3",
+        "8c1575156cfa42112242cc5cfbbd1049da9448ffcdb5c55ce996883610ea983f",
+    ),
+    (
+        "2.4.2",
+        "3ceae9c55cc9f52b474922a5c9bdfb32ada8fa003a3e071064e157fc156cfad0",
+    ),
+    (
+        "2.4.1",
+        "8feb0398db243b0f9deaece6d71b5d18e0dc8795758d41cbe9d1efc70038865e",
+    ),
+    (
+        "2.4.0",
+        "20e1fc90678be9e6fa93534af62b115f84d3c54f619cd654af06dabd298e2b5e",
+    ),
+    (
+        "2.3.3",
+        "63ea33a54bcabe4497fb3c5b2e2131777e1be68afb555356b2756257d9d05141",
+    ),
+    (
+        "2.3.2",
+        "875359e6a2495b7fd7833b9df53b9254448e9f40903349c11a8a99cd5b8c5d19",
+    ),
+    (
+        "2.3.1",
+        "545fa35150042a6ff59476170b0e52e589ed17744897c7f824768dec4ad09568",
+    ),
+    (
+        "2.3.0",
+        "8f8fc1d45edd1fb75eb8fc82dd795c26a844d24984a793799c161f0d6810ca02",
+    ),
+    (
+        "2.2.2",
+        "7053adad688cd251fa2aa0153435029ec12df9f4c133032bfd4fd3914c9b7c4e",
+    ),
+    (
+        "2.2.1",
+        "bd281825e52cb56177d54465e100049d1a8a95a670e0422fa6cc22ca09e54fd7",
+    ),
+    (
+        "2.2.0",
+        "c70b37c341dd281237cd4dd53b4bd7c771f79d644023562f1e4785efb9aad154",
+    ),
+    (
+        "2.1.1",
+        "df639efa2d01320b42ae58c59aba04556a17f54680e8478351e51eb61448c1b2",
+    ),
+    (
+        "2.1.0",
+        "afd7b34d2f0c13b5aba0cca8ff38bbfcaa789da6c1151c7ced6c9a7211ed7814",
+    ),
+    (
+        "2.0.0-rc.36",
+        "e64ccc6e7147784c8b2be90683ef9d5b2b44e18828190706e45b53ab5fcd68ae",
+    ),
+    (
+        "2.0.0-rc.35",
+        "cb21818590bf5559627d14748a8d68c789adb624fe7477e42f565c9acc7f9afe",
+    ),
+    (
+        "2.0.0-rc.34",
+        "e3f245ee13d70e70f0139007cbb385ba52d7069a5f63e18a36f43b40291a7917",
+    ),
+    (
+        "2.0.0-rc.33",
+        "a00b561a5036d32842bb06630382bb6d517189f97c461a4905da21ea0fcd14c4",
+    ),
+    (
+        "2.0.0-rc.32",
+        "75f0407cfe9925d2f67fdcf14ca6c9541296192e2afe47f8e0efdf6b5f9251e2",
+    ),
+    (
+        "2.0.0-rc.31",
+        "0391ce89ea589aeae5c5de9ead85a4239de2fbd67589752e74f762f391f19446",
+    ),
+    (
+        "2.0.0-rc.30",
+        "19ce531b56d31f4e29aa12d0d69a823b032298cb556c6b2d4eab5a793bdb3926",
+    ),
+    (
+        "2.0.0-rc.29",
+        "0b948cb656dce58595c96c8eece7fa43d9ddb9fa789c8af811db9724797f99b6",
+    ),
+    (
+        "2.0.0-rc.28",
+        "bd22de0cc9898c5c9457f09127f4b91ea8b3eb9eaba697e33788a75954777d45",
+    ),
+    (
+        "2.0.0-rc.27",
+        "24af7451bac0da443ae6894b53df88bc4aaa6967d5f52786f0c9870f1e13338c",
+    ),
+    (
+        "2.0.0-rc.26",
+        "dbfcc081e606a045e68bf8c7f9f0c90871a23361fc24ef469046d9cd5ecab68e",
+    ),
+    (
+        "2.0.0-rc.25",
+        "971da0553ed69f9374b264bf4c9aa634b5652009088f4ee970421a9f75c1fc4d",
+    ),
+    (
+        "2.0.0-rc.24",
+        "1880659563630bdd4d060ab352dda54ba8f94dfdf951fabfbbae75f339416d50",
+    ),
+    (
+        "2.0.0-rc.23",
+        "f5fd88f6b241689a913e488cc4909e0a99cb4fd7bfa9b7407fad473c1bedc7d8",
+    ),
+    (
+        "2.0.0-rc.22",
+        "9d5311d6fc05c2c99ec45c7e5b4a494ce1870cf3914081bb762c6d11778157b7",
+    ),
+    (
+        "2.0.0-rc.21",
+        "e2301f32270f92c4ffe3059fefc47e7732a66ea3387c1a14995c85a8ec769342",
+    ),
+    (
+        "2.0.0-rc.20",
+        "7d664a6e56e6619bfc63c572a26a2565cdf5a54b5c84928397e8a8860f4d76dd",
+    ),
+    (
+        "2.0.0-rc.19",
+        "eac662a793f19a7167edd1d176f480304a96afbf2e4c1399377fbd7386f8d56d",
+    ),
+    (
+        "2.0.0-rc.18",
+        "1f2c614d54b6383d092e15c8ae52f6b73d60dad35f561a301e3b1188b4b6f820",
+    ),
+    (
+        "2.0.0-rc.17",
+        "2871dbfab49ffa53d11fbdebcb6514bcd883fef78b55298e7cf8381db23a47d5",
+    ),
+    (
+        "2.0.0-rc.16",
+        "fd71ed1d51350a3d6e3d8fad732d8e4d1e6ab70520dec4785941fad6b98ec98e",
+    ),
+    (
+        "2.0.0-rc.15",
+        "84c4a2c8da9eb61915a93d3392aaa0c37bd6eb3a31f0f6638e298ad8d078d74d",
+    ),
+    (
+        "2.0.0-rc.14",
+        "99a6d335e070598f92cc4e58c3da551cab2bf8315ebc9d05a6ca3432059f3fae",
+    ),
+    (
+        "2.0.0-rc.13",
+        "cca14d4965c8e20efb4767c662d7aeecc8692c8a758027fdff8fa7736552b675",
+    ),
+    (
+        "2.0.0-rc.12",
+        "a3f296039b711dac6295c5d45f57baf5c93a8932c537a608561b9b2319e0b973",
+    ),
+    (
+        "2.0.0-rc.11",
+        "cdba716fd643f5ab354c3f4f058d6af02b08897aa53bd9516739163e2d22f090",
+    ),
+    (
+        "2.0.0-rc.10",
+        "fbe28d52c2634abe8248767ca636fe821a388d6e6f9e6464cc57a6bef0075657",
+    ),
+    (
+        "2.0.0-rc.9",
+        "fe63f6cf9b5b0c34489946a342fd0b94fd6a864e75c3889e97e3de74acca698e",
+    ),
+    (
+        "2.0.0-rc.8",
+        "5b459439227b791ba4d08cfc88c353f172d833c29ab3ea1f7bf244db3b170d83",
+    ),
+    (
+        "2.0.0-rc.7",
+        "8672c296fa377a067102de475634f4586647d855d5a397ab1885791fef80926c",
+    ),
+    (
+        "2.0.0-rc.6",
+        "97c819d4a630c4cc2efe6c59bb486cb70e628470c6a780c7d520381c7428b75f",
+    ),
+    (
+        "2.0.0-rc.5",
+        "da0e2e98c02427703bedf984151847a5647718176ab1b436d8f07166f0d7764a",
+    ),
+    (
+        "2.0.0-rc.4",
+        "6935ad0cdf0bfc1e6ea5fe9ec8a1338139026db9d6050e5554b7747b021f284f",
+    ),
+];
+
 const NODE_CACHE_DIRS: &[&str] = &[".next/cache", "node_modules/.cache"];
 
 fn restore_node_caches(cache: &Path, cwd: &Path) {
@@ -719,12 +909,14 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                     let dest = toolchain_dir(&ctx.opts.home, &format!("yarn-berry-{spec}"))?;
                     if !dest.join(".acropolis-complete").exists() {
                         let tmp = staging(&dest);
+                        let Some((_, sha256)) = YARN2_SHA256.iter().find(|(v, _)| *v == spec.as_str()) else {
+                            bail!(
+                                "invalid toolchain version yarn {spec}: not a released yarn 2.x (set yarnPath in .yarnrc.yml or use yarn 3+)"
+                            );
+                        };
                         let url = format!("https://repo.yarnpkg.com/{spec}/packages/yarnpkg-cli/bin/yarn.js");
-                        acropolis_events::log(
-                            &step.id,
-                            format!("warning: {url} has no published checksum; pinned by version only"),
-                        );
-                        let blob = fetcher.blob("yarn.js", &url, None).await?;
+                        let expected = acropolis_store::Integrity::parse_oci(&format!("sha256:{sha256}"))?;
+                        let blob = fetcher.blob("yarn.js", &url, Some(expected)).await?;
                         std::fs::create_dir_all(&tmp)?;
                         std::fs::copy(&blob.path, tmp.join("yarn.js"))?;
                         publish(&tmp, &dest)?;
@@ -948,38 +1140,36 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                 include_optional: true,
                 platform: Default::default(),
             };
-            let out_of_sync =
-                manager == "npm" && !lockfile.is_empty() && npm_lock_out_of_sync(&ctx.opts.app_dir, lockfile);
-            if out_of_sync && ctx.opts.env.flag("STRICT_LOCKFILE") {
-                bail!(
-                    "package-lock.json is out of sync with package.json (ACROPOLIS_STRICT_LOCKFILE=1); run `npm install` and commit the lockfile"
-                );
-            }
-            if out_of_sync {
-                acropolis_events::log(
-                    &step.id,
-                    "warning: package-lock.json is out of sync with package.json; resolving from the registry like `npm install`",
-                );
-            }
-            let plan = if lockfile.is_empty() || out_of_sync {
-                let pj = crate::detect::read_package_json(&ctx.opts.app_dir)?;
-                let ws = acropolis_npm::yarn::expand_workspaces(&ctx.opts.app_dir, &pj);
-                acropolis_npm::resolve::plan_without_lockfile(&ctx.fetcher, &pj, &ws, &opts).await?
+            let locked = if lockfile.is_empty() {
+                None
             } else {
-                install_plan_scoped(manager, &ctx.opts.app_dir, lockfile, &opts, workspaces)?
-            };
-            let plan = if keep.is_empty() || *dev || lockfile.is_empty() || out_of_sync {
-                plan
-            } else {
-                let full = InstallOptions {
-                    include_dev: true,
-                    ..opts.clone()
-                };
-                keep_packages(
-                    plan,
-                    install_plan_scoped(manager, &ctx.opts.app_dir, lockfile, &full, workspaces)?,
-                    keep,
+                let (manager, app, lockfile) = (manager.clone(), ctx.opts.app_dir.clone(), lockfile.clone());
+                let (opts, workspaces, keep) = (opts.clone(), workspaces.clone(), keep.clone());
+                Some(
+                    tokio::task::spawn_blocking(move || {
+                        locked_plan(&manager, &app, &lockfile, &opts, &workspaces, &keep)
+                    })
+                    .await??,
                 )
+            };
+            let plan = match locked {
+                Some(Some(plan)) => plan,
+                out_of_sync => {
+                    if out_of_sync.is_some() {
+                        if ctx.opts.env.flag("STRICT_LOCKFILE") {
+                            bail!(
+                                "package-lock.json is out of sync with package.json (ACROPOLIS_STRICT_LOCKFILE=1); run `npm install` and commit the lockfile"
+                            );
+                        }
+                        acropolis_events::log(
+                            &step.id,
+                            "warning: package-lock.json is out of sync with package.json; resolving from the registry like `npm install`",
+                        );
+                    }
+                    let pj = crate::detect::read_package_json(&ctx.opts.app_dir)?;
+                    let ws = acropolis_npm::yarn::expand_workspaces(&ctx.opts.app_dir, &pj);
+                    acropolis_npm::resolve::plan_without_lockfile(&ctx.fetcher, &pj, &ws, &opts).await?
+                }
             };
             check_package_urls(&plan, &ctx.opts.env)?;
             for p in &plan.packages {
@@ -1147,7 +1337,8 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                 include_optional: true,
                 platform: Default::default(),
             };
-            let plan = install_plan_for(manager, &ctx.opts.app_dir, lockfile, &opts)?;
+            let (m, app, lock) = (manager.clone(), ctx.opts.app_dir.clone(), lockfile.clone());
+            let plan = tokio::task::spawn_blocking(move || install_plan_for(&m, &app, &lock, &opts)).await??;
             check_package_urls(&plan, &ctx.opts.env)?;
             let out = clean_relative(out)?.trim_end_matches('/').to_string();
             let root = ctx.work.join("bundle");
@@ -1603,39 +1794,7 @@ fn clean_relative(p: &str) -> Result<&str> {
     Ok(t)
 }
 
-fn private_host(host: &str) -> bool {
-    let h = host.trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
-    if h == "localhost" || h.ends_with(".localhost") || h.ends_with(".internal") || h == "metadata.google.internal" {
-        return true;
-    }
-    h.parse::<std::net::IpAddr>().is_ok_and(private_ip)
-}
-
-fn private_ip(ip: std::net::IpAddr) -> bool {
-    match ip {
-        std::net::IpAddr::V4(ip) => {
-            ip.is_private()
-                || ip.is_loopback()
-                || ip.is_link_local()
-                || ip.is_unspecified()
-                || ip.octets()[0] == 100 && (ip.octets()[1] & 0xc0) == 64
-        }
-        std::net::IpAddr::V6(ip) => {
-            let s = ip.segments();
-            let nat64 = s[..6] == [0x64, 0xff9b, 0, 0, 0, 0];
-            let embedded = if nat64 {
-                Some(std::net::Ipv4Addr::from((u32::from(s[6]) << 16) | u32::from(s[7])))
-            } else {
-                ip.to_ipv4()
-            };
-            ip.is_loopback()
-                || ip.is_unspecified()
-                || (s[0] & 0xfe00) == 0xfc00
-                || (s[0] & 0xffc0) == 0xfe80
-                || embedded.is_some_and(|v4| private_ip(v4.into()))
-        }
-    }
-}
+use acropolis_fetch::private_host;
 
 fn check_fetch_url(what: &str, url: &str) -> Result<()> {
     let Ok(u) = url::Url::parse(url) else { return Ok(()) };
@@ -1750,35 +1909,101 @@ fn keep_packages(mut plan: InstallPlan, full: InstallPlan, keep: &[String]) -> I
 }
 
 pub fn install_plan_for(manager: &str, app_dir: &Path, lockfile: &str, opts: &InstallOptions) -> Result<InstallPlan> {
-    install_plan_scoped(manager, app_dir, lockfile, opts, &[])
+    Lock::read(manager, app_dir, lockfile)?.plan(opts, &[])
 }
 
-pub fn install_plan_scoped(
+/// A lockfile parsed once, so several install plans (prod, full) can be derived from it.
+enum Lock {
+    Npm(PackageLock),
+    Pnpm(acropolis_npm::pnpm::PnpmLock),
+    Yarn(
+        acropolis_npm::yarn::YarnLock,
+        serde_json::Value,
+        Vec<(String, serde_json::Value)>,
+    ),
+    Bun(acropolis_npm::bun::BunLock),
+}
+
+impl Lock {
+    fn read(manager: &str, app_dir: &Path, lockfile: &str) -> Result<Self> {
+        let bytes = read_app_file(app_dir, lockfile)?;
+        Ok(match manager {
+            "npm" => Lock::Npm(PackageLock::parse(&bytes)?),
+            "pnpm" => {
+                let text = String::from_utf8(bytes).context("pnpm-lock.yaml is not UTF-8")?;
+                Lock::Pnpm(acropolis_npm::pnpm::PnpmLock::parse(&text)?)
+            }
+            "yarn" => {
+                let text = String::from_utf8(bytes).context("yarn.lock is not UTF-8")?;
+                let pj: serde_json::Value = serde_json::from_slice(&read_app_file(app_dir, "package.json")?)?;
+                let ws = acropolis_npm::yarn::expand_workspaces(app_dir, &pj);
+                Lock::Yarn(acropolis_npm::yarn::YarnLock::parse(&text)?, pj, ws)
+            }
+            "bun" => {
+                let text = String::from_utf8(bytes).context("bun.lock is not UTF-8")?;
+                Lock::Bun(acropolis_npm::bun::BunLock::parse(&text)?)
+            }
+            other => bail!("unsupported package manager {other}"),
+        })
+    }
+
+    fn plan(&self, opts: &InstallOptions, workspaces: &[String]) -> Result<InstallPlan> {
+        match self {
+            Lock::Npm(lock) => InstallPlan::from_lock(lock, opts),
+            Lock::Pnpm(lock) => lock.install_plan(opts, &[]),
+            Lock::Yarn(lock, pj, ws) => lock.install_plan(pj, ws, opts),
+            Lock::Bun(lock) => lock.install_plan_scoped(opts, workspaces),
+        }
+    }
+}
+
+/// Install plan from the lockfile (blocking: reads and parses it once). `None` when an npm
+/// lockfile is out of sync with package.json and the registry must resolve instead.
+fn locked_plan(
     manager: &str,
     app_dir: &Path,
     lockfile: &str,
     opts: &InstallOptions,
     workspaces: &[String],
-) -> Result<InstallPlan> {
-    let bytes = read_app_file(app_dir, lockfile)?;
-    match manager {
-        "npm" => InstallPlan::from_lock(&PackageLock::parse(&bytes)?, opts),
-        "pnpm" => {
-            let text = String::from_utf8(bytes).context("pnpm-lock.yaml is not UTF-8")?;
-            acropolis_npm::pnpm::PnpmLock::parse(&text)?.install_plan(opts, &[])
+    keep: &[String],
+) -> Result<Option<InstallPlan>> {
+    let lock = match Lock::read(manager, app_dir, lockfile) {
+        Ok(lock) => lock,
+        // Valid JSON that is not lockfile-shaped is still ignored when package.json moved on.
+        Err(e) => {
+            let raw = (manager == "npm")
+                .then(|| read_app_file(app_dir, lockfile).ok())
+                .flatten()
+                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
+            let root = raw.as_ref().and_then(|v| v.get("packages")).and_then(|p| p.get(""));
+            return if raw.is_some() && npm_lock_out_of_sync(app_dir, root) {
+                Ok(None)
+            } else {
+                Err(e)
+            };
         }
-        "yarn" => {
-            let text = String::from_utf8(bytes).context("yarn.lock is not UTF-8")?;
-            let pj: serde_json::Value = serde_json::from_slice(&read_app_file(app_dir, "package.json")?)?;
-            let ws = acropolis_npm::yarn::expand_workspaces(app_dir, &pj);
-            acropolis_npm::yarn::YarnLock::parse(&text)?.install_plan(&pj, &ws, opts)
+    };
+    if let Lock::Npm(l) = &lock {
+        let root = l.packages.get("").map(|r| {
+            serde_json::json!({
+                "dependencies": r.dependencies,
+                "devDependencies": r.dev_dependencies,
+                "optionalDependencies": r.optional_dependencies,
+            })
+        });
+        if npm_lock_out_of_sync(app_dir, root.as_ref()) {
+            return Ok(None);
         }
-        "bun" => {
-            let text = String::from_utf8(bytes).context("bun.lock is not UTF-8")?;
-            acropolis_npm::bun::BunLock::parse(&text)?.install_plan_scoped(opts, workspaces)
-        }
-        other => bail!("unsupported package manager {other}"),
     }
+    let plan = lock.plan(opts, workspaces)?;
+    if keep.is_empty() || opts.include_dev {
+        return Ok(Some(plan));
+    }
+    let full = InstallOptions {
+        include_dev: true,
+        ..opts.clone()
+    };
+    Ok(Some(keep_packages(plan, lock.plan(&full, workspaces)?, keep)))
 }
 
 async fn run_lifecycle(
@@ -1971,31 +2196,20 @@ async fn image_rootfs(ctx: &Arc<Ctx>, image: &str) -> Result<(Vec<PathBuf>, BTre
     Ok((dirs, env))
 }
 
-fn npm_lock_out_of_sync(app_dir: &Path, lockfile: &str) -> bool {
+/// `root` is the lockfile's `packages[""]` entry.
+fn npm_lock_out_of_sync(app_dir: &Path, root: Option<&serde_json::Value>) -> bool {
     let Ok(pj) = crate::detect::read_package_json(app_dir) else {
         return false;
     };
-    let Ok(bytes) = read_app_file(app_dir, lockfile) else {
-        return false;
-    };
-    let Ok(lock) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-        return false;
-    };
-    let root = lock.get("packages").and_then(|p| p.get(""));
-    for k in ["dependencies", "devDependencies", "optionalDependencies"] {
-        let want = pj.get(k).and_then(|d| d.as_object()).cloned().unwrap_or_default();
-        let have = root
-            .and_then(|r| r.get(k))
-            .and_then(|d| d.as_object())
-            .cloned()
-            .unwrap_or_default();
-        for (name, range) in &want {
-            if have.get(name) != Some(range) {
-                return true;
-            }
-        }
-    }
-    false
+    ["dependencies", "devDependencies", "optionalDependencies"]
+        .into_iter()
+        .any(|k| {
+            let have = root.and_then(|r| r.get(k)).and_then(|d| d.as_object());
+            pj.get(k).and_then(|d| d.as_object()).is_some_and(|want| {
+                want.iter()
+                    .any(|(name, range)| have.and_then(|h| h.get(name)) != Some(range))
+            })
+        })
 }
 
 fn with_config_excludes(ctx: &Ctx, base: &[String]) -> Vec<String> {
@@ -2339,6 +2553,7 @@ fn save_cached_layer(ctx: &Arc<Ctx>, key: &str, l: &Layer) {
 
 async fn github_latest_tag(repo: &str) -> Result<String> {
     let url = format!("https://github.com/{repo}/releases/latest");
+    acropolis_fetch::ensure_tls();
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
@@ -2767,6 +2982,43 @@ mod tests {
         );
         std::fs::write(app.join("ok.lock"), b"x").unwrap();
         assert_eq!(read_app_file(&app, "ok.lock").unwrap(), b"x");
+    }
+
+    #[test]
+    fn yarn2_pins_cover_the_default_and_parse() {
+        assert!(YARN2_SHA256.iter().any(|(v, _)| *v == "2.4.3"));
+        for (_, sha) in YARN2_SHA256 {
+            acropolis_store::Integrity::parse_oci(&format!("sha256:{sha}")).unwrap();
+        }
+    }
+
+    #[test]
+    fn npm_lock_sync_is_judged_from_the_single_parse() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = tmp.path();
+        let opts = InstallOptions {
+            include_dev: false,
+            include_optional: true,
+            platform: Default::default(),
+        };
+        let plan = |lock: &str| {
+            std::fs::write(app.join("package-lock.json"), lock).unwrap();
+            locked_plan("npm", app, "package-lock.json", &opts, &[], &[])
+        };
+        std::fs::write(app.join("package.json"), r#"{"dependencies":{"a":"^1.0.0"}}"#).unwrap();
+        let a = r#""node_modules/a":{"version":"1.0.0","resolved":"https://r/a.tgz","integrity":"sha512-M82xg3uZnE836u68o/DpLtSQjxHUoYkuK82v4psznrFjZO3msYD6qb/wAhGD9KdkO/puwfnDhOc9imA3NDrp9g=="}"#;
+        let synced = plan(&format!(
+            r#"{{"lockfileVersion":3,"packages":{{"":{{"dependencies":{{"a":"^1.0.0"}}}},{a}}}}}"#
+        ));
+        assert_eq!(synced.unwrap().unwrap().packages.len(), 1);
+        let stale = plan(&format!(
+            r#"{{"lockfileVersion":3,"packages":{{"":{{"dependencies":{{"a":"^0.9.0"}}}},{a}}}}}"#
+        ));
+        assert!(stale.unwrap().is_none());
+        // Not lockfile-shaped: ignored when out of sync, an error otherwise.
+        assert!(plan(r#"{"packages":{"":{"dependencies":{"a":1}}}}"#).unwrap().is_none());
+        assert!(plan(r#"{"packages":{"":{"dependencies":{"a":"^1.0.0"}},"x":{"dependencies":{"b":1}}}}"#).is_err());
+        assert!(plan("not json").is_err());
     }
 
     #[test]

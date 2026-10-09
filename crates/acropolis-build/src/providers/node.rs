@@ -942,7 +942,7 @@ fn plan_inner(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
     let policy = if script_override.is_none() && !allowed_builds.is_empty() {
         acropolis_npm::scripts::Policy::Only(allowed_builds.clone())
     } else {
-        acropolis_npm::scripts::policy_for(manager, &app.package_json, script_override.as_deref())
+        acropolis_npm::scripts::policy_for(manager, &app.root, &app.package_json, script_override.as_deref())
     };
     let unknown_scripts = matches!(manager, "yarn" | "bun") || lockfile.is_empty();
     let guess_scripts = manager == "pnpm" && pnpm_lock_lacks_build_info(app, &lockfile);
@@ -1806,7 +1806,10 @@ fn plan_yarn_berry(app: &NodeApp, env: &Env, mut b: PlanBuilder) -> Result<Plan>
     }
     image_env.push((
         "npm_config_user_agent".into(),
-        format!("yarn/{yarn_version} npm/? node/v{} linux x64", app.node.spec),
+        format!(
+            "yarn/{yarn_version} npm/? node/v{{version:node|{}}} linux x64",
+            app.node.spec
+        ),
     ));
     image_env.push(("npm_lifecycle_event".into(), "start".into()));
     b.plan.image.env = image_env;
@@ -1930,7 +1933,7 @@ fn plan_bun_binary_lock(app: &NodeApp, env: &Env, mut b: PlanBuilder) -> Result<
         ("PATH".into(), NODE_PATH_ENV.into()),
         (
             "npm_config_user_agent".into(),
-            format!("bun/{spec} npm/? node/v{} linux x64", app.node.spec),
+            format!("bun/{spec} npm/? node/v{{version:node|{}}} linux x64", app.node.spec),
         ),
     ];
     b.plan.image.workdir = Some("/app".into());
@@ -2203,17 +2206,17 @@ fn add_package_manager(b: &mut PlanBuilder, app: &NodeApp, env: &Env, image_env:
         }
         PackageManager::Yarn1 | PackageManager::YarnBerry => {
             format!(
-                "yarn/{} npm/? node/v{} linux x64",
+                "yarn/{} npm/? node/v{{version:node|{}}} linux x64",
                 app.pm_version.clone().unwrap_or_else(|| "1.22.22".into()),
                 app.node.spec
             )
         }
         PackageManager::Bun => format!(
-            "bun/{} npm/? node/v{} linux x64",
+            "bun/{} npm/? node/v{{version:node|{}}} linux x64",
             app.pm_version.clone().unwrap_or_default(),
             app.node.spec
         ),
-        PackageManager::Npm => format!("npm/10 node/v{} linux x64", app.node.spec),
+        PackageManager::Npm => format!("npm/10 node/v{{version:node|{}}} linux x64", app.node.spec),
     };
     image_env.push(("npm_config_user_agent".into(), ua));
     image_env.push(("npm_lifecycle_event".into(), "start".into()));

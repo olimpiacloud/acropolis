@@ -75,10 +75,7 @@ fn plan_provider(dir: &Path, env: &Env) -> Result<Plan> {
         return Ok(plan);
     }
     if (forced.as_deref() == Some("python")
-        || (forced.is_none()
-            && !detect::has_package_json(dir)
-            && !dir.join("go.mod").exists()
-            && !dir.join("Cargo.toml").exists()))
+        || (forced.is_none() && !dir.join("go.mod").exists() && !dir.join("Cargo.toml").exists()))
         && providers::python::is_python(dir)
     {
         let mut plan = providers::python::plan(dir, env, &name)?;
@@ -86,12 +83,17 @@ fn plan_provider(dir: &Path, env: &Env) -> Result<Plan> {
         apply_runtime_packages(&mut plan, env)?;
         return Ok(plan);
     }
-    if forced
-        .as_deref()
-        .map(|f| !matches!(f, "node" | "go" | "rust" | "python" | "ruby" | "shell"))
-        .unwrap_or(!detect::has_package_json(dir))
-        && let Some(spec) = providers::images::detect(dir, env)
-    {
+    let images = match forced.as_deref() {
+        Some("node" | "go" | "rust" | "python" | "ruby" | "shell") => None,
+        _ => providers::images::detect(dir, env),
+    };
+    // Railpack checks gleam and cpp after node: next to a package.json only java/elixir/deno/dotnet win.
+    if let Some(spec) = images.filter(|s| {
+        forced.is_some()
+            || !detect::has_package_json(dir)
+            || s.as_ref()
+                .is_ok_and(|s| matches!(s.provider, "java" | "elixir" | "deno" | "dotnet"))
+    }) {
         let mut plan = providers::images::plan(dir, env, &name, spec?)?;
         apply_runtime_packages(&mut plan, env)?;
         return Ok(plan);
@@ -381,4 +383,38 @@ pub async fn build(opts: BuildOptions, exec: Arc<dyn acropolis_exec::Executor>) 
     acropolis_events::emit(acropolis_events::Event::BuildStarted { app: plan.app.clone() });
     let res = run::execute(plan.clone(), opts, exec).await?;
     Ok((plan, res))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rust_and_python_win_over_package_json_like_railpack() {
+        let rust = detect::scratch_dir("precedence-rust");
+        std::fs::create_dir_all(rust.join("src")).unwrap();
+        std::fs::write(
+            rust.join("Cargo.toml"),
+            "[package]\nname = \"api\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(rust.join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(rust.join("package.json"), r#"{"name":"ws","private":true}"#).unwrap();
+        assert_eq!(plan_app(&rust, &Env::default()).unwrap().provider, "rust");
+        let mut node = Env::default();
+        node.vars.insert("ACROPOLIS_PROVIDER".into(), "node".into());
+        assert!(matches!(detect::detect(&rust, &node), Ok(App::Node(_))));
+
+        let python = detect::scratch_dir("precedence-python");
+        std::fs::write(python.join("requirements.txt"), "flask\n").unwrap();
+        std::fs::write(python.join("main.py"), "print('hi')\n").unwrap();
+        std::fs::write(
+            python.join("package.json"),
+            r#"{"devDependencies":{"tailwindcss":"4"}}"#,
+        )
+        .unwrap();
+        assert_eq!(plan_app(&python, &Env::default()).unwrap().provider, "python");
+        let _ = std::fs::remove_dir_all(&rust);
+        let _ = std::fs::remove_dir_all(&python);
+    }
 }

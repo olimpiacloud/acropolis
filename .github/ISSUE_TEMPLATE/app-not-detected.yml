@@ -1,33 +1,33 @@
-name: App no detectada
-description: Acropolis no reconoce el lenguaje o el framework, o elige mal la versión, el comando de inicio o la imagen base.
+name: App not detected
+description: Acropolis doesn't recognize the language or framework, or picks the wrong version, start command or base image.
 labels: [detection]
 body:
   - type: input
     id: version
     attributes:
-      label: Versión
-      description: Salida de `acropolis --version`.
+      label: Version
+      description: Output of `acropolis --version`.
     validations:
       required: true
   - type: input
     id: repo
     attributes:
       label: Repo
-      description: URL de un repo público que lo reproduzca. Si es privado, describí la estructura (archivos en la raíz, lockfile, `package.json` sin dependencias, etc.).
+      description: URL of a public repo that reproduces it. If it's private, describe the layout (files at the root, lockfile, `package.json` without dependencies, etc.).
     validations:
       required: true
   - type: textarea
     id: expected
     attributes:
-      label: Qué esperabas
-      description: Lenguaje, framework, versión, gestor de paquetes, comandos de build y de inicio. Si Railpack o Nixpacks la construyen bien, decilo.
+      label: What you expected
+      description: Language, framework, version, package manager, build and start commands. If Railpack or Nixpacks build it correctly, say so.
     validations:
       required: true
   - type: textarea
     id: plan
     attributes:
       label: Plan
-      description: Salida de `acropolis plan <dir> --json`.
+      description: Output of `acropolis plan <dir> --json`.
       render: json
     validations:
       required: true
@@ -35,5 +35,5 @@ body:
     id: config
     attributes:
       label: Config
-      description: Contenido de `railpack.json` o `acropolis.json`, si hay.
+      description: Contents of `railpack.json` or `acropolis.json`, if any.
       render: json

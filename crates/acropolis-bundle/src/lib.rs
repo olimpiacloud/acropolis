@@ -442,7 +442,11 @@ fn html_entries(html: &str) -> Vec<String> {
 fn attr(tag: &str, name: &str) -> Option<String> {
     let lower = tag.to_ascii_lowercase();
     let key = format!("{name}=");
-    let i = lower.find(&key)?;
+    // `src=` must start an attribute, so `data-src=` does not match.
+    let i = lower
+        .match_indices(&key)
+        .map(|(i, _)| i)
+        .find(|&i| i == 0 || lower.as_bytes()[i - 1].is_ascii_whitespace())?;
     let rest = &tag[i + key.len()..];
     let q = rest.chars().next()?;
     if q == '"' || q == '\'' {
@@ -843,6 +847,14 @@ mod tests {
         assert_eq!(package_name("./x"), None);
         let out = remove_entry_scripts(html, &["/src/main.tsx".to_string()]);
         assert!(!out.contains("main.tsx"));
+    }
+
+    #[test]
+    fn attr_needs_a_boundary() {
+        let tag = r#"<script data-src="/lazy.js" type="module" src="/src/main.ts">"#;
+        assert_eq!(attr(tag, "src").as_deref(), Some("/src/main.ts"));
+        assert_eq!(attr(r#"<script data-src="/lazy.js">"#, "src"), None);
+        assert_eq!(attr("<script\tSRC=/a.js>", "src").as_deref(), Some("/a.js"));
     }
 
     #[test]

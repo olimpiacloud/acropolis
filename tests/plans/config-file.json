@@ -25,7 +25,7 @@
    ],
    [
     "npm_config_user_agent",
-    "bun/latest npm/? node/vlts linux x64"
+    "bun/latest npm/? node/v{version:node|lts} linux x64"
    ]
   ],
   "layers": [

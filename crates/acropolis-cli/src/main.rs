@@ -368,6 +368,7 @@ fn fail(class: acropolis_build::errors::ErrorClass, error: String) -> i32 {
 }
 
 fn main() {
+    acropolis_fetch::ensure_tls();
     let cli = Cli::parse();
     if let Some(res) = dev_command(&cli) {
         std::process::exit(res.unwrap_or_else(|e| {
@@ -615,6 +616,7 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Command::Inspect { reference } => {
             let r = Reference::parse(&reference)?;
+            acropolis_fetch::ensure_tls();
             let client = reqwest::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(5))
                 .read_timeout(std::time::Duration::from_secs(60))

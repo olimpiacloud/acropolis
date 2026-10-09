@@ -1,5 +1,5 @@
 use crate::tar::{Kind, TarReader};
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use std::ffi::CString;
 use std::io::{BufReader, Read, Write};
 use std::os::unix::ffi::OsStrExt;
@@ -50,31 +50,50 @@ pub fn open_layer(path: &Path, media_type: &str) -> Result<Box<dyn Read>> {
 
 /// Unpacks an image layer for use as an overlay lowerdir: OCI whiteouts become overlay ones.
 pub fn unpack_for_overlay<R: Read>(reader: R, dest: &Path) -> Result<u64> {
-    unpack(reader, dest, true)
+    unpack(reader, dest, true, MAX_UNPACKED)
 }
 
 /// Unpacks a tar as plain files: `.wh.*` names are ordinary files (e.g. inside an app cache).
 pub fn unpack_plain<R: Read>(reader: R, dest: &Path) -> Result<u64> {
-    unpack(reader, dest, false)
+    unpack(reader, dest, false, MAX_UNPACKED)
 }
 
-fn unpack<R: Read>(reader: R, dest: &Path, whiteouts: bool) -> Result<u64> {
+/// Bytes one archive may unpack to, so a compression bomb fails before it fills the disk. The
+/// largest layers of public images (CUDA devel, PyTorch) unpack to a few GiB, a whole
+/// `dotnet/sdk` or `ruby` image to 1-2 GiB.
+const MAX_UNPACKED: u64 = 32 << 30;
+
+fn unpack<R: Read>(reader: R, dest: &Path, whiteouts: bool, limit: u64) -> Result<u64> {
     std::fs::create_dir_all(dest)?;
     let mut tr = TarReader::new(BufReader::with_capacity(256 * 1024, reader));
     let mut total = 0u64;
+    let within_limit = |total: u64| {
+        if total > limit {
+            bail!("archive unpacks to more than {limit} bytes");
+        }
+        Ok(())
+    };
     let mut buf = vec![0u8; 256 * 1024];
     let mut dir_modes: Vec<(PathBuf, u32)> = Vec::new();
+    // Parent directory of the last entry, checked by `symlinked_ancestor` and created by us: most
+    // entries share it, which saves an lstat per path component. Only entries directly inside it
+    // reuse it, and those change its children, never it or its ancestors.
+    let mut verified: Option<PathBuf> = None;
     while let Some(e) = tr.next_entry()? {
         let Some(path) = safe_join(dest, &e.path) else { continue };
-        if symlinked_ancestor(dest, &path) || (path == dest && e.kind != Kind::Dir) {
+        let known_parent = path.parent().is_some() && path.parent() == verified.as_deref();
+        if (!known_parent && symlinked_ancestor(dest, &path)) || (path == dest && e.kind != Kind::Dir) {
             continue;
         }
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        if let Some(parent) = path.parent() {
+        if let Some(parent) = path.parent()
+            && !known_parent
+        {
             std::fs::create_dir_all(parent)?;
+            verified = Some(parent.to_path_buf());
         }
         if whiteouts && name == ".wh..wh..opq" {
             if let Some(parent) = path.parent() {
@@ -116,6 +135,8 @@ fn unpack<R: Read>(reader: R, dest: &Path, whiteouts: bool) -> Result<u64> {
                 }
             }
             Kind::File => {
+                total = total.saturating_add(e.size);
+                within_limit(total)?;
                 if path.is_dir() {
                     let _ = std::fs::remove_dir_all(&path);
                 } else {
@@ -136,7 +157,6 @@ fn unpack<R: Read>(reader: R, dest: &Path, whiteouts: bool) -> Result<u64> {
                         break;
                     }
                     f.write_all(&buf[..n])?;
-                    total += n as u64;
                 }
                 {
                     use std::os::unix::io::AsRawFd;
@@ -159,10 +179,13 @@ fn unpack<R: Read>(reader: R, dest: &Path, whiteouts: bool) -> Result<u64> {
             Kind::Hardlink => {
                 if let Some(target) = safe_join(dest, &e.link)
                     && !symlinked_ancestor(dest, &target)
-                    && std::fs::symlink_metadata(&target).is_ok_and(|m| m.is_file())
+                    && let Ok(m) = std::fs::symlink_metadata(&target)
+                    && m.is_file()
                 {
                     let _ = std::fs::remove_file(&path);
                     if std::fs::hard_link(&target, &path).is_err() {
+                        total = total.saturating_add(m.len());
+                        within_limit(total)?;
                         let _ = std::fs::copy(&target, &path);
                     }
                 }
@@ -248,6 +271,21 @@ mod tests {
         assert_eq!(std::fs::read(base.join(".wh.foo")).unwrap(), b"wh");
         assert_eq!(std::fs::read(base.join("d/.wh..wh..opq")).unwrap(), b"opq");
         assert!(!Path::new("/etc/pwned").exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn archives_past_the_size_limit_stop_unpacking() {
+        let base = std::env::temp_dir().join(format!("acropolis-unpack-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let mut tw = TarWriter::new(Vec::new());
+        tw.file_bytes("a", 0o644, &[b'a'; 10]).unwrap();
+        tw.file_bytes("b", 0o644, &[b'b'; 10]).unwrap();
+        let data = tw.finish().unwrap();
+        assert_eq!(unpack(std::io::Cursor::new(&data), &base, true, 20).unwrap(), 20);
+        let err = unpack(std::io::Cursor::new(&data), &base.join("capped"), true, 15).unwrap_err();
+        assert!(err.to_string().contains("more than 15 bytes"), "{err}");
+        assert!(!base.join("capped/b").exists());
         let _ = std::fs::remove_dir_all(&base);
     }
 }

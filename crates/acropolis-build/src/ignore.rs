@@ -82,24 +82,48 @@ impl Ignore {
     }
 }
 
+/// True when `pat` matches some leading part of `path` (at least one segment). Simulates the
+/// pattern as an NFA over its segments, so `**` costs O(pattern × path) glob calls, not backtracking.
 fn matches_prefix(pat: &[String], path: &[&str]) -> bool {
-    (1..=path.len()).any(|k| match_segments(pat, &path[..k]))
-}
-
-fn match_segments(pat: &[String], path: &[&str]) -> bool {
-    if pat.is_empty() {
-        return path.is_empty();
-    }
-    if pat[0] == "**" {
-        if match_segments(&pat[1..], path) {
+    let n = pat.len();
+    let close = |states: &mut [bool]| {
+        for i in 0..n {
+            if states[i] && pat[i] == "**" {
+                states[i + 1] = true;
+            }
+        }
+    };
+    // Two state rows; on the stack for any realistic pattern (called per rule per walked entry).
+    let mut stack = [false; 64];
+    let mut heap = Vec::new();
+    let rows = if 2 * (n + 1) <= stack.len() {
+        &mut stack[..2 * (n + 1)]
+    } else {
+        heap.resize(2 * (n + 1), false);
+        &mut heap[..]
+    };
+    let (mut cur, mut next) = rows.split_at_mut(n + 1);
+    cur[0] = true;
+    close(cur);
+    for seg in path {
+        next.fill(false);
+        for i in (0..n).filter(|&i| cur[i]) {
+            if pat[i] == "**" {
+                next[i] = true;
+            } else if glob(pat[i].as_bytes(), seg.as_bytes()) {
+                next[i + 1] = true;
+            }
+        }
+        close(next);
+        if next[n] {
             return true;
         }
-        return !path.is_empty() && match_segments(pat, &path[1..]);
+        if !next.contains(&true) {
+            return false;
+        }
+        std::mem::swap(&mut cur, &mut next);
     }
-    if path.is_empty() {
-        return false;
-    }
-    glob(pat[0].as_bytes(), path[0].as_bytes()) && match_segments(&pat[1..], &path[1..])
+    false
 }
 
 pub fn glob(p: &[u8], s: &[u8]) -> bool {
@@ -219,6 +243,28 @@ mod tests {
         let deep = ["a"; 40].join("/");
         assert!(!stars.excluded(&deep));
         assert!(stars.excluded(&format!("{deep}/x")));
+    }
+
+    #[test]
+    fn alternating_double_stars_stay_linear() {
+        let mid = Ignore::new(&["a/**/b".into(), "**/c/**/c/d".into()]);
+        assert!(mid.excluded("a/b"));
+        assert!(mid.excluded("a/x/y/b"));
+        assert!(mid.excluded("a/b/inner.js"));
+        assert!(!mid.excluded("x/a/b"));
+        assert!(mid.excluded("x/c/y/c/d/e"));
+        assert!(mid.excluded("c/c/d"));
+        assert!(!mid.excluded("c/d"));
+        let evil = Ignore::new(&[format!("{}b", "**/a/".repeat(30))]);
+        let deep = ["a"; 80].join("/");
+        let start = std::time::Instant::now();
+        assert!(!evil.excluded(&deep));
+        assert!(evil.excluded(&format!("{deep}/b")));
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(100),
+            "{:?}",
+            start.elapsed()
+        );
     }
 
     #[test]

@@ -8,6 +8,8 @@ pub enum Policy {
     All,
     None,
     Only(Vec<String>),
+    /// Every package except these (`!a,!b`).
+    Except(Vec<String>),
 }
 
 impl Policy {
@@ -16,6 +18,7 @@ impl Policy {
             Policy::All => true,
             Policy::None => false,
             Policy::Only(list) => list.iter().any(|n| n == name),
+            Policy::Except(list) => !list.iter().any(|n| n == name),
         }
     }
 
@@ -23,13 +26,14 @@ impl Policy {
         match s.trim() {
             "" | "all" | "true" => Policy::All,
             "none" | "false" | "off" => Policy::None,
-            other => Policy::Only(
-                other
-                    .split(',')
-                    .map(|x| x.trim().to_string())
-                    .filter(|x| !x.is_empty())
-                    .collect(),
-            ),
+            other => {
+                let names = other.split(',').map(|x| x.trim()).filter(|x| !x.is_empty());
+                if other.starts_with('!') {
+                    Policy::Except(names.map(|x| x.trim_start_matches('!').to_string()).collect())
+                } else {
+                    Policy::Only(names.map(|x| x.to_string()).collect())
+                }
+            }
         }
     }
 
@@ -38,6 +42,7 @@ impl Policy {
             Policy::All => "all".into(),
             Policy::None => "none".into(),
             Policy::Only(v) => v.join(","),
+            Policy::Except(v) => v.iter().map(|n| format!("!{n}")).collect::<Vec<_>>().join(","),
         }
     }
 }
@@ -97,26 +102,12 @@ pub fn lifecycle_jobs(plan: &InstallPlan, root: &Path, policy: &Policy) -> Vec<S
     out
 }
 
-pub fn policy_for(manager: &str, package_json: &Value, override_: Option<&str>) -> Policy {
+pub fn policy_for(manager: &str, app_root: &Path, package_json: &Value, override_: Option<&str>) -> Policy {
     if let Some(o) = override_ {
         return Policy::parse(o);
     }
     match manager {
-        "pnpm" => {
-            let only = package_json
-                .get("pnpm")
-                .and_then(|p| p.get("onlyBuiltDependencies"))
-                .and_then(|o| o.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                        .collect::<Vec<_>>()
-                });
-            match only {
-                Some(list) => Policy::Only(list),
-                None => Policy::All,
-            }
-        }
+        "pnpm" => pnpm_policy(app_root, package_json),
         "bun" => {
             let mut list: Vec<String> = package_json
                 .get("trustedDependencies")
@@ -127,6 +118,53 @@ pub fn policy_for(manager: &str, package_json: &Value, override_: Option<&str>) 
             Policy::Only(list)
         }
         _ => Policy::All,
+    }
+}
+
+/// pnpm's dependency build rules, from `package.json#pnpm` or `pnpm-workspace.yaml`. Without an allow or deny
+/// list pnpm >= 10 builds nothing and older versions build everything. The version comes from `packageManager`
+/// only: lockfile 9.0 is written by pnpm 9, 10 and 11, and Railpack installs pnpm 9 for it.
+fn pnpm_policy(app_root: &Path, package_json: &Value) -> Policy {
+    let workspace: Value = std::fs::read_to_string(app_root.join("pnpm-workspace.yaml"))
+        .ok()
+        .and_then(|t| serde_yaml::from_str(&t).ok())
+        .unwrap_or_default();
+    let setting = |key: &str| {
+        package_json
+            .get("pnpm")
+            .and_then(|p| p.get(key))
+            .or_else(|| workspace.get(key))
+    };
+    let names = |key: &str| {
+        setting(key).and_then(|v| v.as_array()).map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect::<Vec<_>>()
+        })
+    };
+    if setting("dangerouslyAllowAllBuilds").and_then(|v| v.as_bool()) == Some(true) {
+        return Policy::All;
+    }
+    if let Some(only) = names("onlyBuiltDependencies") {
+        return Policy::Only(only);
+    }
+    if let Some(mut never) = names("neverBuiltDependencies") {
+        never.extend(names("ignoredBuiltDependencies").unwrap_or_default());
+        return if never.is_empty() {
+            Policy::All
+        } else {
+            Policy::Except(never)
+        };
+    }
+    let major = package_json
+        .get("packageManager")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.strip_prefix("pnpm@"))
+        .and_then(|v| v.split('.').next()?.parse::<u64>().ok());
+    if major.is_some_and(|m| m >= 10) {
+        Policy::None
+    } else {
+        Policy::All
     }
 }
 
@@ -145,3 +183,37 @@ pub const BUN_DEFAULT_TRUSTED: &[&str] = &[
     "sharp",
     "sqlite3",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn pnpm_build_policy_follows_version_and_lists() {
+        let dir = std::env::temp_dir().join(format!("acropolis-pnpm-policy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let policy = |pj: Value| policy_for("pnpm", &dir, &pj, None);
+        assert_eq!(policy(json!({})), Policy::All);
+        assert_eq!(policy(json!({"packageManager": "pnpm@9.15.0"})), Policy::All);
+        assert_eq!(
+            policy(json!({"packageManager": "pnpm@10.4.1+sha256.abc"})),
+            Policy::None
+        );
+        assert_eq!(
+            policy(json!({"packageManager": "pnpm@10.4.1", "pnpm": {"onlyBuiltDependencies": ["esbuild"]}})),
+            Policy::Only(vec!["esbuild".into()])
+        );
+        assert_eq!(
+            policy(json!({"packageManager": "pnpm@10.4.1", "pnpm": {"neverBuiltDependencies": []}})),
+            Policy::All
+        );
+        let never =
+            policy(json!({"pnpm": {"neverBuiltDependencies": ["fsevents"], "ignoredBuiltDependencies": ["sharp"]}}));
+        assert!(never.allows("esbuild") && !never.allows("fsevents") && !never.allows("sharp"));
+        assert_eq!(Policy::parse(&never.describe()), never);
+        std::fs::write(dir.join("pnpm-workspace.yaml"), "dangerouslyAllowAllBuilds: true\n").unwrap();
+        assert_eq!(policy(json!({"packageManager": "pnpm@10.4.1"})), Policy::All);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

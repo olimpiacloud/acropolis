@@ -31,10 +31,16 @@ pub fn app_dir(home: &Path, key: &str) -> PathBuf {
     home.join("cache").join("apps").join(sanitize_key(key))
 }
 
-fn lock(dir: &Path) -> Result<File> {
-    if dir.ends_with("cache/apps") {
+/// The app cache dir for a CLI key, trimmed like `ACROPOLIS_CACHE_KEY` is for builds.
+fn key_dir(home: &Path, key: &str) -> Result<PathBuf> {
+    let key = key.trim();
+    if key.is_empty() {
         bail!("the cache key must not be empty");
     }
+    Ok(app_dir(home, key))
+}
+
+fn lock(dir: &Path) -> Result<File> {
     std::fs::create_dir_all(dir)?;
     let f = File::options()
         .create(true)
@@ -48,7 +54,7 @@ fn lock(dir: &Path) -> Result<File> {
 }
 
 pub fn export(home: &Path, key: &str, out: &Path) -> Result<u64> {
-    let dir = app_dir(home, key);
+    let dir = key_dir(home, key)?;
     if !dir.is_dir() {
         bail!("no cache for {key}");
     }
@@ -75,7 +81,7 @@ pub fn export(home: &Path, key: &str, out: &Path) -> Result<u64> {
 }
 
 pub fn import(home: &Path, key: &str, input: &Path) -> Result<u64> {
-    let dir = app_dir(home, key);
+    let dir = key_dir(home, key)?;
     let _lock = lock(&dir)?;
     let staging = dir.with_extension(format!("import-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&staging);
@@ -132,6 +138,9 @@ mod tests {
         assert!(export(&a, "", &base.join("all.tar.zst")).is_err());
         assert!(import(&b, "", &file).is_err());
         assert!(!app_dir(&b, "").join("gocache").exists());
+        assert!(import(&b, " \t ", &file).is_err());
+        assert!(!app_dir(&b, " \t ").exists());
+        assert!(import(&b, " tenant/app ", &file).is_ok());
         let _ = std::fs::remove_dir_all(&base);
     }
 }
