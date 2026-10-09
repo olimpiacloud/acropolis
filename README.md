@@ -26,7 +26,7 @@ We don't trust our own test apps: we use other builders' tests as they publish t
 | Next.js and Turbopack (`tests/suites/next`) | Next 15 with `--turbopack`, Next 16 with Turbopack by default, `--webpack`, `output: standalone`, `output: export`, `next/image`, file reads at runtime and a Turborepo monorepo; with npm, pnpm, yarn and bun | **8/8** |
 | [Nixpacks](https://github.com/railwayapp/nixpacks) tests (`scripts/nixpacks-suite.py`) | 73 cases converted from `tests/docker_run_tests.rs` | **37 pass**; the rest are languages Railpack doesn't support either (Clojure, Crystal, Dart, Haskell, Scala, Scheme, Swift, Zig), Nixpacks-specific configs (`nixpacks.toml`, `NIXPACKS_*`), or apps that expect the compiler inside the final image |
 | Plan snapshots (`tests/plans`) | `acropolis plan --json` for the 131 Railpack examples | any detection change shows up as a diff before anything is built |
-| Unit tests | package installation, layers, sandbox, registry, paths that escape the app, errors | 103 |
+| Unit tests | package installation, layers, sandbox, registry, paths that escape the app, errors | 128 |
 
 These suites found bugs our own apps would never have shown: yarn v1 installing binaries for every platform (177 MB of `sharp` for darwin, windows and arm in a linux image), `node_modules` of pnpm workspace members not reaching the image, Next 15 needing `typescript` at runtime to read `next.config.ts`, `patchedDependencies` patches not being applied, duplicate hardlinks inflating layers, Go without `go.mod`, and Java with an old Gradle.
 
@@ -57,6 +57,15 @@ Cold and rebuild benchmark with 2 CPUs, all three tools on the same day under th
 Rebuild after changing one file: Go 41 s / 5.8 s / **1.1 s**, Rust 49 s / 15 s / **6.5 s** and Next 71 s / 81 s / **24.8 s**.
 
 Peak RAM includes page cache. Anonymous memory, which cannot be reclaimed, is on par with Docker on cold builds and below it on rebuilds: most of it is each language's compiler, not Acropolis.
+
+On a real monorepo, olimpia-cloud (bun workspace; TanStack Start/Nitro web app and an Axum + sqlx API), against its own production Dockerfiles, 4 CPUs, median of 2 runs:
+
+| app | cold (Docker / **Acropolis**) | rebuild, one file changed | image, compressed / unpacked | peak RAM, cold / rebuild |
+|---|---|---|---|---|
+| web | 53.3 s / **42.4 s** | 26.0 s / **26.9 s** | 66.4 / 259.2 MB vs **57.1 / 224.0 MB** | 3077 / 3187 MB vs **3708 / 1875 MB** |
+| api | 240.5 s / **228.0 s** | 109.7 s / **115.3 s** | 23.2 / 91.1 MB vs **24.5 / 95.2 MB** | 3988 / 3918 MB vs **3483 / 1781 MB** |
+
+Here the compilers dominate (`vp build` ~20 s, `cargo build --release` of the API ~190 s), and those Dockerfiles are already well tuned (cache mounts, distroless/alpine runtimes), so the gap is small. Acropolis builds them with no Dockerfile: it only needed an `acropolis.json` input to copy `regctl` into the API image, as the Dockerfile does. The API image runs on `distroless/cc-debian13` because the benchmark host has glibc 2.39; on the Debian 12 builder image it is `cc-debian12`, the Dockerfile's base.
 
 What mattered most:
 

@@ -39,7 +39,9 @@ const NO_GYP_SCRIPTS: &[&str] = &[
     "turbo",
 ];
 const BUN_BASE: &str = "gcr.io/distroless/cc-debian12:debug";
+const CC_BASE_DEBIAN13: &str = "gcr.io/distroless/cc-debian13:debug";
 const SHIM: &str = "layer-shim";
+const NODE_BIN: &str = "layer-node-bin";
 pub const CADDY_IMAGE: &str = "caddy:2-alpine";
 
 pub fn node_base_tag(spec: &str) -> Option<String> {
@@ -1007,6 +1009,7 @@ fn plan_inner(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
     let base_image = node_base_tag(&app.node.spec).map(|t| t.replace("bookworm-slim", variant));
     let distroless = distroless_eligible(app, env, &rt, prod_needs_scripts);
     let bun_only = bun_only_runtime(app, env, &rt, prod_needs_scripts);
+    let cc_node = cc_node_eligible(app, env, &rt, prod_needs_scripts);
     let node_base = |b: &mut PlanBuilder| -> Result<()> {
         if bun_only {
             b.step(
@@ -1053,6 +1056,46 @@ fn plan_inner(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
                 &["base"],
             );
             b.fact("runtime-base", "distroless node (busybox shell)");
+            return Ok(());
+        }
+        if cc_node && b.plan.step("node").is_some() {
+            let image = if variant == "trixie-slim" {
+                CC_BASE_DEBIAN13
+            } else {
+                BUN_BASE
+            };
+            b.step(
+                "base",
+                format!("resolve {image}"),
+                Action::ResolveBase { image: image.into() },
+                &[],
+            );
+            b.step("copy-base", "copy base layers", Action::CopyBase, &["base"]);
+            b.step(
+                SHIM,
+                "layer sh and env links",
+                Action::Layer {
+                    dest: String::new(),
+                    from: LayerFrom::NodeShim,
+                },
+                &["base"],
+            );
+            b.step(
+                NODE_BIN,
+                "layer node from the build toolchain",
+                Action::Layer {
+                    dest: "usr/local/bin".into(),
+                    from: LayerFrom::Tool {
+                        tool: "node".into(),
+                        files: vec![("bin/node".into(), "node".into())],
+                    },
+                },
+                &["node"],
+            );
+            b.fact(
+                "runtime-base",
+                "distroless cc + node of the build toolchain (busybox shell)",
+            );
             return Ok(());
         }
         match base_image.clone() {
@@ -1555,6 +1598,12 @@ fn plan_inner(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
         }
         if let Some((_, v)) = image_env.iter_mut().find(|(k, _)| k == "PATH") {
             v.push_str(":/busybox");
+        }
+    }
+    if b.plan.step(NODE_BIN).is_some() {
+        b.plan.image.layers.insert(0, NODE_BIN.into());
+        if let Some(push) = b.plan.steps.iter_mut().find(|s| s.id == "push") {
+            push.deps.push(NODE_BIN.into());
         }
     }
     add_package_manager(&mut b, app, env, &mut image_env);
@@ -2391,7 +2440,22 @@ fn floating_node_spec(spec: &str) -> bool {
 }
 
 fn distroless_eligible(app: &NodeApp, env: &Env, rt: &Runtime, prod_needs_scripts: bool) -> bool {
-    if !slim_runtime_allowed(app, env) || !floating_node_spec(&app.node.spec) {
+    floating_node_spec(&app.node.spec) && slim_eligible(app, env, rt, prod_needs_scripts)
+}
+
+/// A built server whose node version is pinned (`22.2.0`, `>=22.18.0`): distroless lags behind nodejs.org (D16),
+/// so it runs on distroless/cc with the `node` binary of the build toolchain, the exact version it was built with.
+fn cc_node_eligible(app: &NodeApp, env: &Env, rt: &Runtime, prod_needs_scripts: bool) -> bool {
+    !floating_node_spec(&app.node.spec)
+        && matches!(
+            rt,
+            Runtime::Nitro | Runtime::NextStandalone { .. } | Runtime::ServerBuilt { .. }
+        )
+        && slim_eligible(app, env, rt, prod_needs_scripts)
+}
+
+fn slim_eligible(app: &NodeApp, env: &Env, rt: &Runtime, prod_needs_scripts: bool) -> bool {
+    if !slim_runtime_allowed(app, env) {
         return false;
     }
     match rt {
@@ -2413,7 +2477,7 @@ fn distroless_eligible(app: &NodeApp, env: &Env, rt: &Runtime, prod_needs_script
 pub fn is_slim_runtime(plan: &Plan) -> bool {
     match plan.step("base").map(|s| &s.action) {
         Some(Action::ResolveNodeBase { variant, .. }) => variant.starts_with(DISTROLESS),
-        Some(Action::ResolveBase { image }) => image == BUN_BASE,
+        Some(Action::ResolveBase { image }) => image == BUN_BASE || image == CC_BASE_DEBIAN13,
         _ => false,
     }
 }
@@ -2430,7 +2494,7 @@ pub fn demote_distroless(plan: &mut Plan) {
     };
     let spec = match &base.action {
         Action::ResolveNodeBase { spec, variant } if variant.starts_with(DISTROLESS) => spec.clone(),
-        Action::ResolveBase { image } if image == BUN_BASE => fact_spec,
+        Action::ResolveBase { image } if image == BUN_BASE || image == CC_BASE_DEBIAN13 => fact_spec,
         _ => return,
     };
     match node_base_tag(&spec) {
@@ -2446,11 +2510,11 @@ pub fn demote_distroless(plan: &mut Plan) {
             };
         }
     }
-    plan.steps.retain(|s| s.id != SHIM);
+    plan.steps.retain(|s| s.id != SHIM && s.id != NODE_BIN);
     for s in plan.steps.iter_mut() {
-        s.deps.retain(|d| d != SHIM);
+        s.deps.retain(|d| d != SHIM && d != NODE_BIN);
     }
-    plan.image.layers.retain(|l| l != SHIM);
+    plan.image.layers.retain(|l| l != SHIM && l != NODE_BIN);
     if let Some((_, v)) = plan.image.env.iter_mut().find(|(k, _)| k == "PATH") {
         *v = v.trim_end_matches(":/busybox").to_string();
     }

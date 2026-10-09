@@ -4,7 +4,8 @@
   "framework": "none",
   "node": "23.5.0 (package.json engines.node)",
   "package-manager": "npm",
-  "runtime": "node server (built)"
+  "runtime": "node server (built)",
+  "runtime-base": "distroless cc + node of the build toolchain (busybox shell)"
  },
  "image": {
   "cmd": [
@@ -19,7 +20,7 @@
    ],
    [
     "PATH",
-    "/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    "/app/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/busybox"
    ],
    [
     "npm_config_user_agent",
@@ -35,6 +36,8 @@
    ]
   ],
   "layers": [
+   "layer-node-bin",
+   "layer-shim",
    "layer-deps",
    "layer-app"
   ],
@@ -121,12 +124,12 @@
   },
   {
    "action": {
-    "image": "node:23.5.0-bookworm-slim",
+    "image": "gcr.io/distroless/cc-debian12:debug",
     "kind": "resolve-base"
    },
    "deps": [],
    "id": "base",
-   "name": "resolve node:23.5.0-bookworm-slim"
+   "name": "resolve gcr.io/distroless/cc-debian12:debug"
   },
   {
    "action": {
@@ -137,6 +140,41 @@
    ],
    "id": "copy-base",
    "name": "copy base layers"
+  },
+  {
+   "action": {
+    "dest": "",
+    "from": {
+     "type": "node-shim"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "base"
+   ],
+   "id": "layer-shim",
+   "name": "layer sh and env links"
+  },
+  {
+   "action": {
+    "dest": "usr/local/bin",
+    "from": {
+     "files": [
+      [
+       "bin/node",
+       "node"
+      ]
+     ],
+     "tool": "node",
+     "type": "tool"
+    },
+    "kind": "layer"
+   },
+   "deps": [
+    "node"
+   ],
+   "id": "layer-node-bin",
+   "name": "layer node from the build toolchain"
   },
   {
    "action": {
@@ -194,7 +232,9 @@
     "base",
     "copy-base",
     "layer-deps",
-    "layer-app"
+    "layer-app",
+    "layer-shim",
+    "layer-node-bin"
    ],
    "id": "push",
    "name": "push image"
