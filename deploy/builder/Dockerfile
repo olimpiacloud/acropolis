@@ -24,7 +24,9 @@ RUN apt-get update \
 COPY --from=build /usr/local/bin/acropolis /usr/local/bin/acropolis
 ENV ACROPOLIS_HOME=/var/lib/acropolis
 ARG PREWARM="node:lts,go:latest,bun:latest,uv:latest,python:3.13"
-RUN acropolis prewarm --tools "$PREWARM"
+# The store keeps the downloaded toolchain archives (go, node, bun, uv: ~165 MB, already compressed, so the same
+# again in the pushed image); the extracted toolchains are all a build uses.
+RUN acropolis prewarm --tools "$PREWARM" && rm -rf /var/lib/acropolis/store
 # Image steps (Python, Ruby, PHP, Java, .NET, Elixir) put an overlayfs upper dir under work/, and the kernel
 # refuses one on the container's own overlayfs root: the volume keeps it on the host filesystem.
 VOLUME /var/lib/acropolis/work

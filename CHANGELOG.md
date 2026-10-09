@@ -4,6 +4,12 @@ All notable changes to Acropolis. The format follows [Keep a Changelog](https://
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/olimpiacloud/acropolis/releases/tag/v0.2.1) - 2026-10-09
+
+### Packaging
+
+- Builder image ~30 % smaller to pull (573 → ~400 MB compressed for amd64): the toolchain archives that `acropolis prewarm` leaves in the store are removed; builds only use the extracted toolchains.
+
 ## [0.2.0](https://github.com/olimpiacloud/acropolis/releases/tag/v0.2.0) - 2026-10-09
 
 ### Security
