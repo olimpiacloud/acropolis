@@ -1,0 +1,150 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # Railpack examples used by the plan snapshots in tests/plans.
+  RAILPACK_REF: eaeabe030cefcfb4f6386a673fe9fb8bec62d338
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: stable
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  test:
+    name: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      # Acropolis runs as root in production; the sandbox tests (mount and
+      # network namespaces) only run as root. Cargo builds as the runner user
+      # and only the test binaries run through sudo.
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: sudo -E
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo test --workspace --locked
+
+  msrv:
+    name: msrv
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: msrv
+        run: |
+          version=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo check --workspace --all-targets --locked
+
+  deny:
+    name: deny
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-deny@0.20.2
+      - run: cargo deny --locked check
+
+  plans:
+    name: plans
+    # Rust plans pick the runtime base from the host glibc (docs/decisions.md D9):
+    # the snapshots were taken on glibc 2.39, same as this runner.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: railwayapp/railpack
+          ref: ${{ env.RAILPACK_REF }}
+          path: .railpack
+          sparse-checkout: examples
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo build --locked --bin acropolis
+      # Outside the repository, like the local `acropolis-ext` clone the snapshots come from.
+      - run: mv .railpack "$RUNNER_TEMP/railpack"
+      - name: Compare plan snapshots
+        run: scripts/plans.sh
+        env:
+          BIN: target/debug/acropolis
+          EXAMPLES: ${{ runner.temp }}/railpack/examples
+          VERBOSE: "1"

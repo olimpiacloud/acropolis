@@ -1,0 +1,51 @@
+name: Bug
+description: Un build falla, la imagen no corre o Acropolis hace algo distinto de lo esperado.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Si la app no se detecta o se detecta mal, usá la plantilla "App no detectada".
+        No pegues secretos: revisá variables (`-e`) y URLs de registries privados antes de enviar.
+  - type: input
+    id: version
+    attributes:
+      label: Versión
+      description: Salida de `acropolis --version`.
+      placeholder: acropolis 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Entorno
+      description: Distro y glibc del host (`ldd --version`), arquitectura, si corre en un contenedor y con qué privilegios.
+      placeholder: Debian 12 x86_64, docker run --privileged
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: Qué pasó y qué esperabas
+      description: Comando exacto, código de salida y la imagen o el error resultante.
+    validations:
+      required: true
+  - type: input
+    id: repo
+    attributes:
+      label: Repo para reproducir
+      description: URL de un repo público mínimo, o el ejemplo de Railpack que falla.
+  - type: textarea
+    id: plan
+    attributes:
+      label: Plan
+      description: Salida de `acropolis plan <dir> --json`.
+      render: json
+  - type: textarea
+    id: events
+    attributes:
+      label: Log de eventos
+      description: Salida de stderr con `--events json` (las últimas ~200 líneas alcanzan).
+      render: text
+    validations:
+      required: true

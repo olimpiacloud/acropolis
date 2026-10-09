@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Reportar una vulnerabilidad
+    url: https://github.com/olimpiacloud/acropolis/security/advisories/new
+    about: Las vulnerabilidades se reportan en privado, no en issues (ver SECURITY.md).

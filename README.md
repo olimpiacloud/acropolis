@@ -2,6 +2,10 @@
 
 ![Acropolis: una acrópolis que se arma por capas frente a la bahía de Buenos Aires](docs/assets/acropolis-banner.jpg)
 
+[![CI](https://github.com/olimpiacloud/acropolis/actions/workflows/ci.yml/badge.svg)](https://github.com/olimpiacloud/acropolis/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/olimpiacloud/acropolis)](https://github.com/olimpiacloud/acropolis/releases/latest)
+[![Licencia: Apache-2.0 o MIT](https://img.shields.io/badge/licencia-Apache--2.0%20o%20MIT-blue)](#licencia)
+
 Acropolis toma el código de una app y devuelve una imagen OCI lista para correr, sin Dockerfile y sin daemon. Detecta el lenguaje y el framework, baja toolchains y dependencias verificadas, compila y arma la imagen. Es un único binario en Rust (`acropolis`) y es el builder de [Olimpia](https://olimpia.dev).
 
 ```
@@ -22,7 +26,7 @@ No confiamos en nuestras propias apps de prueba: usamos los tests de otros build
 | Next.js y Turbopack (`tests/suites/next`) | Next 15 con `--turbopack`, Next 16 con Turbopack por defecto, `--webpack`, `output: standalone`, `output: export`, `next/image`, lecturas de archivos en runtime y un monorepo Turborepo; con npm, pnpm, yarn y bun | **8/8** |
 | Tests de [Nixpacks](https://github.com/railwayapp/nixpacks) (`scripts/nixpacks-suite.py`) | 73 casos convertidos de `tests/docker_run_tests.rs` | **37 pasan**; el resto son lenguajes que tampoco soporta Railpack (Clojure, Crystal, Dart, Haskell, Scala, Scheme, Swift, Zig), configs propias de Nixpacks (`nixpacks.toml`, `NIXPACKS_*`) o apps que esperan el compilador dentro de la imagen final |
 | Snapshots de planes (`tests/plans`) | `acropolis plan --json` de los 131 ejemplos de Railpack | cualquier cambio de detección aparece como diff antes de construir nada |
-| Tests unitarios | instalación de paquetes, capas, sandbox, errores | 62 |
+| Tests unitarios | instalación de paquetes, capas, sandbox, registry, rutas que salen de la app, errores | 103 |
 
 Esas suites encontraron bugs que nuestras apps nunca habrían mostrado: yarn v1 instalando binarios de todas las plataformas (177 MB de `sharp` para darwin, windows y arm en una imagen linux), los `node_modules` de los miembros de un workspace pnpm que no llegaban a la imagen, Next 15 que necesitaba `typescript` en runtime para leer `next.config.ts`, parches de `patchedDependencies` que no se aplicaban, hardlinks duplicados que inflaban las capas, Go sin `go.mod` y Java con un Gradle viejo.
 
@@ -78,15 +82,32 @@ Las mediciones y lo que probamos y descartamos están en [`docs/decisions.md`](d
 
 Respeta `railpack.json` y `acropolis.json`: pasos propios, paquetes extra, `buildAptPackages`, `deploy.aptPackages`, `deploy.paths` y `deploy.inputs`.
 
+## Instalación
+
+Acropolis corre en Linux x86_64 y arm64 con glibc 2.36 o más nueva (Debian 12, Ubuntu 24.04 o más nuevos). Cada [release](https://github.com/olimpiacloud/acropolis/releases) trae el binario, sus checksums y una atestación de procedencia firmada por GitHub Actions:
+
+```
+v=v0.1.0 target=x86_64-unknown-linux-gnu   # o aarch64-unknown-linux-gnu
+gh release download "$v" -R olimpiacloud/acropolis -p "acropolis-$v-$target.tar.gz" -p SHA256SUMS
+sha256sum --ignore-missing -c SHA256SUMS
+gh attestation verify "acropolis-$v-$target.tar.gz" -R olimpiacloud/acropolis
+tar xzf "acropolis-$v-$target.tar.gz" && sudo install "acropolis-$v-$target/acropolis" /usr/local/bin/
+```
+
+La imagen de builder (ver abajo) se publica como `ghcr.io/olimpiacloud/acropolis-builder:<versión>`. Desde el código: `cargo build --release --bin acropolis` deja el binario en `target/release/acropolis`.
+
 ## En producción
 
-- **Un build por contenedor.** Acropolis corre como root porque usa namespaces de mount y PID y overlayfs. Los pasos de build corren aislados: sin acceso de escritura al store ni a los toolchains, sin capabilities peligrosas y con su propio namespace de red si no necesitan red. Lo que Acropolis procesa como root (lockfiles, capas de imágenes, rutas de la config) se valida para que no pueda escribir ni leer fuera de su árbol. Aun así no es una frontera de VM: para builds de distintos clientes, un contenedor desechable por build.
+- **Un build por contenedor.** Acropolis corre como root porque usa namespaces de mount y PID y overlayfs. Cada paso de build corre en su propio namespace de PID (no ve a Acropolis ni sus variables), con `/proc/sys` y `/sys` de solo lectura, un `/dev` mínimo, solo las capabilities de un contenedor sin privilegios, sin acceso de escritura al store ni a los toolchains, sin los directorios de credenciales de Docker y con su propio namespace de red si no necesita red. Lo que Acropolis procesa como root (config, lockfiles, parches, capas de imágenes, cachés, rutas de la config) se valida para que no pueda escribir ni leer fuera de su árbol. Aun así no es una frontera de VM: para builds de distintos clientes, un contenedor desechable por build.
+- **Red del builder.** Los pasos con red (instalación con scripts, `next build`) pueden hablar con cualquier host que alcance el contenedor. Bloqueá desde afuera el endpoint de metadata de la nube (`169.254.169.254`) y la red interna; Acropolis solo rechaza registries privados o `http://` en lo que descarga él mismo (`ACROPOLIS_ALLOW_PRIVATE_REGISTRY=1` lo permite).
 - **Ajustes del operador.** `ACROPOLIS_CACHE_KEY`, `ACROPOLIS_CACHE_MAX`, `ACROPOLIS_BUILD_TIMEOUT` (1 h por defecto), `ACROPOLIS_STEP_TIMEOUT` y `ACROPOLIS_BUILD_ID` se leen solo del entorno del proceso; si llegan por `-e` o por la config del repo se ignoran.
 - **Salida.** `-t` pushea a un registry, `--oci` escribe un tar cargable con `docker load` y `--info` deja un resumen en JSON. Con `--events json` cada línea de stderr es un evento con versión de esquema y `build_id`.
-- **Códigos de salida.** 0 ok, 1 falló el build de la app, 70 bug de Acropolis, 75 problema de infraestructura (se puede reintentar), 78 la app no se puede construir así como está configurada.
+- **Códigos de salida.** 0 ok, 1 falló el build de la app, 70 bug de Acropolis (también un panic), 75 problema de infraestructura (se puede reintentar; incluye SIGTERM/SIGINT y pasos matados con SIGKILL), 78 la app no se puede construir así como está configurada (incluye rutas que salen de la app y registries privados).
 - **Imagen de builder.** [`deploy/builder`](deploy/builder) tiene una imagen Debian 12 con las herramientas de compilación nativa y los toolchains precalentados.
 
 ## Desarrollo
+
+[`CONTRIBUTING.md`](CONTRIBUTING.md) explica cómo compilar y probar con `cargo` a secas, cómo correr los snapshots de planes y el e2e, y cómo se arman los PR y las versiones. En la VM del equipo usamos estos atajos:
 
 ```
 scripts/build.sh               # compila target/fast/acropolis
@@ -96,8 +117,8 @@ scripts/e2e.sh                 # corre los ejemplos de Railpack (ACROPOLIS_EXT a
 scripts/bench.sh               # benchmark contra Docker y Railpack
 ```
 
-Los scripts esperan, junto al repo, un directorio `acropolis-ext` con el clon de Railpack y su binario (o la ruta en `ACROPOLIS_EXT`).
+Los scripts esperan, junto al repo, un directorio `acropolis-ext` con el clon de Railpack y su binario (o la ruta en `ACROPOLIS_EXT`). Las vulnerabilidades se reportan en privado: ver [`SECURITY.md`](SECURITY.md).
 
 ## Licencia
 
-Apache-2.0 o MIT.
+A elección de quien lo use, [Apache-2.0](LICENSE-APACHE) o [MIT](LICENSE-MIT). Salvo que se diga lo contrario, cualquier contribución se publica bajo esas mismas dos licencias.
