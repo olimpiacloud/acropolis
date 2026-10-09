@@ -1,0 +1,37 @@
+# Acropolis ships one binary (`acropolis-cli`) and is not published to crates.io.
+# All crates share `[workspace.package] version`; the whole workspace is released
+# under a single `v{{ version }}` tag created by `acropolis-cli`.
+[workspace]
+git_only = true
+git_tag_name = "v{{ version }}"
+# Library crates take part in version detection (their changes bump the
+# workspace version and land in the CLI changelog) but create no tag, release
+# or changelog of their own. `release = false` would hide their commits.
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
+semver_check = false
+release_always = false
+pr_labels = ["release"]
+
+[[package]]
+name = "acropolis-cli"
+git_tag_enable = true
+git_release_enable = true
+git_release_name = "v{{ version }}"
+changelog_update = true
+changelog_path = "CHANGELOG.md"
+changelog_include = [
+  "acropolis-build",
+  "acropolis-bundle",
+  "acropolis-cargo",
+  "acropolis-events",
+  "acropolis-exec",
+  "acropolis-fetch",
+  "acropolis-gomod",
+  "acropolis-npm",
+  "acropolis-oci",
+  "acropolis-semver",
+  "acropolis-store",
+  "acropolis-toolchain",
+]
