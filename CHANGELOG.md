@@ -27,6 +27,8 @@ Primera versión pública.
 - Ajustes del operador (`ACROPOLIS_CACHE_KEY`, `ACROPOLIS_CACHE_MAX`, `ACROPOLIS_BUILD_TIMEOUT`, `ACROPOLIS_STEP_TIMEOUT`, `ACROPOLIS_BUILD_ID`) separados de los de la app.
 - Endurecimiento de lo que se procesa como root: rutas de lockfiles, capas y config validadas, extracción en streaming, límites de logs y de cuerpos HTTP, timeout de build por defecto.
 - Códigos de salida tipados (0, 1, 70, 75, 78) e imagen de builder Debian 12 en `deploy/builder`.
+- Auditoría de seguridad (D22): pasos en el host con namespace de PID propio, sistema de archivos de solo lectura salvo su trabajo y la caché de su app, `/proc/sys` y `/sys` de solo lectura, `/dev` mínimo y capabilities por lista; lecturas y escrituras del repo confinadas a la app; topes de tamaño en tar, zips de Go, crates y registry; credenciales del registry solo hacia su host. `--info` incluye `errorClass` y `exitCode`.
+- Binario release sin símbolos (31 MB) y MSRV 1.96.
 
 ### Verificación
 
