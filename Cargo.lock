@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "acropolis-build"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "acropolis-bundle",
  "acropolis-cargo",
@@ -36,7 +36,7 @@ dependencies = [
 
 [[package]]
 name = "acropolis-bundle"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "acropolis-fetch",
  "acropolis-npm",
@@ -53,7 +53,7 @@ dependencies = [
 
 [[package]]
 name = "acropolis-cargo"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "acropolis-fetch",
  "acropolis-store",
@@ -70,7 +70,7 @@ dependencies = [
 
 [[package]]
 name = "acropolis-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "acropolis-build",
  "acropolis-events",
@@ -90,7 +90,7 @@ dependencies = [
 
 [[package]]
 name = "acropolis-events"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libc",
  "serde",
@@ -99,7 +99,7 @@ dependencies = [
 
 [[package]]
 name = "acropolis-exec"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "acropolis-events",
  "anyhow",
@@ -110,7 +110,7 @@ dependencies = [
 
 [[package]]
 name = "acropolis-fetch"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "acropolis-events",
  "acropolis-store",
@@ -127,7 +127,7 @@ dependencies = [
 
 [[package]]
 name = "acropolis-gomod"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "acropolis-events",
  "acropolis-fetch",
@@ -143,7 +143,7 @@ dependencies = [
 
 [[package]]
 name = "acropolis-npm"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "acropolis-events",
  "acropolis-fetch",
@@ -165,7 +165,7 @@ dependencies = [
 
 [[package]]
 name = "acropolis-oci"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "acropolis-events",
  "acropolis-fetch",
@@ -190,14 +190,14 @@ dependencies = [
 
 [[package]]
 name = "acropolis-semver"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "semver",
 ]
 
 [[package]]
 name = "acropolis-store"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "acropolis-events",
  "base64",
@@ -211,7 +211,7 @@ dependencies = [
 
 [[package]]
 name = "acropolis-toolchain"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "acropolis-events",
  "acropolis-fetch",
