@@ -4,6 +4,27 @@ All notable changes to Acropolis. The format follows [Keep a Changelog](https://
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/olimpiacloud/acropolis/releases/tag/v0.2.0) - 2026-10-09
+
+### Security
+
+- Build steps run under a seccomp filter (no new namespaces, mounts, ptrace, keyring or BPF), image steps use `pivot_root`, and host steps see the filesystem read-only except their work dir, their app cache, `/tmp` and `/var/tmp`.
+- Redirects to private hosts and https→http downgrades are refused; archive unpacking is capped (32 GiB per archive, 1 GiB per npm package).
+- The store detects blobs truncated by a machine crash.
+
+### Builds
+
+- Provider precedence matches Railpack (Go, Rust, Python, Java, ... win over a `package.json`).
+- Rust: an unpinned toolchain is raised to the highest `rust-version` of the locked crates; sqlx apps build on the host instead of inside the rust image.
+- Node: pinned versions of built servers run on distroless/cc with the build toolchain's `node` (olimpia-cloud's web image: 84.5 → 57.1 MB).
+- pnpm 10 build-script rules, bun workspace member dependencies, yarn 2.x checksums, single-copy `node_modules` layers.
+- `--info` includes `errorClass` and `exitCode`; non-UTF-8 file names fail early with exit 78.
+
+### Packaging
+
+- Release binary 25 MB (ring instead of aws-lc, `codegen-units = 1`); multi-arch builder image (amd64 and arm64).
+- Docs in English.
+
 ## [0.1.0](https://github.com/olimpiacloud/acropolis/releases/tag/v0.1.0) - 2026-10-08
 
 First public release.
