@@ -385,6 +385,11 @@ fn main() {
     // With panic = "abort" a panic would otherwise end in SIGABRT (not the documented exit 70) and, in json mode, a non-JSON stderr line.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        // A panic while reporting a panic (e.g. inside event emission) exits straight away instead of re-entering.
+        static REPORTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if REPORTING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            std::process::exit(acropolis_build::errors::ErrorClass::Internal.exit_code());
+        }
         if acropolis_events::mode() == acropolis_events::Mode::Human {
             default_hook(info);
         }
@@ -442,11 +447,12 @@ async fn run(cli: Cli) -> Result<()> {
                 }
                 let target = tag.as_deref().map(Reference::parse).transpose()?;
                 let abs_home = std::path::absolute(&home)?;
-                let readonly = vec![
-                    abs_home.join("store"),
-                    abs_home.join("toolchains"),
-                    std::env::var_os("ACROPOLIS_ROOTFS").map(PathBuf::from).unwrap_or_else(|| abs_home.join("rootfs")),
-                ];
+                // The whole home (store, toolchains, rootfs, other apps' caches) is read-only for steps;
+                // the build re-opens its own work dir and app cache for writing.
+                let mut readonly = vec![abs_home.clone()];
+                if let Some(rootfs) = std::env::var_os("ACROPOLIS_ROOTFS") {
+                    readonly.push(PathBuf::from(rootfs));
+                }
                 let exec: Arc<dyn Executor> = if hermetic == "off" {
                     Arc::new(HostExecutor { isolation: Isolation::None, readonly: Vec::new() })
                 } else {

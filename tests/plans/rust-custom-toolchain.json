@@ -57,12 +57,30 @@
   },
   {
    "action": {
-    "kind": "cargo-vendor",
-    "lockfile_sha256": "736c6a7f9c4add93e85c8abe88db13426cc5b3ac5de93167d7cd145f6df5d31a"
+    "exclude": [],
+    "kind": "copy-source"
    },
    "deps": [],
+   "id": "source",
+   "name": "copy source"
+  },
+  {
+   "action": {
+    "argv": [
+     "cargo",
+     "fetch"
+    ],
+    "cwd": ".",
+    "env": {},
+    "kind": "run",
+    "network": true
+   },
+   "deps": [
+    "rust",
+    "source"
+   ],
    "id": "crates",
-   "name": "fetch crates"
+   "name": "cargo fetch (no lockfile)"
   },
   {
    "action": {
@@ -70,12 +88,10 @@
      "cargo",
      "build",
      "--release",
-     "--locked",
-     "--offline",
      "--bin",
      "rust-custom-toolchain"
     ],
-    "cwd": "@app",
+    "cwd": ".",
     "env": {},
     "kind": "run",
     "network": false
@@ -116,5 +132,7 @@
    "name": "push image"
   }
  ],
- "warnings": []
+ "warnings": [
+  "no Cargo.lock: dependencies are resolved by cargo with network access"
+ ]
 }

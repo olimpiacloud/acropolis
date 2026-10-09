@@ -2,7 +2,7 @@
 
 ## Cómo reportar una vulnerabilidad
 
-No abras un issue público. Usá el reporte privado de GitHub: pestaña **Security** → **Report a vulnerability** ([enlace directo](https://github.com/olimpiacloud/acropolis/security/advisories/new)). El reporte solo lo ven los mantenedores.
+No abras un issue público. Usá el reporte privado de GitHub: pestaña **Security** → **Report a vulnerability** ([enlace directo](https://github.com/olimpiacloud/acropolis/security/advisories/new)). El reporte no es público: lo ven los mantenedores y quien lo envía.
 
 Incluí, si podés:
 

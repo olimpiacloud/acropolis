@@ -274,6 +274,8 @@ pub fn plan(app: &RustApp, env: &Env, dir: &Path, name: &str) -> Result<Plan> {
         b.plan
             .warnings
             .push("no Cargo.lock: dependencies are resolved by cargo with network access".into());
+        // cargo writes Cargo.lock next to Cargo.toml: work on a copy so the build never changes the app directory.
+        b.step("source", "copy source", Action::CopySource { exclude: vec![] }, &[]);
         b.step(
             "crates",
             "cargo fetch (no lockfile)",
@@ -281,9 +283,9 @@ pub fn plan(app: &RustApp, env: &Env, dir: &Path, name: &str) -> Result<Plan> {
                 argv: vec!["cargo".into(), "fetch".into()],
                 env: BTreeMap::new(),
                 network: true,
-                cwd: "@app".into(),
+                cwd: ".".into(),
             },
-            &["rust"],
+            &["rust", "source"],
         );
         deps.push("crates");
     }
@@ -309,7 +311,7 @@ pub fn plan(app: &RustApp, env: &Env, dir: &Path, name: &str) -> Result<Plan> {
             argv,
             env: run_env,
             network: false,
-            cwd: "@app".into(),
+            cwd: if app.has_lock { "@app" } else { "." }.into(),
         },
         &deps,
     );
@@ -332,4 +334,36 @@ pub fn plan(app: &RustApp, env: &Env, dir: &Path, name: &str) -> Result<Plan> {
     b.plan.image.entrypoint = Some(vec![]);
     b.plan.image.env.push(("ROCKET_ADDRESS".into(), "0.0.0.0".into()));
     Ok(b.finish())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cargo_never_runs_in_the_app_dir_without_a_lockfile() {
+        let dir = crate::detect::scratch_dir("rust-nolock");
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("src/main.rs"), "fn main() {}\n").unwrap();
+        let cwds = |p: &Plan| -> Vec<String> {
+            p.steps
+                .iter()
+                .filter_map(|s| match &s.action {
+                    Action::Run { cwd, .. } => Some(cwd.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let p = crate::plan_app(&dir, &Env::default()).unwrap();
+        assert_eq!(cwds(&p), [".", "."]);
+        std::fs::write(dir.join("Cargo.lock"), "version = 4\n").unwrap();
+        let p = crate::plan_app(&dir, &Env::default()).unwrap();
+        assert_eq!(cwds(&p), ["@app"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

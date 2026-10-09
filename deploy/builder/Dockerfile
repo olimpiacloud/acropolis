@@ -25,6 +25,9 @@ COPY --from=build /usr/local/bin/acropolis /usr/local/bin/acropolis
 ENV ACROPOLIS_HOME=/var/lib/acropolis
 ARG PREWARM="node:lts,go:latest,bun:latest,uv:latest,python:3.13"
 RUN acropolis prewarm --tools "$PREWARM"
+# Image steps (Python, Ruby, PHP, Java, .NET, Elixir) put an overlayfs upper dir under work/, and the kernel
+# refuses one on the container's own overlayfs root: the volume keeps it on the host filesystem.
+VOLUME /var/lib/acropolis/work
 # Runs as root on purpose: builds need mount and PID namespaces and overlayfs (CAP_SYS_ADMIN), and write
 # layers with the app's ownership. Isolation comes from one throwaway container per build.
 # tini as PID 1 forwards SIGTERM and reaps orphans of unisolated build steps.
