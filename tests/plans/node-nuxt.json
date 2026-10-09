@@ -25,7 +25,7 @@
    ],
    [
     "npm_config_user_agent",
-    "npm/10 node/vlts linux x64"
+    "npm/10 node/v{version:node|lts} linux x64"
    ],
    [
     "npm_lifecycle_event",

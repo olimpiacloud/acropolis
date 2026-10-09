@@ -114,17 +114,24 @@ jobs:
           TAG: ${{ needs.tag.outputs.tag }}
         run: gh release upload "$TAG" dist/*.tar.gz dist/SHA256SUMS --clobber
 
+  # One native runner per platform (Rust under QEMU is too slow), each pushing its image by digest only;
+  # builder-image-manifest then tags the multi-arch index that references both.
   builder-image:
-    name: builder-image
+    name: builder-image (${{ matrix.arch }})
     needs: tag
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     permissions:
       contents: read
       packages: write # push to ghcr.io
-      id-token: write # sign the provenance attestation (Sigstore)
-      attestations: write # store the attestation
-      artifact-metadata: write # artifact storage record
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     env:
       IMAGE: ghcr.io/${{ github.repository_owner }}/acropolis-builder
     steps:
@@ -132,6 +139,7 @@ jobs:
         with:
           ref: ${{ needs.tag.outputs.tag }}
           persist-credentials: false
+      # Only for the labels and manifest annotations: the tags go on the index.
       - id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
@@ -150,13 +158,72 @@ jobs:
         with:
           context: .
           file: deploy/builder/Dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
           provenance: mode=max
           sbom: true
+      - name: Export the digest
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  builder-image-manifest:
+    name: builder-image-manifest
+    needs: [tag, builder-image]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      packages: write # push to ghcr.io
+      id-token: write # sign the provenance attestation (Sigstore)
+      attestations: write # store the attestation
+      artifact-metadata: write # artifact storage record
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/acropolis-builder
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: digest-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: index
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.tag.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.tag.outputs.tag }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - id: push
+        name: Create and push the multi-arch index
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          refs=()
+          for digest in *; do refs+=("$IMAGE@sha256:$digest"); done
+          test "${#refs[@]}" = 2
+          jq -r '(.tags[] | "--tag", .), (.annotations[] | "--annotation", .)' <<< "$DOCKER_METADATA_OUTPUT_JSON" > "$RUNNER_TEMP/imagetools-args"
+          mapfile -t args < "$RUNNER_TEMP/imagetools-args"
+          docker buildx imagetools create "${args[@]}" "${refs[@]}"
+          digest=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{json .Manifest}}' | jq -r .digest)
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.IMAGE }}

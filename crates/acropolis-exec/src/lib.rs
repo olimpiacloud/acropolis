@@ -1,4 +1,5 @@
 pub mod rootfs;
+mod seccomp;
 use anyhow::{Context, Result, bail};
 use futures::future::BoxFuture;
 use std::collections::{BTreeMap, VecDeque};
@@ -472,8 +473,9 @@ fn credential_dirs() -> Vec<PathBuf> {
 /// Steps of a root acropolis: own mount and PID namespaces (the step cannot see acropolis or
 /// read its environment, which holds the registry credentials), read-only store, toolchains,
 /// /sys and sysctls, hidden `masked` directories, a /dev without host devices and only the
-/// capabilities in `KEEP_CAPS`. With `writable` set, the whole tree is read-only except /tmp,
-/// /var/tmp (`scratch`) and those directories; `readonly` still wins over scratch dirs.
+/// capabilities in `KEEP_CAPS`, under the `seccomp` filter. With `writable` set, the whole tree
+/// is read-only except /tmp, /var/tmp (`scratch`) and those directories; `readonly` still wins
+/// over scratch dirs.
 fn enter_hardened(
     readonly: &[CString],
     writable: &[CString],
@@ -529,7 +531,8 @@ fn enter_hardened(
         if !network {
             bring_up_lo();
         }
-        drop_caps()
+        drop_caps()?;
+        seccomp::install()
     }
 }
 
@@ -791,6 +794,12 @@ mod tests {
             "if cat /proc/sys/kernel/hostname > /proc/sys/kernel/hostname; then exit 1; fi".to_string(),
             "if mkdir /sys/fs/cgroup/acropolis-probe; then rmdir /sys/fs/cgroup/acropolis-probe; exit 1; fi"
                 .to_string(),
+            "grep -q '^Seccomp:[[:space:]]*2$' /proc/self/status".to_string(),
+            "if unshare -U true; then exit 1; fi".to_string(),
+            "if unshare -r true; then exit 1; fi".to_string(),
+            "if unshare -m true; then exit 1; fi".to_string(),
+            "if mount -t tmpfs x /mnt; then exit 1; fi".to_string(),
+            "echo ok; ls / > /dev/null".to_string(),
         ];
         for c in &checks {
             let r = e.run(sh(c, &tmp)).await;

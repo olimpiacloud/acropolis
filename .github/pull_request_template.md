@@ -1,11 +1,11 @@
-<!-- El título sigue Conventional Commits (feat:, fix:, docs:, refactor!: ...): queda como mensaje del commit y arma el changelog. -->
+<!-- The title follows Conventional Commits (feat:, fix:, docs:, refactor!: ...): it becomes the commit message and builds the changelog. -->
 
-## Qué cambia y por qué
+## What changes and why
 
-## Cómo se probó
+## How it was tested
 
-<!-- Tests agregados, `scripts/plans.sh`, ejemplos de e2e corridos. -->
+<!-- Tests added, `scripts/plans.sh`, e2e examples run. -->
 
-- [ ] `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings` y `cargo test --workspace` pasan.
-- [ ] Si cambia la detección, el diff de `tests/plans` está incluido y explicado.
-- [ ] Si es una decisión de diseño con mediciones, está en `docs/decisions.md`.
+- [ ] `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace` pass.
+- [ ] If detection changes, the `tests/plans` diff is included and explained.
+- [ ] If it is a design decision with measurements, it is in `docs/decisions.md`.

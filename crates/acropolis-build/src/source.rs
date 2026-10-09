@@ -31,23 +31,32 @@ pub fn walk(root: &Path, ignore: &Ignore) -> Result<Vec<SourceEntry>> {
 }
 
 fn walk_dir(dir: &Path, prefix: &str, ignore: &Ignore, out: &mut Vec<SourceEntry>, inodes: &mut Inodes) -> Result<()> {
-    let mut names: Vec<(String, std::fs::Metadata)> = Vec::new();
+    // (lossy name, metadata, original name when it is not UTF-8)
+    let mut names: Vec<(String, std::fs::Metadata, Option<std::ffi::OsString>)> = Vec::new();
     for e in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let e = e?;
-        let name = e.file_name().to_string_lossy().into_owned();
         let meta = e.metadata()?;
-        names.push((name, meta));
+        names.push(match e.file_name().into_string() {
+            Ok(name) => (name, meta, None),
+            Err(raw) => (raw.to_string_lossy().into_owned(), meta, Some(raw)),
+        });
     }
     names.sort_by(|a, b| a.0.cmp(&b.0));
-    for (name, meta) in names {
+    for (name, meta, raw) in names {
         let rel = if prefix.is_empty() {
             name.clone()
         } else {
             format!("{prefix}/{name}")
         };
         let excluded = ignore.excluded(&rel);
-        let path = dir.join(&name);
         let ft = meta.file_type();
+        // Tar paths are UTF-8 and a lossy name points at a file that does not exist: fail unless it is skipped.
+        if let Some(raw) = raw
+            && !(excluded && (!ft.is_dir() || !ignore.has_negations()))
+        {
+            return Err(not_utf8("file name", &dir.join(raw)));
+        }
+        let path = dir.join(&name);
         if ft.is_dir() {
             if excluded && !ignore.has_negations() {
                 continue;
@@ -72,7 +81,10 @@ fn walk_dir(dir: &Path, prefix: &str, ignore: &Ignore, out: &mut Vec<SourceEntry
         } else if excluded {
             continue;
         } else if ft.is_symlink() {
-            let target = std::fs::read_link(&path)?.to_string_lossy().into_owned();
+            let target = std::fs::read_link(&path)?
+                .into_os_string()
+                .into_string()
+                .map_err(|_| not_utf8("symlink target of", &path))?;
             out.push(SourceEntry {
                 rel,
                 kind: EntryKind::Symlink(target),
@@ -103,6 +115,10 @@ fn walk_dir(dir: &Path, prefix: &str, ignore: &Ignore, out: &mut Vec<SourceEntry
         }
     }
     Ok(())
+}
+
+fn not_utf8(what: &str, path: &Path) -> anyhow::Error {
+    anyhow::anyhow!("{what} {path:?} is not valid UTF-8; rename it (image layers need UTF-8 paths)")
 }
 
 pub fn ancestors(prefix: &str) -> Vec<String> {
@@ -436,5 +452,27 @@ mod hardlink_tests {
         assert_eq!(std::fs::metadata(copy.join("dri/b.so")).unwrap().nlink(), 2);
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&copy);
+    }
+
+    #[test]
+    fn non_utf8_names_are_a_config_error() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = std::env::temp_dir().join(format!("acropolis-non-utf8-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let bad = std::ffi::OsStr::from_bytes(b"caf\xff.txt");
+        std::fs::write(dir.join("src").join(bad), b"x").unwrap();
+        let err = walk(&dir, &Ignore::new(&[])).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains(r"src/caf\xFF.txt"), "{msg}");
+        assert_eq!(crate::errors::classify(&err).exit_code(), 78);
+        assert_eq!(walk(&dir, &Ignore::new(&["src".into()])).unwrap().len(), 0);
+        assert_eq!(walk(&dir, &Ignore::new(&["src/*.txt".into()])).unwrap().len(), 1);
+        std::fs::remove_file(dir.join("src").join(bad)).unwrap();
+        std::os::unix::fs::symlink(bad, dir.join("src/link")).unwrap();
+        let err = copy_tree(&dir, &dir.with_extension("copy"), &Ignore::new(&[])).unwrap_err();
+        assert!(format!("{err:#}").contains("symlink target of"), "{err:#}");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(dir.with_extension("copy"));
     }
 }

@@ -1,18 +1,18 @@
-name: Propuesta
-description: Un ecosistema, framework u opción nueva.
+name: Proposal
+description: A new ecosystem, framework or option.
 labels: [enhancement]
 body:
   - type: textarea
     id: problem
     attributes:
-      label: Problema
-      description: Qué no se puede hacer hoy y para qué apps. Si hay un repo de ejemplo, enlazalo.
+      label: Problem
+      description: What can't be done today and for which apps. If there is a sample repo, link it.
     validations:
       required: true
   - type: textarea
     id: proposal
     attributes:
-      label: Propuesta
-      description: Cómo debería comportarse Acropolis. Si Railpack o Nixpacks ya lo resuelven, cómo lo hacen.
+      label: Proposal
+      description: How Acropolis should behave. If Railpack or Nixpacks already solve it, how they do it.
     validations:
       required: true

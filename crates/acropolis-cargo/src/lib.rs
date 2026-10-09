@@ -186,6 +186,109 @@ pub fn parse_lock(text: &str) -> Result<CargoLock> {
     toml::from_str(text).context("parsing Cargo.lock")
 }
 
+/// `major.minor.patch` of a `rust-version` field (`1.94` means `1.94.0`).
+pub fn parse_rust_version(v: &str) -> Option<(u64, u64, u64)> {
+    let mut it = v.trim().split('.').map(|p| p.parse::<u64>().ok());
+    let major = it.next()??;
+    let minor = it.next().flatten().unwrap_or(0);
+    let patch = it.next().flatten().unwrap_or(0);
+    Some((major, minor, patch))
+}
+
+/// Highest `rust-version` declared by the locked crates.io packages vendored in `vendor_dir` (see `vendor`).
+pub fn max_rust_version(lock: &CargoLock, vendor_dir: &Path) -> Option<(u64, u64, u64)> {
+    lock.packages
+        .iter()
+        .filter(|p| p.source.is_some())
+        .filter_map(|p| {
+            let text = std::fs::read_to_string(vendor_dir.join(format!("{}-{}", p.name, p.version)).join("Cargo.toml"))
+                .ok()?;
+            let manifest: toml::Value = toml::from_str(&text).ok()?;
+            parse_rust_version(manifest.get("package")?.get("rust-version")?.as_str()?)
+        })
+        .max()
+}
+
+/// Whether the workspace links the system libsqlite3. Cargo.lock lists `libsqlite3-sys` for every sqlx app (the lock
+/// ignores features), but sqlx's `sqlite` feature and the `bundled*` features of rusqlite/libsqlite3-sys compile
+/// SQLite from source. The system library is needed for sqlx with `sqlite-unbundled`, or rusqlite/libsqlite3-sys
+/// without a `bundled*` feature, in any dependency table or `[features]` entry of the workspace manifests.
+pub fn sqlite_needs_system_lib(dir: &Path) -> bool {
+    let mut features: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for manifest in workspace_manifests(dir) {
+        let mut packages: BTreeMap<String, String> = BTreeMap::new();
+        let mut tables: Vec<&toml::Value> = Vec::new();
+        for root in [Some(&manifest), manifest.get("workspace")].into_iter().flatten() {
+            for kind in ["dependencies", "dev-dependencies", "build-dependencies"] {
+                tables.extend(root.get(kind));
+            }
+        }
+        if let Some(targets) = manifest.get("target").and_then(|t| t.as_table()) {
+            for t in targets.values() {
+                for kind in ["dependencies", "dev-dependencies", "build-dependencies"] {
+                    tables.extend(t.get(kind));
+                }
+            }
+        }
+        for (key, dep) in tables.iter().filter_map(|t| t.as_table()).flatten() {
+            let package = dep.get("package").and_then(|p| p.as_str()).unwrap_or(key).to_string();
+            let list = features.entry(package.clone()).or_default();
+            for f in dep.get("features").and_then(|f| f.as_array()).into_iter().flatten() {
+                list.extend(f.as_str().map(str::to_string));
+            }
+            packages.insert(key.clone(), package);
+        }
+        for value in manifest
+            .get("features")
+            .and_then(|f| f.as_table())
+            .into_iter()
+            .flat_map(|t| t.values())
+        {
+            for f in value.as_array().into_iter().flatten().filter_map(|f| f.as_str()) {
+                if let Some((dep, feature)) = f.split_once('/') {
+                    let dep = dep.trim_end_matches('?');
+                    let package = packages.get(dep).cloned().unwrap_or_else(|| dep.to_string());
+                    features.entry(package).or_default().push(feature.to_string());
+                }
+            }
+        }
+    }
+    let has = |package: &str, feature: &str| features.get(package).is_some_and(|f| f.iter().any(|x| x == feature));
+    has("sqlx", "sqlite-unbundled")
+        || ["rusqlite", "libsqlite3-sys"].iter().any(|p| {
+            features
+                .get(*p)
+                .is_some_and(|f| !f.iter().any(|x| x.starts_with("bundled")))
+        })
+}
+
+/// Every Cargo.toml in the app up to three levels deep (workspace members), skipping build outputs and symlinks.
+fn workspace_manifests(dir: &Path) -> Vec<toml::Value> {
+    fn walk(dir: &Path, depth: usize, out: &mut Vec<toml::Value>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for e in entries.flatten() {
+            let Ok(ft) = e.file_type() else { continue };
+            let name = e.file_name();
+            if ft.is_file() && name == "Cargo.toml" {
+                if let Some(v) = std::fs::read_to_string(e.path())
+                    .ok()
+                    .and_then(|t| toml::from_str(&t).ok())
+                {
+                    out.push(v);
+                }
+            } else if ft.is_dir()
+                && depth > 0
+                && !matches!(name.to_str(), Some("target" | "vendor" | "node_modules" | ".git"))
+            {
+                walk(&e.path(), depth - 1, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, 3, &mut out);
+    out
+}
+
 pub const CRATES_IO: &str = "registry+https://github.com/rust-lang/crates.io-index";
 pub const CRATES_IO_SPARSE: &str = "sparse+https://index.crates.io/";
 
@@ -438,5 +541,32 @@ mod tests {
         std::fs::write(app.join("real"), "1.80.0\n").unwrap();
         std::os::unix::fs::symlink("real", app.join("rust-toolchain")).unwrap();
         assert_eq!(toolchain_file(&app).as_deref(), Some("1.80.0"));
+    }
+
+    #[test]
+    fn highest_rust_version_of_the_locked_crates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lock = parse_lock(
+            "[[package]]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
+             [[package]]\nname = \"sqlx\"\nversion = \"0.9.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n\n\
+             [[package]]\nname = \"serde\"\nversion = \"1.0.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n\n\
+             [[package]]\nname = \"old\"\nversion = \"1.0.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n",
+        )
+        .unwrap();
+        for (dir, manifest) in [
+            ("sqlx-0.9.0", "[package]\nname = \"sqlx\"\nrust-version = \"1.94\"\n"),
+            (
+                "serde-1.0.0",
+                "[package]\nname = \"serde\"\nrust-version = \"1.61.0\"\n",
+            ),
+            ("old-1.0.0", "[package]\nname = \"old\"\n"),
+            ("stale-9.9.9", "[package]\nname = \"stale\"\nrust-version = \"1.99\"\n"),
+        ] {
+            std::fs::create_dir_all(tmp.path().join(dir)).unwrap();
+            std::fs::write(tmp.path().join(dir).join("Cargo.toml"), manifest).unwrap();
+        }
+        assert_eq!(max_rust_version(&lock, tmp.path()), Some((1, 94, 0)));
+        assert_eq!(parse_rust_version("1.85.1"), Some((1, 85, 1)));
+        assert!(parse_rust_version("stable").is_none());
     }
 }

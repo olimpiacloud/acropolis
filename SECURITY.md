@@ -1,34 +1,34 @@
-# Política de seguridad
+# Security policy
 
-## Cómo reportar una vulnerabilidad
+## How to report a vulnerability
 
-No abras un issue público. Usá el reporte privado de GitHub: pestaña **Security** → **Report a vulnerability** ([enlace directo](https://github.com/olimpiacloud/acropolis/security/advisories/new)). El reporte no es público: lo ven los mantenedores y quien lo envía.
+Don't open a public issue. Use GitHub private reporting: **Security** tab → **Report a vulnerability** ([direct link](https://github.com/olimpiacloud/acropolis/security/advisories/new)). The report is not public: only the maintainers and the reporter can see it.
 
-Incluí, si podés:
+Include, if you can:
 
-- versión (`acropolis --version`) y cómo lo corrés (contenedor, privilegios, variables `ACROPOLIS_*`);
-- un repo o lockfile mínimo que lo reproduzca, o los pasos;
-- qué consigue un atacante (leer o escribir fuera del árbol de la app, escapar del sandbox de un paso, envenenar la caché de otra app, falsificar una descarga verificada, etc.).
+- version (`acropolis --version`) and how you run it (container, privileges, `ACROPOLIS_*` variables);
+- a minimal repo or lockfile that reproduces it, or the steps;
+- what an attacker gains (reading or writing outside the app tree, escaping a step's sandbox, poisoning another app's cache, forging a verified download, etc.).
 
-Confirmamos la recepción por el mismo hilo del advisory, coordinamos la fecha de publicación con quien reporta y le damos crédito en el advisory, salvo que prefiera lo contrario.
+We acknowledge receipt in the advisory thread, coordinate the disclosure date with the reporter, and credit them in the advisory unless they prefer otherwise.
 
-## Versiones con soporte
+## Supported versions
 
-Acropolis está en 0.x: solo la última versión publicada recibe arreglos de seguridad. No hay backports a versiones anteriores.
+Acropolis is at 0.x: only the latest published version receives security fixes. There are no backports to earlier versions.
 
-| versión | soporte |
+| version | supported |
 |---|---|
-| última `0.x` | sí |
-| anteriores | no |
+| latest `0.x` | yes |
+| earlier | no |
 
-## Modelo de amenazas
+## Threat model
 
-Acropolis está pensado para construir repos de terceros dentro de un PaaS (ver la sección "En producción" del [README](README.md) y las decisiones D18, D19 y D22 de [`docs/decisions.md`](docs/decisions.md)):
+Acropolis is designed to build third-party repos inside a PaaS (see the "In production" section of the [README](README.md) and decisions D18, D19 and D22 in [`docs/decisions.md`](docs/decisions.md)):
 
-- **No confiable:** todo el contenido del repo de la app (código, lockfiles, `railpack.json`/`acropolis.json`, parches, scripts de build) y las variables de la app (`-e`).
-- **Confiable:** quien opera el builder y el entorno del proceso `acropolis` (variables `ACROPOLIS_*` del operador, credenciales de registry).
-- **Semiconfiable:** registries, CDNs y mirrors; todo lo que se baja se verifica por digest o checksum.
+- **Untrusted:** all content of the app repo (code, lockfiles, `railpack.json`/`acropolis.json`, patches, build scripts) and the app variables (`-e`).
+- **Trusted:** whoever operates the builder and the environment of the `acropolis` process (operator `ACROPOLIS_*` variables, registry credentials).
+- **Semi-trusted:** registries, CDNs and mirrors; everything downloaded is verified by digest or checksum.
 
-Dentro de ese modelo nos interesan especialmente: escrituras o lecturas fuera del árbol de la app o de la caché de la app al procesar lockfiles, capas o rutas de la config; escapes del sandbox de los pasos de build hacia el store, los toolchains o el host; saltear la verificación de checksums; que una app use o envenene la caché de otra; que la config de una app cambie ajustes del operador.
+Within that model we are especially interested in: writes or reads outside the app tree or the app cache while processing lockfiles, layers or config paths; escapes from the build step sandbox to the store, the toolchains or the host; bypassing checksum verification; one app using or poisoning another app's cache; an app's config changing operator settings.
 
-Fuera de alcance: lo que un script de build puede hacer *dentro* de su propio paso (es código del cliente y corre como tal), y aislar builds de clientes distintos que comparten contenedor. Acropolis no es una frontera de VM: corré un build por contenedor desechable.
+Out of scope: what a build script can do *inside* its own step (it is the customer's code and runs as such), and isolating builds from different customers that share a container. Acropolis is not a VM boundary: run one build per throwaway container.

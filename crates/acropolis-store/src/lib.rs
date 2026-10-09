@@ -1,10 +1,32 @@
 use base64::Engine;
 use sha2::Digest;
+use std::ffi::{CStr, CString};
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Read, Write};
+use std::os::fd::AsRawFd;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Blob length recorded at commit. Blobs are not fsynced, so after a machine crash the rename (journaled metadata)
+/// can survive while the data does not; the xattr is journaled with them, so a length mismatch means a truncated blob.
+const LEN_XATTR: &CStr = c"user.acropolis.len";
+
+/// Best effort: on filesystems without user xattrs `get` falls back to rejecting empty files.
+fn record_len(f: &File, len: u64) {
+    let v = len.to_le_bytes();
+    // SAFETY: valid fd, NUL-terminated name and an 8-byte buffer that outlives the call.
+    unsafe { libc::fsetxattr(f.as_raw_fd(), LEN_XATTR.as_ptr(), v.as_ptr().cast(), v.len(), 0) };
+}
+
+fn recorded_len(path: &Path) -> Option<u64> {
+    let path = CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut v = [0u8; 8];
+    // SAFETY: NUL-terminated path and name, writable 8-byte buffer.
+    let n = unsafe { libc::getxattr(path.as_ptr(), LEN_XATTR.as_ptr(), v.as_mut_ptr().cast(), v.len()) };
+    (n == 8).then(|| u64::from_le_bytes(v))
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -220,6 +242,13 @@ impl Store {
     pub fn get(&self, i: &Integrity) -> Option<StoredBlob> {
         let path = self.blob_path(i);
         let meta = fs::metadata(&path).ok()?;
+        let truncated = match recorded_len(&path) {
+            Some(len) => len != meta.len(),
+            None => meta.len() == 0 && *i != hash_bytes(i.algo, b""),
+        };
+        if truncated {
+            return None;
+        }
         if let Ok(f) = fs::File::options().write(true).open(&path) {
             let _ = f.set_modified(std::time::SystemTime::now());
         }
@@ -313,6 +342,7 @@ impl BlobWriter<'_> {
     pub fn commit(mut self) -> Result<StoredBlob> {
         let mut file = self.file.take().expect("writer open");
         file.flush()?;
+        record_len(file.get_ref(), self.size);
         drop(file);
         let sha256 = Integrity::new(Algo::Sha256, std::mem::take(&mut self.sha256).finalize().to_vec());
         let actual = match self.extra.take() {
@@ -469,5 +499,30 @@ mod tests {
         let blob_b = wb.commit().unwrap();
         assert_eq!(fs::read(&blob_a.path).unwrap(), b"aaaa");
         assert_eq!(fs::read(&blob_b.path).unwrap(), b"bb");
+    }
+
+    #[test]
+    fn truncated_blobs_are_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let empty = store.put_bytes("empty", b"", None).unwrap();
+        assert!(store.get(&empty.integrity).is_some());
+        // A machine crash can leave the renamed blob with 0 bytes (written by an older version: no recorded length).
+        let legacy = sha256_bytes(b"legacy");
+        let path = store.blob_path(&legacy);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        File::create(&path).unwrap();
+        assert!(store.get(&legacy).is_none());
+        // Or partially written, which only the recorded length can tell.
+        let blob = store.put_bytes("blob", b"payload", None).unwrap();
+        File::options()
+            .write(true)
+            .open(&blob.path)
+            .unwrap()
+            .set_len(3)
+            .unwrap();
+        if recorded_len(&blob.path).is_some() {
+            assert!(store.get(&blob.integrity).is_none());
+        }
     }
 }

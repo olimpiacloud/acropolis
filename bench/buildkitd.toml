@@ -1,5 +1,7 @@
+# docs/decisions.md D7: BuildKit RUN steps cannot reach the host's systemd-resolved stub (127.0.0.53).
+# For a fair benchmark set the same upstreams the host uses (`resolvectl dns`); these are public defaults.
 [dns]
-  nameservers = ["45.235.98.140", "45.235.98.141"]
+  nameservers = ["1.1.1.1", "8.8.8.8"]
 
 [registry."docker.io"]
   mirrors = ["mirror.gcr.io"]

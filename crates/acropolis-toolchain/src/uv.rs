@@ -56,28 +56,33 @@ pub async fn install(fetcher: &Fetcher, release: &UvRelease, dest: &Path) -> Res
     let blob = fetcher
         .blob("uv wheel", &release.url, Some(release.sha256.clone()))
         .await?;
-    let data = std::fs::read(&blob.path)?;
-    let entries = acropolis_gomod::zip::entries(&data)?;
-    let bin = dest.join("bin");
-    std::fs::create_dir_all(&bin)?;
-    let mut found = 0;
-    for e in &entries {
-        let name = e.name.rsplit('/').next().unwrap_or("");
-        if e.name.contains(".data/scripts/") && (name == "uv" || name == "uvx") {
-            let bytes = e.read_all()?;
-            let mut f = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o755)
-                .open(bin.join(name))?;
-            f.write_all(&bytes)?;
-            found += 1;
+    // Inflating the ~40 MB binary is CPU and disk work: keep it off the async workers.
+    let (path, bin) = (blob.path.clone(), dest.join("bin"));
+    let bin = tokio::task::spawn_blocking(move || -> Result<_> {
+        let data = std::fs::read(&path)?;
+        let entries = acropolis_gomod::zip::entries(&data)?;
+        std::fs::create_dir_all(&bin)?;
+        let mut found = 0;
+        for e in &entries {
+            let name = e.name.rsplit('/').next().unwrap_or("");
+            if e.name.contains(".data/scripts/") && (name == "uv" || name == "uvx") {
+                let bytes = e.read_all()?;
+                let mut f = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o755)
+                    .open(bin.join(name))?;
+                f.write_all(&bytes)?;
+                found += 1;
+            }
         }
-    }
-    if found == 0 {
-        bail!("uv wheel has no binaries");
-    }
+        if found == 0 {
+            bail!("uv wheel has no binaries");
+        }
+        Ok(bin)
+    })
+    .await??;
     Ok(Installed {
         name: "uv".into(),
         version: release.version.clone(),

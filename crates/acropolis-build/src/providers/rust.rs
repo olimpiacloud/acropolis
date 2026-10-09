@@ -144,10 +144,14 @@ const SYSTEM_SYS_CRATES: &[&str] = &[
 fn needs_system_libs(dir: &Path) -> bool {
     let lock = std::fs::read_to_string(dir.join("Cargo.lock")).unwrap_or_default();
     let toml = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap_or_default();
-    SYSTEM_SYS_CRATES
-        .iter()
-        .any(|c| lock.contains(&format!("name = \"{c}\"")) || toml.contains(c))
-        && !toml.contains("vendored")
+    SYSTEM_SYS_CRATES.iter().any(|c| {
+        let locked = lock.contains(&format!("name = \"{c}\"")) || toml.contains(c);
+        // Cargo.lock lists optional dependencies whatever features are on: every sqlx app locks libsqlite3-sys.
+        if *c == "libsqlite3-sys" {
+            return locked && acropolis_cargo::sqlite_needs_system_lib(dir);
+        }
+        locked
+    }) && !toml.contains("vendored")
 }
 
 fn plan_in_image(app: &RustApp, env: &Env, dir: &Path, name: &str) -> Result<Plan> {
@@ -247,18 +251,10 @@ pub fn plan(app: &RustApp, env: &Env, dir: &Path, name: &str) -> Result<Plan> {
         &[],
     );
     b.step("copy-base", "copy base layers", Action::CopyBase, &["base"]);
-    b.step(
-        "rust",
-        format!("rust {}", app.rust.spec),
-        Action::Toolchain {
-            tool: "rust".into(),
-            spec: app.rust.spec.clone(),
-            parts: vec![],
-        },
-        &[],
-    );
-    let mut deps = vec!["rust"];
-    let run_env = crate::user_env(env);
+    // Without a pinned version (Railpack's default or the edition minimum), crates that need a newer rustc would
+    // fail (sqlx 0.9 needs 1.94): the toolchain step waits for the vendored crates and raises the version to the
+    // highest `rust-version` among them.
+    let raise = app.has_lock && matches!(app.rust.source.as_str(), "default" | "Cargo.toml edition");
     if app.has_lock {
         let lock = std::fs::read(dir.join("Cargo.lock"))?;
         b.step(
@@ -269,6 +265,20 @@ pub fn plan(app: &RustApp, env: &Env, dir: &Path, name: &str) -> Result<Plan> {
             },
             &[],
         );
+    }
+    b.step(
+        "rust",
+        format!("rust {}", app.rust.spec),
+        Action::Toolchain {
+            tool: "rust".into(),
+            spec: app.rust.spec.clone(),
+            parts: if raise { vec!["raise-to-crates".into()] } else { vec![] },
+        },
+        if raise { &["crates"] } else { &[] },
+    );
+    let mut deps = vec!["rust"];
+    let run_env = crate::user_env(env);
+    if app.has_lock {
         deps.push("crates");
     } else {
         b.plan
@@ -364,6 +374,37 @@ mod tests {
         std::fs::write(dir.join("Cargo.lock"), "version = 4\n").unwrap();
         let p = crate::plan_app(&dir, &Env::default()).unwrap();
         assert_eq!(cwds(&p), ["@app"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn locked_sqlite_needs_the_system_library_only_when_used() {
+        let dir = crate::detect::scratch_dir("rust-syslibs");
+        std::fs::create_dir_all(dir.join("api")).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "[workspace]\nmembers = [\"api\"]\n").unwrap();
+        std::fs::write(
+            dir.join("Cargo.lock"),
+            "[[package]]\nname = \"libsqlite3-sys\"\nversion = \"0.30.1\"\n",
+        )
+        .unwrap();
+        let api = |deps: &str| {
+            let toml = format!("[package]\nname = \"api\"\n{deps}\n");
+            std::fs::write(dir.join("api/Cargo.toml"), toml).unwrap();
+        };
+        // sqlx's own `sqlite` bundles SQLite; only `sqlite-unbundled` links the system library.
+        api("[dependencies]\nsqlx = { version = \"0.9\", features = [\"postgres\"] }");
+        assert!(!needs_system_libs(&dir));
+        api("[dependencies]\nsqlx = { version = \"0.9\", features = [\"sqlite\"] }");
+        assert!(!needs_system_libs(&dir));
+        api("[dependencies]\nsqlx = \"0.9\"\n[features]\ndb = [\n  \"sqlx/sqlite-unbundled\",\n]");
+        assert!(needs_system_libs(&dir));
+        // An unrelated `bundled` feature does not turn rusqlite into a bundled build.
+        api("[dependencies]\nrusqlite = \"0.32\"\nother = { version = \"1\", features = [\"bundled\"] }");
+        assert!(needs_system_libs(&dir));
+        api("[dependencies]\nlite = { package = \"rusqlite\", version = \"0.32\", features = [\"bundled\"] }");
+        assert!(!needs_system_libs(&dir));
+        std::fs::write(dir.join("Cargo.lock"), "[[package]]\nname = \"openssl-sys\"\n").unwrap();
+        assert!(needs_system_libs(&dir));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

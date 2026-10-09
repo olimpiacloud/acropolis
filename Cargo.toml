@@ -26,7 +26,10 @@ thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "process", "signal"] }
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "stream", "json"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "http2", "stream", "json"] }
+# ring instead of reqwest's default aws-lc-rs: 2 MB smaller binary and no aws-lc C build. Installed by
+# `acropolis_fetch::ensure_tls()`, which must run before any `reqwest::Client` is built.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 futures = "0.3"
 bytes = "1"
 sha2 = "0.11"
@@ -46,7 +49,8 @@ url = "2"
 
 [profile.release]
 lto = "thin"
-codegen-units = 16
+# 1 instead of 16: binary 14 % smaller (29.2 -> 25.0 MB), cold release build 4m39s -> 7m19s on 5 vCPUs.
+codegen-units = 1
 strip = "symbols"
 panic = "abort"
 

@@ -1,71 +1,71 @@
-# Cómo contribuir
+# Contributing
 
-Gracias por el interés. Los issues y los PR son bienvenidos en español o en inglés; el código, los mensajes de error y los commits van en inglés.
+Thanks for your interest. Issues and PRs are welcome in Spanish or English; code, error messages and commits are in English.
 
-## Requisitos
+## Requirements
 
-- Linux x86_64 o arm64. Acropolis usa namespaces de mount, PID y red y overlayfs, así que no compila ni corre en macOS o Windows (sirve una VM o un contenedor `--privileged`).
-- Rust estable reciente (la versión mínima es el `rust-version` de `Cargo.toml`), con `rustfmt` y `clippy`.
-- Un compilador de C (`cc`) para las dependencias nativas (zstd, liblzma, aws-lc).
-- Para builds completos: root. `acropolis plan` y la mayoría de los tests corren sin root; los pasos de build dentro de imágenes y los tests del sandbox necesitan root.
-- Para la suite e2e: Docker.
+- Linux x86_64 or arm64. Acropolis uses mount, PID and network namespaces and overlayfs, so it does not build or run on macOS or Windows (a VM or a `--privileged` container works).
+- A recent stable Rust (the minimum version is the `rust-version` in `Cargo.toml`), with `rustfmt` and `clippy`.
+- A C compiler (`cc`) for the native dependencies (zstd, liblzma, ring).
+- For full builds: root. `acropolis plan` and most tests run without root; build steps inside images and the sandbox tests need root.
+- For the e2e suite: Docker.
 
-## Compilar y probar
+## Build and test
 
 ```
 cargo build --bin acropolis           # target/debug/acropolis
-cargo test --workspace                # tests unitarios
-CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER='sudo -E' cargo test --workspace  # como root, como la CI: incluye los tests del sandbox
+cargo test --workspace                # unit tests
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER='sudo -E' cargo test --workspace  # as root, like CI: includes the sandbox tests
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-La CI corre lo mismo más `cargo deny check` (licencias, advisories y orígenes de las dependencias, ver `deny.toml`), la versión mínima de Rust y los snapshots de planes.
+CI runs the same plus `cargo deny check` (licenses, advisories and sources of dependencies, see `deny.toml`), the minimum Rust version, and the plan snapshots.
 
-Los scripts de `scripts/` (`build.sh`, `test.sh`, `e2e.sh`) envuelven cargo en una unidad de systemd con límite de memoria para la VM de desarrollo del equipo; no hacen falta para contribuir.
+The scripts in `scripts/` (`build.sh`, `test.sh`, `e2e.sh`) wrap cargo in a systemd unit with a memory limit for the team's development VM; you don't need them to contribute.
 
-## Snapshots de planes
+## Plan snapshots
 
-`tests/plans` guarda la salida de `acropolis plan --json` para los 131 ejemplos de [Railpack](https://github.com/railwayapp/railpack). Es la forma más rápida de ver si un cambio altera la detección:
+`tests/plans` stores the output of `acropolis plan --json` for the 131 [Railpack](https://github.com/railwayapp/railpack) examples. It is the fastest way to see whether a change alters detection:
 
 ```
 git clone https://github.com/railwayapp/railpack ../acropolis-ext/railpack
-git -C ../acropolis-ext/railpack checkout <RAILPACK_REF de .github/workflows/ci.yml>
+git -C ../acropolis-ext/railpack checkout <RAILPACK_REF from .github/workflows/ci.yml>
 cargo build --bin acropolis
-BIN=target/debug/acropolis scripts/plans.sh            # compara
-BIN=target/debug/acropolis scripts/plans.sh update     # regenera, si el cambio es intencional
+BIN=target/debug/acropolis scripts/plans.sh            # compare
+BIN=target/debug/acropolis scripts/plans.sh update     # regenerate, if the change is intended
 ```
 
-`ACROPOLIS_EXT` apunta a otro directorio si el clon no está junto al repo. Si un PR cambia planes, el diff de `tests/plans` tiene que estar en el PR y la descripción tiene que explicar por qué.
+Point `ACROPOLIS_EXT` to another directory if the clone is not next to the repo. If a PR changes plans, the `tests/plans` diff must be in the PR and the description must explain why.
 
 ## e2e
 
-`scripts/e2e.sh` construye cada ejemplo de Railpack, lo corre con `docker run` y chequea la salida (necesita root, Docker y `target/fast/acropolis`, que deja `scripts/build.sh` o `cargo build --profile fast`). Con `--filter <ejemplo>` corre uno solo. No es obligatorio para un PR, pero si tocás detección, instalación de dependencias o armado de capas, correr los ejemplos afectados ahorra una vuelta de revisión.
+`scripts/e2e.sh` builds each Railpack example, runs it with `docker run`, and checks the output (it needs root, Docker and `target/fast/acropolis`, which `scripts/build.sh` or `cargo build --profile fast` produce). `--filter <example>` runs a single one. It is not required for a PR, but if you touch detection, dependency installation or layer assembly, running the affected examples saves a review round.
 
 ## Pull requests
 
-- Un cambio por PR, con un test cuando se pueda: un test de comportamiento que falle sin el cambio.
-- El título del PR sigue [Conventional Commits](https://www.conventionalcommits.org/es/v1.0.0/) (`feat(npm): ...`, `fix(oci): ...`, `docs: ...`, `refactor!: ...` para cambios incompatibles). Los PR se integran con squash y el título queda como mensaje del commit: de ahí salen la versión siguiente y `CHANGELOG.md`. Un check de la CI valida el título.
-- Si el cambio es una decisión de diseño con mediciones (rendimiento, tamaño de imagen, seguridad), agregala a [`docs/decisions.md`](docs/decisions.md).
-- No hace falta firmar los commits ni agregar `Signed-off-by`.
+- One change per PR, with a test when possible: a behavior test that fails without the change.
+- The PR title follows [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) (`feat(npm): ...`, `fix(oci): ...`, `docs: ...`, `refactor!: ...` for breaking changes). PRs are squash-merged and the title becomes the commit message: the next version and `CHANGELOG.md` come from it. A CI check validates the title.
+- If the change is a design decision with measurements (performance, image size, security), add it to [`docs/decisions.md`](docs/decisions.md).
+- You don't need to sign commits or add `Signed-off-by`.
 
-## Versiones
+## Releases
 
-Las publica [release-plz](https://release-plz.dev): con cada merge a `main` abre o actualiza un PR de release con la versión nueva y el changelog; al mergearlo crea el tag `vX.Y.Z` y el release de GitHub, y la CI adjunta los binarios para Linux x86_64 y arm64 (glibc 2.36 o más nueva), sus checksums y la atestación de procedencia, y publica la imagen `ghcr.io/olimpiacloud/acropolis-builder`.
+They are published by [release-plz](https://release-plz.dev): on each merge to `main` it opens or updates a release PR with the new version and the changelog; merging it creates the `vX.Y.Z` tag and the GitHub release, and CI attaches the binaries for Linux x86_64 and arm64 (glibc 2.36 or newer), their checksums and the provenance attestation, and publishes the `ghcr.io/olimpiacloud/acropolis-builder` image.
 
-El workflow `release-plz` usa el token de una GitHub App (con un `GITHUB_TOKEN` el PR de release no correría la CI ni el release dispararía `release.yml`). Hasta que exista, el workflow se saltea. Para activarlo: crear la App en la organización (sin webhook, permisos Contents y Pull requests de lectura y escritura, instalada solo en este repo), guardar su client ID como variable del repo y la clave privada como secreto del environment `release`:
+The `release-plz` workflow uses a GitHub App token (with a `GITHUB_TOKEN` the release PR would not run CI and the release would not trigger `release.yml`). Until the App exists, the workflow is skipped. To enable it: create the App in the organization (no webhook, Contents and Pull requests read and write permissions, installed only on this repo), store its client ID as a repo variable and its private key as a secret of the `release` environment:
 
 ```
 gh variable set RELEASE_PLZ_CLIENT_ID -R olimpiacloud/acropolis --body <client-id>
 gh secret set RELEASE_PLZ_PRIVATE_KEY -R olimpiacloud/acropolis --env release < app-private-key.pem
 ```
 
-La variable va a nivel repo y no del environment porque el `if` del job se evalúa antes de entrar al environment.
+The variable is set at repo level and not on the environment because the job's `if` is evaluated before entering the environment.
 
-## Seguridad
+## Security
 
-Las vulnerabilidades no se reportan en issues: ver [SECURITY.md](SECURITY.md).
+Vulnerabilities are not reported in issues: see [SECURITY.md](SECURITY.md).
 
-## Licencia
+## License
 
-Al contribuir aceptás que tu aporte se publique bajo la misma licencia doble del proyecto, Apache-2.0 o MIT, a elección de quien lo use.
+By contributing you agree that your contribution is published under the project's same dual license, Apache-2.0 or MIT, at the user's option.

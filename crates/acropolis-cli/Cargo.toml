@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 acropolis-events.workspace = true
+acropolis-fetch.workspace = true
 acropolis-oci.workspace = true
 acropolis-store.workspace = true
 acropolis-build = { path = "../acropolis-build" }

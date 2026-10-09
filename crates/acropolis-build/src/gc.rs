@@ -192,6 +192,38 @@ fn sweep_leftovers(home: &Path, older_than: Duration) {
     }
 }
 
+/// Base image records refetch with one manifest request, so a week without a refresh is enough.
+const IMAGE_CACHE_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
+
+/// `layer-cache/*.json` records are dropped once their blob is gone (they can never hit again),
+/// `cache/images/*` once older than [`IMAGE_CACHE_TTL`].
+fn sweep_caches(home: &Path, older_than: Duration) {
+    let now = SystemTime::now();
+    let old = |p: &Path, age: Duration| now.duration_since(mtime(p)).is_ok_and(|d| d > age);
+    let blobs = home.join("store").join("blobs");
+    let blob_exists = |record: &Path| {
+        let Ok(text) = std::fs::read(record) else { return true };
+        serde_json::from_slice::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| acropolis_store::Integrity::parse_oci(v["digest"].as_str()?).ok())
+            .is_some_and(|i| {
+                let hex = i.hex();
+                blobs.join(i.algo.name()).join(&hex[..2]).join(&hex).exists()
+            })
+    };
+    for p in entries(&home.join("layer-cache")) {
+        let record = p.extension().is_some_and(|e| e == "json");
+        if (record && !blob_exists(&p)) || (!record && old(&p, older_than)) {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
+    for p in entries(&home.join("cache").join("images")) {
+        if old(&p, IMAGE_CACHE_TTL) {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
+}
+
 pub fn collect(home: &Path, rootfs: &Path, max_size: u64) -> Result<GcReport> {
     let lock = exclusive(home);
     let exclusive = lock.is_some();
@@ -200,14 +232,12 @@ pub fn collect(home: &Path, rootfs: &Path, max_size: u64) -> Result<GcReport> {
     } else {
         Duration::from_secs(3600)
     };
-    sweep_leftovers(
-        home,
-        if exclusive {
-            Duration::from_secs(600)
-        } else {
-            Duration::from_secs(6 * 3600)
-        },
-    );
+    let leftover_age = if exclusive {
+        Duration::from_secs(600)
+    } else {
+        Duration::from_secs(6 * 3600)
+    };
+    sweep_leftovers(home, leftover_age);
     let mut all = units(home, rootfs);
     let before: u64 = all.iter().map(|u| u.size).sum();
     let mut total = before;
@@ -231,6 +261,7 @@ pub fn collect(home: &Path, rootfs: &Path, max_size: u64) -> Result<GcReport> {
         total = total.saturating_sub(u.size);
         removed += 1;
     }
+    sweep_caches(home, leftover_age);
     drop(lock);
     Ok(GcReport {
         before,
@@ -290,6 +321,52 @@ mod tests {
         assert_eq!(r.removed, 1);
         assert!(!old.exists());
         assert!(new.exists());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn sweeps_dead_layer_records_and_stale_image_records() {
+        let home = std::env::temp_dir().join(format!("acropolis-gc-caches-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let shard = home.join("store/blobs/sha256/ab");
+        std::fs::create_dir_all(&shard).unwrap();
+        let (evicted, kept) = (format!("ab{}", "0".repeat(62)), format!("ab{}1", "0".repeat(61)));
+        let age = |p: &Path, secs: u64| {
+            File::options()
+                .write(true)
+                .open(p)
+                .unwrap()
+                .set_modified(SystemTime::now() - Duration::from_secs(secs))
+                .unwrap()
+        };
+        for b in [&evicted, &kept] {
+            std::fs::write(shard.join(b), vec![0u8; 4096]).unwrap();
+        }
+        age(&shard.join(&evicted), 7200);
+        let layers = home.join("layer-cache");
+        std::fs::create_dir_all(&layers).unwrap();
+        for (name, blob) in [("gone", &evicted), ("live", &kept)] {
+            std::fs::write(
+                layers.join(format!("{name}.json")),
+                format!(r#"{{"digest":"sha256:{blob}"}}"#),
+            )
+            .unwrap();
+        }
+        std::fs::write(layers.join("junk.json"), "not json").unwrap();
+        let images = home.join("cache/images");
+        std::fs::create_dir_all(&images).unwrap();
+        for f in ["stale.json", "stale.config", "fresh.json", "fresh.config"] {
+            std::fs::write(images.join(f), "{}").unwrap();
+        }
+        age(&images.join("stale.json"), 8 * 24 * 3600);
+        age(&images.join("stale.config"), 8 * 24 * 3600);
+        collect(&home, &home.join("rootfs"), 5000).unwrap();
+        assert!(!shard.join(&evicted).exists());
+        assert!(!layers.join("gone.json").exists());
+        assert!(!layers.join("junk.json").exists());
+        assert!(layers.join("live.json").exists());
+        assert!(!images.join("stale.json").exists() && !images.join("stale.config").exists());
+        assert!(images.join("fresh.json").exists() && images.join("fresh.config").exists());
         let _ = std::fs::remove_dir_all(&home);
     }
 }

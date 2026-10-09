@@ -46,6 +46,15 @@
   },
   {
    "action": {
+    "kind": "cargo-vendor",
+    "lockfile_sha256": "7593b90ff541dc5a3c290462af28df2cb8f35f3ded229a350405a5f7ae3af467"
+   },
+   "deps": [],
+   "id": "crates",
+   "name": "fetch crates"
+  },
+  {
+   "action": {
     "kind": "toolchain",
     "parts": [],
     "spec": "1.88.0",
@@ -54,15 +63,6 @@
    "deps": [],
    "id": "rust",
    "name": "rust 1.88.0"
-  },
-  {
-   "action": {
-    "kind": "cargo-vendor",
-    "lockfile_sha256": "7593b90ff541dc5a3c290462af28df2cb8f35f3ded229a350405a5f7ae3af467"
-   },
-   "deps": [],
-   "id": "crates",
-   "name": "fetch crates"
   },
   {
    "action": {

@@ -56,6 +56,7 @@ pub struct ResolvedImage {
 
 impl Registry {
     pub fn new(client: Client) -> Self {
+        acropolis_fetch::ensure_tls();
         let noredirect = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(5))
@@ -287,6 +288,7 @@ impl Registry {
         if url.scheme() != "https" && !(url.scheme() == "http" && r.insecure()) {
             bail!("{host} sent a token realm that is not https: {realm}");
         }
+        self.check_target(r, &url)?;
         {
             let mut q = url.query_pairs_mut();
             if let Some(s) = params.get("service") {
@@ -610,6 +612,7 @@ impl Registry {
             } else {
                 format!("{}{}", self.base(r), loc)
             };
+            self.check_target(r, &url::Url::parse(&loc)?)?;
             return Ok((loc, reqwest::header::HeaderMap::new()));
         }
         if !status.is_success() {
@@ -691,6 +694,17 @@ impl Registry {
         }
         acropolis_events::add_uploaded(body.len() as u64);
         Ok(acropolis_store::sha256_bytes(&body).to_oci())
+    }
+
+    /// A public registry must not send acropolis to a private or link-local host (cloud metadata,
+    /// internal services): token realms and the blob redirect fetched by hand. Redirects followed by
+    /// the clients themselves are filtered by `acropolis_fetch`'s redirect policy.
+    fn check_target(&self, r: &Reference, target: &url::Url) -> Result<()> {
+        let private = |u: &url::Url| u.host_str().is_some_and(acropolis_fetch::private_host);
+        if private(target) && !url::Url::parse(&self.base(r)).is_ok_and(|u| private(&u)) {
+            bail!("{r} sent acropolis to a private address: {target}");
+        }
+        Ok(())
     }
 }
 
@@ -851,6 +865,7 @@ mod tests {
     }
 
     fn client() -> Client {
+        acropolis_fetch::ensure_tls();
         Client::builder().no_proxy().build().unwrap()
     }
 
@@ -930,6 +945,25 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("not https"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn public_registries_cannot_send_acropolis_to_private_hosts() {
+        let reg = Registry::new(client());
+        let public = Reference::parse("registry.example.com/app").unwrap();
+        let challenge = r#"Bearer realm="https://169.254.169.254/latest/meta-data/",service="x""#;
+        let err = reg
+            .authenticate(&public, "registry.example.com", challenge, "repository:app:pull")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("private address"), "{err}");
+        let metadata = url::Url::parse("http://169.254.169.254/latest/meta-data/").unwrap();
+        assert!(reg.check_target(&public, &metadata).is_err());
+        let cdn = url::Url::parse("https://production.cloudflare.docker.com/blob").unwrap();
+        assert!(reg.check_target(&public, &cdn).is_ok());
+        let local = Reference::parse("localhost:5000/app").unwrap();
+        let storage = url::Url::parse("http://127.0.0.1:9000/blob").unwrap();
+        assert!(reg.check_target(&local, &storage).is_ok());
     }
 
     #[tokio::test]

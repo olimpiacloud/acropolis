@@ -2,7 +2,7 @@
 use crate::lockfile::LockEntry;
 use crate::lockfile::{PackageLock, bins_of, package_name_from_path};
 use acropolis_fetch::Fetcher;
-use acropolis_oci::tar::{Kind, TarReader, TarWriter, normalize_mode};
+use acropolis_oci::tar::{Entry, Kind, TarReader, TarWriter, normalize_mode};
 use acropolis_store::{Integrity, StoredBlob};
 use anyhow::{Context, Result, anyhow, bail};
 use flate2::read::GzDecoder;
@@ -434,11 +434,30 @@ pub struct TarEntry {
     pub data: Vec<u8>,
 }
 
+/// Most bytes one package tarball may unpack to, so a small gzip bomb cannot exhaust memory or disk.
+/// The largest real packages stay well below it: onnxruntime-node 1.30 is 301 MB unpacked and
+/// @next/swc-linux-x64-gnu 16.4 is 101 MB (npm registry `dist.unpackedSize`).
+const MAX_UNPACKED: u64 = 1 << 30;
+
+fn count_unpacked(total: &mut u64, e: &Entry) -> Result<()> {
+    *total = total.saturating_add(e.size);
+    if *total > MAX_UNPACKED {
+        bail!(
+            "tarball unpacks to more than {} MiB (at {})",
+            MAX_UNPACKED >> 20,
+            e.path
+        );
+    }
+    Ok(())
+}
+
 pub fn read_tarball(blob: &Path) -> Result<Vec<TarEntry>> {
     let mut tr = open_tarball(blob)?;
     let mut out = Vec::new();
     let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut unpacked = 0;
     while let Some(e) = tr.next_entry()? {
+        count_unpacked(&mut unpacked, &e)?;
         if !matches!(e.kind, Kind::File | Kind::Dir) {
             continue;
         }
@@ -493,23 +512,29 @@ pub fn bins_from_package_json(name: &str, data: &[u8], files: &[TarEntry]) -> Bi
     Vec::new()
 }
 
-fn package_bins(p: &InstallPackage, entries: &[TarEntry]) -> Bins {
+fn package_bins(p: &InstallPackage, package_json: Option<&[u8]>, files: &[TarEntry]) -> Bins {
     match &p.bins {
         Some(b) => b.clone(),
-        None => entries
-            .iter()
-            .find(|e| e.rel == "package.json")
-            .map(|e| bins_from_package_json(&p.name, &e.data, entries))
+        None => package_json
+            .map(|d| bins_from_package_json(&p.name, d, files))
             .unwrap_or_default(),
     }
 }
 
+/// Sets the mode of a ustar header block and recomputes its checksum.
+fn set_header_mode(h: &mut [u8], mode: u32) {
+    h[100..108].copy_from_slice(format!("{mode:07o}\0").as_bytes());
+    h[148..156].fill(b' ');
+    let sum: u32 = h.iter().map(|&b| u32::from(b)).sum();
+    h[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
+}
+
+/// Re-roots one package tarball under `prefix/p.path`, streaming each file straight into the fragment.
 fn package_fragment(prefix: &str, p: &InstallPackage, blob: &Path) -> Result<(Vec<u8>, Bins)> {
-    let entries = read_tarball(blob).with_context(|| format!("reading tarball of {}", p.path))?;
-    let bins = package_bins(p, &entries);
-    let execs: HashSet<String> = bins.iter().filter_map(|(_, t)| clean_rel(t)).collect();
-    let cap: usize = entries.iter().map(|e| e.data.len() + 1024).sum();
-    let mut tw = TarWriter::new(Vec::with_capacity(cap));
+    let mut tr = open_tarball(blob)?;
+    let compressed = std::fs::metadata(blob).map_or(0, |m| m.len() as usize);
+    // Pre-size for typical packages, but never trust a large blob before its entries are checked against the cap.
+    let mut tw = TarWriter::new(Vec::with_capacity(compressed.saturating_mul(3).min(64 << 20)));
     let mut dirs: HashSet<String> = HashSet::new();
     let root = if prefix.is_empty() {
         p.path.clone()
@@ -518,8 +543,21 @@ fn package_fragment(prefix: &str, p: &InstallPackage, blob: &Path) -> Result<(Ve
     };
     tw.dir(&root, 0o755)?;
     dirs.insert(root.clone());
-    for e in &entries {
-        let parts: Vec<&str> = e.rel.split('/').collect();
+    // Bins may only be known once package.json is read, so remember each file's header to fix its mode later.
+    let mut files: Vec<TarEntry> = Vec::new();
+    let mut headers: Vec<usize> = Vec::new();
+    let mut package_json: Option<Vec<u8>> = None;
+    let mut unpacked = 0;
+    while let Some(e) = tr.next_entry()? {
+        count_unpacked(&mut unpacked, &e)?;
+        if !matches!(e.kind, Kind::File | Kind::Dir) {
+            continue;
+        }
+        let Some((_, rest)) = e.path.split_once('/') else {
+            continue;
+        };
+        let Some(rel) = clean_rel(rest) else { continue };
+        let parts: Vec<&str> = rel.split('/').collect();
         let upto = if e.kind == Kind::Dir {
             parts.len()
         } else {
@@ -533,13 +571,35 @@ fn package_fragment(prefix: &str, p: &InstallPackage, blob: &Path) -> Result<(Ve
                 tw.dir(&acc, 0o755)?;
             }
         }
-        if e.kind == Kind::File {
-            let mode = if execs.contains(&e.rel) {
-                0o755
-            } else {
-                normalize_mode(e.mode, Kind::File)
-            };
-            tw.file_bytes(&format!("{root}/{}", e.rel), mode, &e.data)?;
+        if e.kind == Kind::Dir {
+            continue;
+        }
+        let path = format!("{root}/{rel}");
+        let mode = normalize_mode(e.mode, Kind::File);
+        let size = if rel == "package.json" {
+            let data = tr.read_data()?;
+            tw.file_bytes(&path, mode, &data)?;
+            let n = data.len();
+            package_json = Some(data);
+            n
+        } else {
+            tw.file_reader(&path, mode, e.size, &mut tr.data())?;
+            e.size as usize
+        };
+        headers.push(tw.get_mut().len() - size.next_multiple_of(512) - 512);
+        files.push(TarEntry {
+            rel,
+            kind: Kind::File,
+            mode,
+            data: Vec::new(),
+        });
+    }
+    let bins = package_bins(p, package_json.as_deref(), &files);
+    let execs: HashSet<String> = bins.iter().filter_map(|(_, t)| clean_rel(t)).collect();
+    let buf = tw.get_mut();
+    for (f, &at) in files.iter().zip(&headers) {
+        if f.mode != 0o755 && execs.contains(&f.rel) {
+            set_header_mode(&mut buf[at..at + 512], 0o755);
         }
     }
     Ok((take(tw), bins))
@@ -657,7 +717,8 @@ pub fn stream_node_modules(
             .par_iter()
             .map(|p| {
                 let blob = blob_for(tarballs, p).ok_or_else(|| anyhow!("missing tarball for {}", p.path))?;
-                let (frag, bins) = package_fragment(prefix, p, &blob.path)?;
+                let (frag, bins) = package_fragment(prefix, p, &blob.path)
+                    .with_context(|| format!("reading tarball of {}", p.path))?;
                 Ok((p.path.clone(), frag, bins))
             })
             .collect();
@@ -861,7 +922,9 @@ fn extract_package_streaming(p: &InstallPackage, blob: &Path, dest: &Path, insid
     let mut files: Vec<TarEntry> = Vec::new();
     let mut package_json: Option<Vec<u8>> = None;
     let mut total = 0u64;
+    let mut unpacked = 0;
     while let Some(e) = tr.next_entry().with_context(|| format!("extracting {}", p.path))? {
+        count_unpacked(&mut unpacked, &e).with_context(|| format!("extracting {}", p.path))?;
         if !matches!(e.kind, Kind::File | Kind::Dir) {
             continue;
         }
@@ -905,13 +968,7 @@ fn extract_package_streaming(p: &InstallPackage, blob: &Path, dest: &Path, insid
             data: Vec::new(),
         });
     }
-    let bins = match &p.bins {
-        Some(b) => b.clone(),
-        None => package_json
-            .as_deref()
-            .map(|d| bins_from_package_json(&p.name, d, &files))
-            .unwrap_or_default(),
-    };
+    let bins = package_bins(p, package_json.as_deref(), &files);
     for (_, t) in &bins {
         if let Some(t) = clean_rel(t) {
             use std::os::unix::fs::PermissionsExt;
@@ -937,7 +994,11 @@ fn extract_package_with(
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     let mut entries = read_tarball(blob).with_context(|| format!("extracting {}", p.path))?;
-    let bins = package_bins(p, &entries);
+    let package_json = entries
+        .iter()
+        .find(|e| e.rel == "package.json")
+        .map(|e| e.data.as_slice());
+    let bins = package_bins(p, package_json, &entries);
     if types_only && type_files_only(&entries, &bins) {
         entries.retain(|e| {
             e.kind == Kind::Dir || e.rel == "package.json" || TYPE_FILES.iter().any(|x| e.rel.ends_with(x))
@@ -1094,5 +1155,71 @@ mod tests {
     #[test]
     fn joins() {
         assert_eq!(normalize_join(Path::new("node_modules"), "../packages/a"), "packages/a");
+    }
+
+    fn temp_file(name: &str, data: &[u8]) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("acropolis-{name}-{}", std::process::id()));
+        std::fs::write(&path, data).unwrap();
+        path
+    }
+
+    #[test]
+    fn oversized_tarball_is_rejected() {
+        // A 512-byte header declaring an 8 GiB entry, gzipped: the size must be refused before reading it.
+        let mut tw = TarWriter::new(Vec::new());
+        tw.file_bytes("package/big", 0o644, b"").unwrap();
+        let mut h = tw.into_inner();
+        h[124..136].copy_from_slice(format!("{:011o}\0", (8u64 << 30) - 1).as_bytes());
+        set_header_mode(&mut h, 0o644);
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut gz, &h).unwrap();
+        let path = temp_file("bomb.tgz", &gz.finish().unwrap());
+        let err = read_tarball(&path).err().expect("oversized tarball accepted");
+        let _ = std::fs::remove_file(&path);
+        assert!(format!("{err:#}").contains("more than 1024 MiB"), "{err:#}");
+    }
+
+    #[test]
+    fn fragment_streams_files_and_marks_late_bins_executable() {
+        let mut tw = TarWriter::new(Vec::new());
+        tw.file_bytes("package/cli.js", 0o644, b"#!/usr/bin/env node\n")
+            .unwrap();
+        tw.file_bytes("package/lib/a.js", 0o644, b"a").unwrap();
+        tw.file_bytes("package/package.json", 0o644, br#"{"name":"x","bin":{"x":"cli.js"}}"#)
+            .unwrap();
+        let path = temp_file("frag.tar", &tw.finish().unwrap());
+        let p = InstallPackage {
+            path: "node_modules/x".into(),
+            name: "x".into(),
+            version: "1.0.0".into(),
+            source: Source::Registry {
+                url: String::new(),
+                integrity: None,
+            },
+            bins: None,
+            has_install_script: false,
+            optional: false,
+            dev: false,
+        };
+        let (frag, bins) = package_fragment("app", &p, &path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(bins, vec![("x".to_string(), "cli.js".to_string())]);
+        for h in frag.chunks(512).filter(|h| h.len() == 512 && &h[257..262] == b"ustar") {
+            let mut blank = h.to_vec();
+            blank[148..156].fill(b' ');
+            let sum: u32 = blank.iter().map(|&b| u32::from(b)).sum();
+            assert_eq!(&h[148..154], format!("{sum:06o}").as_bytes());
+        }
+        let mut tr = TarReader::new(&frag[..]);
+        let mut files = HashMap::new();
+        while let Some(e) = tr.next_entry().unwrap() {
+            let data = tr.read_data().unwrap();
+            files.insert(e.path.trim_end_matches('/').to_string(), (e.kind, e.mode, data));
+        }
+        assert_eq!(files["app/node_modules/x/cli.js"].1, 0o755);
+        assert_eq!(files["app/node_modules/x/cli.js"].2, b"#!/usr/bin/env node\n");
+        assert_eq!(files["app/node_modules/x/lib/a.js"].1, 0o644);
+        assert_eq!(files["app/node_modules/x/lib"].0, Kind::Dir);
+        assert!(files.contains_key("app/node_modules/x/package.json"));
     }
 }

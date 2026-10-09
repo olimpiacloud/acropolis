@@ -24,7 +24,7 @@
    ],
    [
     "npm_config_user_agent",
-    "yarn/3.8.7 npm/? node/vlts linux x64"
+    "yarn/3.8.7 npm/? node/v{version:node|lts} linux x64"
    ],
    [
     "npm_lifecycle_event",
