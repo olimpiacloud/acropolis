@@ -141,44 +141,17 @@ const SYSTEM_SYS_CRATES: &[&str] = &[
     "librocksdb-sys",
 ];
 
-/// Cargo.lock lists optional dependencies whatever features are on: every sqlx app locks `libsqlite3-sys` (and
-/// `sqlx-mysql`) even with only `postgres`. These crates count only when a workspace manifest mentions them,
-/// and a `bundled` build compiles the library from source, which the host can do.
-const LOCKED_BY_DEFAULT: &[(&str, &[&str])] = &[("libsqlite3-sys", &["sqlite"])];
-
 fn needs_system_libs(dir: &Path) -> bool {
     let lock = std::fs::read_to_string(dir.join("Cargo.lock")).unwrap_or_default();
     let toml = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap_or_default();
-    let manifests = workspace_manifests(dir);
     SYSTEM_SYS_CRATES.iter().any(|c| {
         let locked = lock.contains(&format!("name = \"{c}\"")) || toml.contains(c);
-        match LOCKED_BY_DEFAULT.iter().find(|(name, _)| name == c) {
-            Some((_, words)) => locked && words.iter().any(|w| manifests.contains(w)) && !manifests.contains("bundled"),
-            None => locked,
+        // Cargo.lock lists optional dependencies whatever features are on: every sqlx app locks libsqlite3-sys.
+        if *c == "libsqlite3-sys" {
+            return locked && acropolis_cargo::sqlite_needs_system_lib(dir);
         }
+        locked
     }) && !toml.contains("vendored")
-}
-
-/// Text of every Cargo.toml in the app up to three levels deep (workspace members), skipping build outputs.
-fn workspace_manifests(dir: &Path) -> String {
-    fn walk(dir: &Path, depth: usize, out: &mut String) {
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
-        for e in entries.flatten() {
-            let Ok(ft) = e.file_type() else { continue };
-            let name = e.file_name();
-            if ft.is_file() && name == "Cargo.toml" {
-                out.push_str(&std::fs::read_to_string(e.path()).unwrap_or_default());
-            } else if ft.is_dir()
-                && depth > 0
-                && !matches!(name.to_str(), Some("target" | "vendor" | "node_modules" | ".git"))
-            {
-                walk(&e.path(), depth - 1, out);
-            }
-        }
-    }
-    let mut out = String::new();
-    walk(dir, 3, &mut out);
-    out
 }
 
 fn plan_in_image(app: &RustApp, env: &Env, dir: &Path, name: &str) -> Result<Plan> {
@@ -414,17 +387,21 @@ mod tests {
             "[[package]]\nname = \"libsqlite3-sys\"\nversion = \"0.30.1\"\n",
         )
         .unwrap();
-        let api = |features: &str| {
-            let toml = format!(
-                "[package]\nname = \"api\"\n[dependencies]\nsqlx = {{ version = \"0.9\", features = [{features}] }}\n"
-            );
+        let api = |deps: &str| {
+            let toml = format!("[package]\nname = \"api\"\n{deps}\n");
             std::fs::write(dir.join("api/Cargo.toml"), toml).unwrap();
         };
-        api("\"postgres\"");
+        // sqlx's own `sqlite` bundles SQLite; only `sqlite-unbundled` links the system library.
+        api("[dependencies]\nsqlx = { version = \"0.9\", features = [\"postgres\"] }");
         assert!(!needs_system_libs(&dir));
-        api("\"sqlite\"");
+        api("[dependencies]\nsqlx = { version = \"0.9\", features = [\"sqlite\"] }");
+        assert!(!needs_system_libs(&dir));
+        api("[dependencies]\nsqlx = \"0.9\"\n[features]\ndb = [\n  \"sqlx/sqlite-unbundled\",\n]");
         assert!(needs_system_libs(&dir));
-        api("\"sqlite\", \"bundled\"");
+        // An unrelated `bundled` feature does not turn rusqlite into a bundled build.
+        api("[dependencies]\nrusqlite = \"0.32\"\nother = { version = \"1\", features = [\"bundled\"] }");
+        assert!(needs_system_libs(&dir));
+        api("[dependencies]\nlite = { package = \"rusqlite\", version = \"0.32\", features = [\"bundled\"] }");
         assert!(!needs_system_libs(&dir));
         std::fs::write(dir.join("Cargo.lock"), "[[package]]\nname = \"openssl-sys\"\n").unwrap();
         assert!(needs_system_libs(&dir));

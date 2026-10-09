@@ -533,7 +533,8 @@ fn set_header_mode(h: &mut [u8], mode: u32) {
 fn package_fragment(prefix: &str, p: &InstallPackage, blob: &Path) -> Result<(Vec<u8>, Bins)> {
     let mut tr = open_tarball(blob)?;
     let compressed = std::fs::metadata(blob).map_or(0, |m| m.len() as usize);
-    let mut tw = TarWriter::new(Vec::with_capacity(compressed.saturating_mul(3)));
+    // Pre-size for typical packages, but never trust a large blob before its entries are checked against the cap.
+    let mut tw = TarWriter::new(Vec::with_capacity(compressed.saturating_mul(3).min(64 << 20)));
     let mut dirs: HashSet<String> = HashSet::new();
     let root = if prefix.is_empty() {
         p.path.clone()
