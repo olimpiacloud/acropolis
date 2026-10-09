@@ -34,7 +34,7 @@ futures = "0.3"
 bytes = "1"
 sha2 = "0.11"
 sha1 = "0.11"
-base64 = "0.22"
+base64 = "0.23"
 hex = "0.4"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 zstd = { version = "0.14", features = ["zstdmt"] }
