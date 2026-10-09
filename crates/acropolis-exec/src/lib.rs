@@ -1,5 +1,5 @@
 pub mod rootfs;
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use futures::future::BoxFuture;
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{CStr, CString};
@@ -16,6 +16,9 @@ pub struct Cmd {
     pub cwd: PathBuf,
     pub env: BTreeMap<String, String>,
     pub network: bool,
+    /// Directories a hardened step may write. When set, everything else is read-only for the step
+    /// (besides /tmp and /var/tmp): the builder's binaries, /etc and other apps' caches included.
+    pub writable: Vec<PathBuf>,
 }
 
 #[derive(Debug, Default)]
@@ -268,16 +271,38 @@ const MOUNT_ATTR_RDONLY: u64 = 1;
 /// covers the top mount, which left e.g. /sys/fs/cgroup writable under a read-only /sys.
 pub(crate) unsafe fn bind_readonly(src: &CStr, target: &CStr) -> std::io::Result<()> {
     unsafe {
+        bind(src, target)?;
+        set_readonly(target, true)
+    }
+}
+
+/// Bind-mounts `path` on itself writable, on top of a read-only tree (a bind inherits the read-only flag).
+pub(crate) unsafe fn bind_writable(path: &CStr) -> std::io::Result<()> {
+    unsafe {
+        bind(path, path)?;
+        set_readonly(path, false)
+    }
+}
+
+unsafe fn bind(src: &CStr, target: &CStr) -> std::io::Result<()> {
+    unsafe {
         check(libc::mount(
             src.as_ptr(),
             target.as_ptr(),
             std::ptr::null(),
             libc::MS_BIND | libc::MS_REC,
             std::ptr::null(),
-        ))?;
+        ))
+    }
+}
+
+/// Sets or clears the read-only flag of the mount at `target` and all its submounts.
+/// Kernels before 5.12 (no `mount_setattr`) only change the top mount.
+unsafe fn set_readonly(target: &CStr, readonly: bool) -> std::io::Result<()> {
+    unsafe {
         let attr = MountAttr {
-            attr_set: MOUNT_ATTR_RDONLY,
-            attr_clr: 0,
+            attr_set: if readonly { MOUNT_ATTR_RDONLY } else { 0 },
+            attr_clr: if readonly { 0 } else { MOUNT_ATTR_RDONLY },
             propagation: 0,
             userns_fd: 0,
         };
@@ -296,11 +321,12 @@ pub(crate) unsafe fn bind_readonly(src: &CStr, target: &CStr) -> std::io::Result
         if e.raw_os_error() != Some(libc::ENOSYS) {
             return Err(e);
         }
+        let flags = libc::MS_BIND | libc::MS_REMOUNT | if readonly { libc::MS_RDONLY } else { 0 };
         check(libc::mount(
             std::ptr::null(),
             target.as_ptr(),
             std::ptr::null(),
-            libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY,
+            flags,
             std::ptr::null(),
         ))
     }
@@ -446,12 +472,16 @@ fn credential_dirs() -> Vec<PathBuf> {
 /// Steps of a root acropolis: own mount and PID namespaces (the step cannot see acropolis or
 /// read its environment, which holds the registry credentials), read-only store, toolchains,
 /// /sys and sysctls, hidden `masked` directories, a /dev without host devices and only the
-/// capabilities in `KEEP_CAPS`.
+/// capabilities in `KEEP_CAPS`. With `writable` set, the whole tree is read-only except /tmp,
+/// /var/tmp (`scratch`) and those directories; `readonly` still wins over scratch dirs.
 fn enter_hardened(
     readonly: &[CString],
+    writable: &[CString],
+    scratch: &[CString],
     masked: &[CString],
     network: bool,
     resolv: Option<&CStr>,
+    cwd: &CStr,
 ) -> std::io::Result<()> {
     unsafe {
         let mut flags = libc::CLONE_NEWNS | libc::CLONE_NEWPID;
@@ -467,17 +497,20 @@ fn enter_hardened(
             libc::MS_REC | libc::MS_PRIVATE,
             std::ptr::null(),
         ))?;
+        if !writable.is_empty() {
+            set_readonly(c"/", true)?;
+            for p in scratch {
+                bind_writable(p)?;
+            }
+        }
         if !network && let Some(r) = resolv {
-            libc::mount(
-                r.as_ptr(),
-                c"/etc/resolv.conf".as_ptr(),
-                std::ptr::null(),
-                libc::MS_BIND,
-                std::ptr::null(),
-            );
+            let _ = bind_readonly(r, c"/etc/resolv.conf");
         }
         for p in readonly {
             bind_readonly(p, p)?;
+        }
+        for p in writable {
+            bind_writable(p)?;
         }
         for p in masked {
             check(libc::mount(
@@ -490,6 +523,9 @@ fn enter_hardened(
         }
         bind_readonly(c"/sys", c"/sys")?;
         mount_proc_and_dev()?;
+        // The working directory was entered before these mounts and still points at the mount
+        // underneath: enter it again so relative paths see the writable binds.
+        check(libc::chdir(cwd.as_ptr()))?;
         if !network {
             bring_up_lo();
         }
@@ -648,11 +684,22 @@ impl HostExecutor {
                     .collect()
             };
             let ro = cpaths(&self.readonly, |p| p.exists());
+            for w in &cmd.writable {
+                std::fs::create_dir_all(w).with_context(|| format!("creating {}", w.display()))?;
+            }
+            let writable: Vec<PathBuf> = cmd
+                .writable
+                .iter()
+                .map(std::path::absolute)
+                .collect::<std::io::Result<_>>()?;
+            let writable = cpaths(&writable, |_| true);
+            let cwd = CString::new(std::path::absolute(&cmd.cwd)?.into_os_string().into_encoded_bytes())?;
+            let scratch = cpaths(&[PathBuf::from("/tmp"), PathBuf::from("/var/tmp")], |p| p.is_dir());
             let masked = cpaths(&masked, |p| p.is_dir());
             let network = cmd.network;
             let resolv = if network { None } else { offline_resolv_conf() };
             unsafe {
-                c.pre_exec(move || enter_hardened(&ro, &masked, network, resolv.as_deref()));
+                c.pre_exec(move || enter_hardened(&ro, &writable, &scratch, &masked, network, resolv.as_deref(), &cwd));
             }
         } else if !cmd.network {
             if self.isolation != Isolation::NetNamespace {
@@ -697,6 +744,7 @@ mod tests {
                 .into_iter()
                 .collect(),
             network: false,
+            writable: Vec::new(),
         }
     }
 
@@ -766,6 +814,39 @@ mod tests {
         let write = format!("touch {}/x", creds.display());
         assert!(e.run_masked(sh(&write, &tmp), vec![creds.clone()]).await.is_err());
         let _ = std::fs::remove_dir_all(&creds);
+    }
+
+    #[tokio::test]
+    async fn steps_only_write_their_own_directories() {
+        if unsafe { libc::geteuid() } != 0 || !probe_netns() {
+            return;
+        }
+        let home = std::env::temp_dir().join(format!("acropolis-exec-home-{}", std::process::id()));
+        let own = home.join("work/this-build");
+        let other = home.join("cache/apps/other-app");
+        std::fs::create_dir_all(&other).unwrap();
+        let e = HostExecutor::detect().with_readonly(vec![home.clone()]);
+        let run = |script: String| {
+            let mut c = sh(&script, &own);
+            c.writable = vec![own.clone()];
+            e.run_masked(c, Vec::new())
+        };
+        assert!(run(format!("touch {}/out", own.display())).await.is_ok());
+        assert!(run("mkdir -p build && touch build/Makefile".into()).await.is_ok());
+        assert!(
+            run("touch /tmp/acropolis-exec-scratch && rm /tmp/acropolis-exec-scratch".into())
+                .await
+                .is_ok()
+        );
+        assert!(run(format!("touch {}/poison", other.display())).await.is_err());
+        assert!(run("touch /usr/acropolis-exec-probe".into()).await.is_err());
+        assert!(
+            run("echo nameserver 192.0.2.1 > /etc/resolv.conf".into())
+                .await
+                .is_err()
+        );
+        assert!(!other.join("poison").exists());
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[tokio::test]

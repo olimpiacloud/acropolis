@@ -244,6 +244,16 @@ impl Ctx {
         }
     }
 
+    /// What a host step may write: this build's work dir and this app's cache. The rest of the
+    /// builder (the app dir, other apps' caches, the store, /usr, /etc) is read-only for it.
+    fn step_writable(&self) -> Vec<PathBuf> {
+        let mut dirs = vec![self.work.clone()];
+        if let Some(c) = &self.cache {
+            dirs.push(c.dir.clone());
+        }
+        dirs
+    }
+
     fn get(&self, id: &str) -> Out {
         self.out.lock().unwrap().get(id).cloned().unwrap_or(Out::None)
     }
@@ -1321,6 +1331,7 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                     cwd: cwd_path.clone(),
                     env: full_env,
                     network: *network,
+                    writable: ctx.step_writable(),
                 })
                 .await;
             if let Some(c) = &node_cache {
@@ -1856,6 +1867,7 @@ async fn run_lifecycle(
                     cwd: pkg_dir.clone(),
                     env,
                     network: true,
+                    writable: ctx.step_writable(),
                 })
                 .await
                 .with_context(|| format!("{stage} script of {}", job.name))?;

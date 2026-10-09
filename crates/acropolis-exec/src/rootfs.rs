@@ -67,13 +67,7 @@ fn enter(p: &Prepared) -> std::io::Result<()> {
         ))?;
         crate::bind_readonly(c"/sys", &p.sys_target)?;
         if let Some(src) = &p.resolv_src {
-            let _ = libc::mount(
-                src.as_ptr(),
-                p.resolv_target.as_ptr(),
-                std::ptr::null(),
-                libc::MS_BIND,
-                std::ptr::null(),
-            );
+            let _ = crate::bind_readonly(src, &p.resolv_target);
         }
         for (host, guest, ro) in &p.binds {
             if *ro {
@@ -98,12 +92,28 @@ fn enter(p: &Prepared) -> std::io::Result<()> {
     }
 }
 
+const OVERLAYFS_SUPER_MAGIC: libc::c_long = 0x794c_7630;
+
+fn on_overlayfs(dir: &Path) -> Result<bool> {
+    let path = cpath(dir)?;
+    let mut st: libc::statfs = unsafe { std::mem::zeroed() };
+    crate::check(unsafe { libc::statfs(path.as_ptr(), &mut st) })?;
+    Ok(st.f_type as libc::c_long == OVERLAYFS_SUPER_MAGIC)
+}
+
 pub async fn run(spec: RootfsRun) -> Result<Vec<String>> {
     if unsafe { libc::geteuid() } != 0 {
         bail!("running steps inside an image rootfs requires root (or a microVM backend)");
     }
     for d in [&spec.upper, &spec.work, &spec.merged] {
         std::fs::create_dir_all(d)?;
+    }
+    // The kernel refuses an overlayfs upper dir on overlayfs (EINVAL), which is what a container's root is.
+    if on_overlayfs(&spec.upper)? {
+        bail!(
+            "{} is on overlayfs, which can't hold the upper dir of an image step; mount a volume (ext4, xfs or tmpfs) at $ACROPOLIS_HOME/work",
+            spec.upper.display()
+        );
     }
     let lower: Vec<String> = spec
         .lower

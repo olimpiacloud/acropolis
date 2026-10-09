@@ -10,6 +10,8 @@ Run one build per container. The container needs `CAP_SYS_ADMIN` (mount and PID 
 docker run --rm --privileged -v "$PWD:/app:ro" -v /tmp/out:/out acropolis-builder build /app --oci /out/image.tar --info /out/info.json
 ```
 
+`--privileged` is not required: `--cap-add SYS_ADMIN --security-opt seccomp=unconfined --security-opt apparmor=unconfined` is enough (tested; Docker's default AppArmor profile denies `mount`). `$ACROPOLIS_HOME/work` must not be on overlayfs, because the kernel refuses an overlay upper dir there; the image declares it as a `VOLUME`, so a plain `docker run` already gets one. Other runtimes need a volume, `emptyDir` or tmpfs at `/var/lib/acropolis/work`; without it image steps fail with `is on overlayfs` (exit 75).
+
 Operator settings come from the container environment (`ACROPOLIS_CACHE_KEY`, `ACROPOLIS_BUILD_TIMEOUT`, `ACROPOLIS_STEP_TIMEOUT`, `ACROPOLIS_BUILD_ID`, registry credentials); app settings come from `-e` and the app's `railpack.json` or `acropolis.json`.
 
 Base images are pinned by digest; the comment at the top of the Dockerfile shows how to bump them. The Rust image must match `rust-version` in `Cargo.toml` (the minimum the locked dependencies accept). The build uses BuildKit cache mounts and `--locked`; the release profile already strips the binary.

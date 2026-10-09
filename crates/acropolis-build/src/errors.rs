@@ -49,6 +49,7 @@ const INFRA: &[&str] = &[
     "get blob sha256:",
     "falling back to mirror",
     "build interrupted",
+    "is on overlayfs",
 ];
 
 const CONFIG: &[&str] = &[
