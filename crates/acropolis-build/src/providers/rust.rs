@@ -278,18 +278,10 @@ pub fn plan(app: &RustApp, env: &Env, dir: &Path, name: &str) -> Result<Plan> {
         &[],
     );
     b.step("copy-base", "copy base layers", Action::CopyBase, &["base"]);
-    b.step(
-        "rust",
-        format!("rust {}", app.rust.spec),
-        Action::Toolchain {
-            tool: "rust".into(),
-            spec: app.rust.spec.clone(),
-            parts: vec![],
-        },
-        &[],
-    );
-    let mut deps = vec!["rust"];
-    let run_env = crate::user_env(env);
+    // Without a pinned version (Railpack's default or the edition minimum), crates that need a newer rustc would
+    // fail (sqlx 0.9 needs 1.94): the toolchain step waits for the vendored crates and raises the version to the
+    // highest `rust-version` among them.
+    let raise = app.has_lock && matches!(app.rust.source.as_str(), "default" | "Cargo.toml edition");
     if app.has_lock {
         let lock = std::fs::read(dir.join("Cargo.lock"))?;
         b.step(
@@ -300,6 +292,20 @@ pub fn plan(app: &RustApp, env: &Env, dir: &Path, name: &str) -> Result<Plan> {
             },
             &[],
         );
+    }
+    b.step(
+        "rust",
+        format!("rust {}", app.rust.spec),
+        Action::Toolchain {
+            tool: "rust".into(),
+            spec: app.rust.spec.clone(),
+            parts: if raise { vec!["raise-to-crates".into()] } else { vec![] },
+        },
+        if raise { &["crates"] } else { &[] },
+    );
+    let mut deps = vec!["rust"];
+    let run_env = crate::user_env(env);
+    if app.has_lock {
         deps.push("crates");
     } else {
         b.plan

@@ -1107,7 +1107,26 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                     }))
                 }
                 "rust" => {
-                    let release = acropolis_cargo::resolve(fetcher, spec, &[]).await?;
+                    let mut release = acropolis_cargo::resolve(fetcher, spec, &[]).await?;
+                    if parts.iter().any(|p| p == "raise-to-crates") {
+                        let text = String::from_utf8(read_app_file(&ctx.opts.app_dir, "Cargo.lock")?)
+                            .context("Cargo.lock is not UTF-8")?;
+                        let lock = acropolis_cargo::parse_lock(&text)?;
+                        let vendor_dir = ctx.cache_path("cargo-vendor");
+                        let need =
+                            tokio::task::spawn_blocking(move || acropolis_cargo::max_rust_version(&lock, &vendor_dir))
+                                .await?;
+                        let have = acropolis_cargo::parse_rust_version(&release.version);
+                        if let Some((a, b, c)) = need
+                            && have.is_some_and(|h| h < (a, b, c))
+                        {
+                            acropolis_events::log(
+                                &step.id,
+                                format!("the locked crates need rustc {a}.{b}.{c}: using it instead of {spec}"),
+                            );
+                            release = acropolis_cargo::resolve(fetcher, &format!("{a}.{b}.{c}"), &[]).await?;
+                        }
+                    }
                     let dest = toolchain_dir(&ctx.opts.home, &format!("rust-{}", release.version))?;
                     let marker = dest.join(".acropolis-complete");
                     if !marker.exists() {

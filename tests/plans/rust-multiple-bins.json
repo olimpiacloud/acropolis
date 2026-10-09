@@ -46,23 +46,27 @@
   },
   {
    "action": {
-    "kind": "toolchain",
-    "parts": [],
-    "spec": "1.84.0",
-    "tool": "rust"
-   },
-   "deps": [],
-   "id": "rust",
-   "name": "rust 1.84.0"
-  },
-  {
-   "action": {
     "kind": "cargo-vendor",
     "lockfile_sha256": "2606ceecfd610662ca4b22ec6ea0db41cc7d3f2d7fa0e651b7d05cbb8e04d4eb"
    },
    "deps": [],
    "id": "crates",
    "name": "fetch crates"
+  },
+  {
+   "action": {
+    "kind": "toolchain",
+    "parts": [
+     "raise-to-crates"
+    ],
+    "spec": "1.84.0",
+    "tool": "rust"
+   },
+   "deps": [
+    "crates"
+   ],
+   "id": "rust",
+   "name": "rust 1.84.0"
   },
   {
    "action": {

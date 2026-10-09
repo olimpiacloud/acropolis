@@ -186,6 +186,29 @@ pub fn parse_lock(text: &str) -> Result<CargoLock> {
     toml::from_str(text).context("parsing Cargo.lock")
 }
 
+/// `major.minor.patch` of a `rust-version` field (`1.94` means `1.94.0`).
+pub fn parse_rust_version(v: &str) -> Option<(u64, u64, u64)> {
+    let mut it = v.trim().split('.').map(|p| p.parse::<u64>().ok());
+    let major = it.next()??;
+    let minor = it.next().flatten().unwrap_or(0);
+    let patch = it.next().flatten().unwrap_or(0);
+    Some((major, minor, patch))
+}
+
+/// Highest `rust-version` declared by the locked crates.io packages vendored in `vendor_dir` (see `vendor`).
+pub fn max_rust_version(lock: &CargoLock, vendor_dir: &Path) -> Option<(u64, u64, u64)> {
+    lock.packages
+        .iter()
+        .filter(|p| p.source.is_some())
+        .filter_map(|p| {
+            let text = std::fs::read_to_string(vendor_dir.join(format!("{}-{}", p.name, p.version)).join("Cargo.toml"))
+                .ok()?;
+            let manifest: toml::Value = toml::from_str(&text).ok()?;
+            parse_rust_version(manifest.get("package")?.get("rust-version")?.as_str()?)
+        })
+        .max()
+}
+
 pub const CRATES_IO: &str = "registry+https://github.com/rust-lang/crates.io-index";
 pub const CRATES_IO_SPARSE: &str = "sparse+https://index.crates.io/";
 
@@ -438,5 +461,32 @@ mod tests {
         std::fs::write(app.join("real"), "1.80.0\n").unwrap();
         std::os::unix::fs::symlink("real", app.join("rust-toolchain")).unwrap();
         assert_eq!(toolchain_file(&app).as_deref(), Some("1.80.0"));
+    }
+
+    #[test]
+    fn highest_rust_version_of_the_locked_crates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lock = parse_lock(
+            "[[package]]\nname = \"app\"\nversion = \"0.1.0\"\n\n\
+             [[package]]\nname = \"sqlx\"\nversion = \"0.9.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n\n\
+             [[package]]\nname = \"serde\"\nversion = \"1.0.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n\n\
+             [[package]]\nname = \"old\"\nversion = \"1.0.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n",
+        )
+        .unwrap();
+        for (dir, manifest) in [
+            ("sqlx-0.9.0", "[package]\nname = \"sqlx\"\nrust-version = \"1.94\"\n"),
+            (
+                "serde-1.0.0",
+                "[package]\nname = \"serde\"\nrust-version = \"1.61.0\"\n",
+            ),
+            ("old-1.0.0", "[package]\nname = \"old\"\n"),
+            ("stale-9.9.9", "[package]\nname = \"stale\"\nrust-version = \"1.99\"\n"),
+        ] {
+            std::fs::create_dir_all(tmp.path().join(dir)).unwrap();
+            std::fs::write(tmp.path().join(dir).join("Cargo.toml"), manifest).unwrap();
+        }
+        assert_eq!(max_rust_version(&lock, tmp.path()), Some((1, 94, 0)));
+        assert_eq!(parse_rust_version("1.85.1"), Some((1, 85, 1)));
+        assert!(parse_rust_version("stable").is_none());
     }
 }
