@@ -13,6 +13,10 @@ All notable changes to Acropolis. The format follows [Keep a Changelog](https://
 - A package tarball that names a file twice (`package/./dist/cjs/index.js` and `package/dist/cjs/index.js` in `@rollup/plugin-alias` 5.1.1, a dependency of nitropack) puts it once in the layer, with the contents of the last entry, as extracting it would.
 - Every layer is checked while it is written: a path that appears twice (file, dir or link) fails the build with exit 70 instead of producing an image overlay2 refuses. Layers cached by 0.3.0 are not reused (the layer cache is keyed by the release).
 
+### Security
+
+- rustls 0.23.46 (RUSTSEC-2026-0346, RUSTSEC-2026-0347 and the Brotli certificate decompression advisory against 0.23.45).
+
 ### Tests
 
 - The e2e checks every layer of every image (base layers too) for duplicate paths, the check `docker pull` makes on overlay2, since the local Docker uses the containerd image store. `tests/suites/layers` builds a bun and an npm app with a nested dependency.
