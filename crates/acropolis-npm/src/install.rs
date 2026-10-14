@@ -529,8 +529,29 @@ fn set_header_mode(h: &mut [u8], mode: u32) {
     h[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
 }
 
-/// Re-roots one package tarball under `prefix/p.path`, streaming each file straight into the fragment.
-fn package_fragment(prefix: &str, p: &InstallPackage, blob: &Path) -> Result<(Vec<u8>, Bins)> {
+/// Re-roots one package tarball under `prefix/p.path`, streaming each file straight into the fragment. Dirs in `head`
+/// (ancestors of other packages, which the layer's head already has) are not written again.
+fn package_fragment(prefix: &str, p: &InstallPackage, blob: &Path, head: &BTreeSet<String>) -> Result<(Vec<u8>, Bins)> {
+    let (frag, bins, seen) = fragment_pass(prefix, p, blob, head, None)?;
+    if seen.values().all(|&n| n == 1) {
+        return Ok((frag, bins));
+    }
+    // A tarball can name one file twice (`package/./dist/x.js` and `package/dist/x.js` in @rollup/plugin-alias
+    // 5.1.1). Extracting it the last one wins, so a second pass writes only each file's last entry.
+    let (frag, bins, _) = fragment_pass(prefix, p, blob, head, Some(&seen))?;
+    Ok((frag, bins))
+}
+
+/// One pass over the tarball; `last` (entries per file, from a previous pass) keeps only each file's last entry.
+/// Returns the fragment, the package's bins and how many entries each file had.
+fn fragment_pass(
+    prefix: &str,
+    p: &InstallPackage,
+    blob: &Path,
+    head: &BTreeSet<String>,
+    last: Option<&HashMap<String, usize>>,
+) -> Result<(Vec<u8>, Bins, HashMap<String, usize>)> {
+    let mut seen: HashMap<String, usize> = HashMap::new();
     let mut tr = open_tarball(blob)?;
     let compressed = std::fs::metadata(blob).map_or(0, |m| m.len() as usize);
     // Pre-size for typical packages, but never trust a large blob before its entries are checked against the cap.
@@ -541,7 +562,9 @@ fn package_fragment(prefix: &str, p: &InstallPackage, blob: &Path) -> Result<(Ve
     } else {
         format!("{prefix}/{}", p.path)
     };
-    tw.dir(&root, 0o755)?;
+    if !head.contains(&root) {
+        tw.dir(&root, 0o755)?;
+    }
     dirs.insert(root.clone());
     // Bins may only be known once package.json is read, so remember each file's header to fix its mode later.
     let mut files: Vec<TarEntry> = Vec::new();
@@ -567,11 +590,17 @@ fn package_fragment(prefix: &str, p: &InstallPackage, blob: &Path) -> Result<(Ve
         for part in &parts[..upto] {
             acc.push('/');
             acc.push_str(part);
-            if dirs.insert(acc.clone()) {
+            if !head.contains(&acc) && dirs.insert(acc.clone()) {
                 tw.dir(&acc, 0o755)?;
             }
         }
         if e.kind == Kind::Dir {
+            continue;
+        }
+        let n = seen.entry(rel.clone()).or_default();
+        *n += 1;
+        let n = *n;
+        if last.is_some_and(|l| l.get(&rel) != Some(&n)) {
             continue;
         }
         let path = format!("{root}/{rel}");
@@ -602,7 +631,7 @@ fn package_fragment(prefix: &str, p: &InstallPackage, blob: &Path) -> Result<(Ve
             set_header_mode(&mut buf[at..at + 512], 0o755);
         }
     }
-    Ok((take(tw), bins))
+    Ok((take(tw), bins, seen))
 }
 
 fn take(mut tw: TarWriter<Vec<u8>>) -> Vec<u8> {
@@ -717,7 +746,7 @@ pub fn stream_node_modules(
             .par_iter()
             .map(|p| {
                 let blob = blob_for(tarballs, p).ok_or_else(|| anyhow!("missing tarball for {}", p.path))?;
-                let (frag, bins) = package_fragment(prefix, p, &blob.path)
+                let (frag, bins) = package_fragment(prefix, p, &blob.path, &head_dirs)
                     .with_context(|| format!("reading tarball of {}", p.path))?;
                 Ok((p.path.clone(), frag, bins))
             })
@@ -1201,7 +1230,7 @@ mod tests {
             optional: false,
             dev: false,
         };
-        let (frag, bins) = package_fragment("app", &p, &path).unwrap();
+        let (frag, bins) = package_fragment("app", &p, &path, &BTreeSet::new()).unwrap();
         let _ = std::fs::remove_file(&path);
         assert_eq!(bins, vec![("x".to_string(), "cli.js".to_string())]);
         for h in frag.chunks(512).filter(|h| h.len() == 512 && &h[257..262] == b"ustar") {
@@ -1221,5 +1250,118 @@ mod tests {
         assert_eq!(files["app/node_modules/x/lib/a.js"].1, 0o644);
         assert_eq!(files["app/node_modules/x/lib"].0, Kind::Dir);
         assert!(files.contains_key("app/node_modules/x/package.json"));
+    }
+
+    #[test]
+    fn tarball_naming_a_file_twice_keeps_the_last_entry() {
+        let mut tw = TarWriter::new(Vec::new());
+        tw.file_bytes("package/package.json", 0o644, br#"{"name":"alias"}"#)
+            .unwrap();
+        tw.file_bytes("package/./dist/index.js", 0o644, b"first").unwrap();
+        tw.file_bytes("package/dist/index.js", 0o644, b"last").unwrap();
+        let path = temp_file("twice.tar", &tw.finish().unwrap());
+        let p = InstallPackage {
+            path: "node_modules/alias".into(),
+            name: "alias".into(),
+            version: "1.0.0".into(),
+            source: Source::Registry {
+                url: String::new(),
+                integrity: None,
+            },
+            bins: None,
+            has_install_script: false,
+            optional: false,
+            dev: false,
+        };
+        let (frag, _) = package_fragment("app", &p, &path, &BTreeSet::new()).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let mut tr = TarReader::new(&frag[..]);
+        let mut got = Vec::new();
+        while let Some(e) = tr.next_entry().unwrap() {
+            if e.path == "app/node_modules/alias/dist/index.js" {
+                got.push(tr.read_data().unwrap());
+            }
+        }
+        assert_eq!(got, [b"last".to_vec()]);
+    }
+
+    #[test]
+    fn node_modules_layer_has_each_path_once() {
+        // A scoped package with its own nested node_modules (`@ai-sdk/provider-utils-v5` in a bun lockfile): its
+        // dir is an ancestor of the nested package, so the head and its fragment both wrote it, and overlay2's
+        // `docker pull` refused the layer.
+        let tarball = |name: &str, extra: &[&str]| {
+            let mut tw = TarWriter::new(Vec::new());
+            tw.dir("package/", 0o755).unwrap();
+            tw.file_bytes(
+                "package/package.json",
+                0o644,
+                format!(r#"{{"name":"{name}"}}"#).as_bytes(),
+            )
+            .unwrap();
+            for d in extra {
+                tw.dir(&format!("package/{d}"), 0o755).unwrap();
+            }
+            temp_file(&format!("dup-{}.tar", name.replace('/', "-")), &tw.finish().unwrap())
+        };
+        let pkg = |path: &str, name: &str| InstallPackage {
+            path: path.into(),
+            name: name.into(),
+            version: "1.0.0".into(),
+            source: Source::Registry {
+                url: format!("https://registry.example/{name}"),
+                integrity: None,
+            },
+            bins: None,
+            has_install_script: false,
+            optional: false,
+            dev: false,
+        };
+        let plan = InstallPlan {
+            packages: vec![
+                pkg("node_modules/@s/utils", "@s/utils"),
+                pkg("node_modules/@s/utils/node_modules/dep", "dep"),
+                pkg("node_modules/@s/core", "@s/core"),
+            ],
+            ..Default::default()
+        };
+        let mut tarballs = Tarballs::new();
+        for (name, extra) in [("@s/utils", &["node_modules"][..]), ("dep", &[]), ("@s/core", &[])] {
+            let path = tarball(name, extra);
+            tarballs.insert(
+                format!("https://registry.example/{name}"),
+                StoredBlob {
+                    integrity: acropolis_store::sha256_bytes(b""),
+                    sha256: acropolis_store::sha256_bytes(b""),
+                    size: 0,
+                    path,
+                },
+            );
+        }
+        let mut layer = Vec::new();
+        stream_node_modules(&plan, &tarballs, "app", |_| true, &mut |f| {
+            layer.extend(f);
+            Ok(())
+        })
+        .unwrap();
+        for b in tarballs.values() {
+            let _ = std::fs::remove_file(&b.path);
+        }
+        let mut guard = acropolis_oci::tar::PathGuard::default();
+        guard.feed(&layer).unwrap();
+        guard.finish().unwrap();
+        let mut tr = TarReader::new(&layer[..]);
+        let mut paths = Vec::new();
+        while let Some(e) = tr.next_entry().unwrap() {
+            paths.push(e.path.trim_end_matches('/').to_string());
+        }
+        for p in [
+            "app/node_modules/@s",
+            "app/node_modules/@s/utils",
+            "app/node_modules/@s/utils/node_modules",
+            "app/node_modules/@s/utils/node_modules/dep",
+        ] {
+            assert_eq!(paths.iter().filter(|x| *x == p).count(), 1, "{p} in {paths:?}");
+        }
     }
 }

@@ -1,0 +1,6 @@
+{
+  "name": "bun-nested-deps",
+  "private": true,
+  "scripts": { "start": "node index.js" },
+  "dependencies": { "debug": "4.3.4", "ms": "2.0.0" }
+}

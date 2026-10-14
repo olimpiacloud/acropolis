@@ -277,7 +277,12 @@ impl BunLock {
                 }
                 continue;
             }
-            let source = if e.spec.starts_with("github:") || e.spec.starts_with("git+") || e.spec.starts_with("git:") {
+            // `bundled: true`: the files ship inside the parent's tarball (`bundleDependencies`), like npm's
+            // `inBundle`. Extracting them again wrote every file of the package twice.
+            let bundled = e.meta.get("bundled").and_then(|b| b.as_bool()).unwrap_or(false);
+            let source = if bundled {
+                Source::Bundled
+            } else if e.spec.starts_with("github:") || e.spec.starts_with("git+") || e.spec.starts_with("git:") {
                 Source::Git { url: e.spec.clone() }
             } else if e.spec.starts_with("http://") || e.spec.starts_with("https://") {
                 Source::Registry {
@@ -475,5 +480,38 @@ mod tests {
             links(false),
             [("node_modules/@ws/a".to_string(), "../../packages/a".to_string())]
         );
+    }
+
+    #[test]
+    fn bundled_entries_come_from_the_parent_tarball() {
+        // `@parcel/watcher-wasm` ships `napi-wasm` in its own tarball (bundleDependencies); fetching and extracting
+        // it as well put each of its files twice in the node_modules layer.
+        let lock = BunLock::parse(
+            r#"{
+  "lockfileVersion": 1,
+  "workspaces": { "": { "name": "app", "dependencies": { "@parcel/watcher-wasm": "2.5.1" } } },
+  "packages": {
+    "@parcel/watcher-wasm": ["@parcel/watcher-wasm@2.5.1", "", { "dependencies": { "napi-wasm": "^1.1.0" } }, "sha512-RJxlQQLkaMMIuWRozy+z2vEqbaQlCuaCgVZIUCzQLYggY22LZbP5Y1+ia+FD724Ids9e+XIyOLXLrLgQSHIthw=="],
+    "@parcel/watcher-wasm/napi-wasm": ["napi-wasm@1.1.3", "", { "bundled": true }, "sha512-h/4nMGsHjZDCYmQVNODIrYACVJ+I9KItbG+0si6W/jSjdA9JbWDoU4LLeMXVcEQGHjttI2tuXqDrbGF7qkUHHg=="],
+  }
+}"#,
+        )
+        .unwrap();
+        let plan = lock
+            .install_plan(&InstallOptions {
+                include_dev: false,
+                include_optional: true,
+                platform: Default::default(),
+            })
+            .unwrap();
+        let source = |path: &str| &plan.packages.iter().find(|p| p.path == path).unwrap().source;
+        assert!(matches!(
+            source("node_modules/@parcel/watcher-wasm"),
+            Source::Registry { .. }
+        ));
+        assert!(matches!(
+            source("node_modules/@parcel/watcher-wasm/node_modules/napi-wasm"),
+            Source::Bundled
+        ));
     }
 }

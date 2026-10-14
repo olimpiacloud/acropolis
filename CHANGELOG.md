@@ -4,6 +4,19 @@ All notable changes to Acropolis. The format follows [Keep a Changelog](https://
 
 ## [Unreleased]
 
+## [0.3.1](https://github.com/olimpiacloud/acropolis/releases/tag/v0.3.1) - 2026-10-14
+
+### Images
+
+- The `node_modules` layer no longer has a dir twice: a package with nested dependencies (`node_modules/debug/node_modules/ms`, `@mastra/core`, `@types/pg` in a bun app) was written as its own dir and again as the ancestor of the nested one. `docker load` and the containerd image store accept that, but `docker pull` on overlay2 fails with `duplicates of file paths not supported`.
+- bun packages marked `bundled` (shipped inside their parent's tarball, like `napi-wasm` in `@parcel/watcher-wasm`) are no longer extracted a second time: every one of their files was in the layer twice. The new layer check caught it in Railpack's `node-tanstack-start`.
+- A package tarball that names a file twice (`package/./dist/cjs/index.js` and `package/dist/cjs/index.js` in `@rollup/plugin-alias` 5.1.1, a dependency of nitropack) puts it once in the layer, with the contents of the last entry, as extracting it would.
+- Every layer is checked while it is written: a path that appears twice (file, dir or link) fails the build with exit 70 instead of producing an image overlay2 refuses. Layers cached by 0.3.0 are not reused (the layer cache is keyed by the release).
+
+### Tests
+
+- The e2e checks every layer of every image (base layers too) for duplicate paths, the check `docker pull` makes on overlay2, since the local Docker uses the containerd image store. `tests/suites/layers` builds a bun and an npm app with a nested dependency.
+
 ## [0.3.0](https://github.com/olimpiacloud/acropolis/releases/tag/v0.3.0) - 2026-10-13
 
 ### Builds

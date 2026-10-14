@@ -238,6 +238,144 @@ pub struct Entry {
     pub gid: u32,
 }
 
+/// A path that a tar stream already had. Kept as its own type so the build classifies it as an Acropolis bug.
+#[derive(Debug)]
+pub struct DuplicatePath(pub String);
+
+impl std::fmt::Display for DuplicatePath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "layer has the path {} twice (overlay2 refuses such layers)", self.0)
+    }
+}
+
+impl std::error::Error for DuplicatePath {}
+
+/// Follows a tar stream fed in arbitrary chunks and fails on the second entry with the same path (files, dirs and
+/// links alike, `./x`, `x` and `x/` being the same path). PAX and GNU long names are resolved; zero blocks are skipped
+/// rather than taken as the end, so a stream made of several fragments is checked whole.
+#[derive(Default)]
+pub struct PathGuard {
+    seen: std::collections::HashSet<String>,
+    block: Vec<u8>,
+    skip: u64,
+    meta: Option<(u8, usize)>,
+    meta_buf: Vec<u8>,
+    long_name: Option<String>,
+    pax_size: Option<u64>,
+}
+
+impl PathGuard {
+    pub fn feed(&mut self, mut buf: &[u8]) -> io::Result<()> {
+        while !buf.is_empty() {
+            if self.skip > 0 {
+                let n = (self.skip as usize).min(buf.len());
+                if let Some((_, want)) = self.meta
+                    && self.meta_buf.len() < want
+                {
+                    let take = n.min(want - self.meta_buf.len());
+                    self.meta_buf.extend_from_slice(&buf[..take]);
+                }
+                self.skip -= n as u64;
+                buf = &buf[n..];
+                if self.skip == 0
+                    && let Some((flag, _)) = self.meta.take()
+                {
+                    let data = std::mem::take(&mut self.meta_buf);
+                    match flag {
+                        b'x' => {
+                            for (k, v) in parse_pax(&data) {
+                                match k.as_str() {
+                                    "path" => self.long_name = Some(v),
+                                    "size" => self.pax_size = v.parse().ok(),
+                                    _ => {}
+                                }
+                            }
+                        }
+                        b'L' => self.long_name = Some(cstr(&data)),
+                        _ => {}
+                    }
+                }
+                continue;
+            }
+            let n = (BLOCK - self.block.len()).min(buf.len());
+            self.block.extend_from_slice(&buf[..n]);
+            buf = &buf[n..];
+            if self.block.len() == BLOCK {
+                let h = std::mem::take(&mut self.block);
+                self.header(&h)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The stream must end on an entry boundary.
+    pub fn finish(&self) -> io::Result<()> {
+        if self.skip > 0 || !self.block.is_empty() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "layer tar ends mid-entry"));
+        }
+        Ok(())
+    }
+
+    fn header(&mut self, h: &[u8]) -> io::Result<()> {
+        if h.iter().all(|&b| b == 0) {
+            return Ok(());
+        }
+        let flag = h[156];
+        let size = parse_num(&h[124..136]);
+        let size = if matches!(flag, b'x' | b'g' | b'L' | b'K') {
+            size
+        } else {
+            self.pax_size.take().unwrap_or(size)
+        };
+        let padded = size.next_multiple_of(BLOCK as u64);
+        match flag {
+            b'x' | b'g' | b'L' | b'K' => {
+                if size > MAX_META {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("tar metadata entry of {size} bytes"),
+                    ));
+                }
+                self.meta = Some((flag, size as usize));
+                self.skip = padded;
+                if padded == 0 {
+                    self.meta = None;
+                }
+                return Ok(());
+            }
+            _ => {}
+        }
+        let path = self.long_name.take().unwrap_or_else(|| {
+            let name = cstr(&h[0..100]);
+            let prefix = if &h[257..262] == b"ustar" {
+                cstr(&h[345..500])
+            } else {
+                String::new()
+            };
+            if prefix.is_empty() {
+                name
+            } else {
+                format!("{prefix}/{name}")
+            }
+        });
+        let mut key = path.as_str();
+        while let Some(rest) = key.strip_prefix("./") {
+            key = rest;
+        }
+        let key = key.trim_start_matches('/').trim_end_matches('/');
+        if !self.seen.insert(key.to_string()) {
+            return Err(io::Error::other(DuplicatePath(key.to_string())));
+        }
+        // Directories, links and devices carry no data whatever their size field says.
+        self.skip = match flag {
+            b'0' | 0 | b'7' => padded,
+            b'1' | b'2' | b'3' | b'4' | b'5' | b'6' => 0,
+            _ => padded,
+        };
+        Ok(())
+    }
+}
+
 pub struct TarReader<R: Read> {
     inner: R,
     remaining: u64,
@@ -532,5 +670,54 @@ mod tests {
             w.finish().unwrap()
         };
         assert_eq!(build(), build());
+    }
+
+    #[test]
+    fn guard_rejects_a_path_twice_across_fragments_and_spellings() {
+        let check = |entries: &dyn Fn(&mut TarWriter<Vec<u8>>)| {
+            let mut w = TarWriter::new(Vec::new());
+            entries(&mut w);
+            // Fed in odd-sized chunks, with a finished fragment's zero blocks in the middle of the stream.
+            let mut stream = w.finish().unwrap();
+            let mut w2 = TarWriter::new(Vec::new());
+            w2.file_bytes("tail", 0o644, b"t").unwrap();
+            stream.extend(w2.into_inner());
+            let mut g = PathGuard::default();
+            let r = stream.chunks(77).try_for_each(|c| g.feed(c));
+            r.and_then(|()| g.finish()).map_err(|e| e.to_string())
+        };
+        let long = format!("app/node_modules/{}/index.js", "x".repeat(300));
+        assert!(
+            check(&|w| {
+                w.dir("app/a", 0o755).unwrap();
+                w.file_bytes("app/a/f", 0o644, &[1; 700]).unwrap();
+                w.file_bytes(&long, 0o644, b"x").unwrap();
+                w.symlink("app/b", "a").unwrap();
+            })
+            .is_ok()
+        );
+        assert!(
+            check(&|w| {
+                w.dir("app/a", 0o755).unwrap();
+                w.dir("app/a/", 0o755).unwrap();
+            })
+            .unwrap_err()
+            .contains("app/a twice")
+        );
+        assert!(
+            check(&|w| {
+                w.file_bytes(&long, 0o644, &[2; 513]).unwrap();
+                w.symlink(&long, "y").unwrap();
+            })
+            .unwrap_err()
+            .contains("twice")
+        );
+        assert!(
+            check(&|w| {
+                w.file_bytes("./tail", 0o644, b"x").unwrap();
+            })
+            .unwrap_err()
+            .contains("tail twice")
+        );
     }
 }

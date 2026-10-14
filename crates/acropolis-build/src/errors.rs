@@ -81,6 +81,17 @@ const CONFIG: &[&str] = &[
 ];
 
 pub fn classify(err: &anyhow::Error) -> ErrorClass {
+    // A layer with a path twice is Acropolis's fault whatever the path says (it may contain "not found").
+    if format!("{err:#}").contains("(overlay2 refuses such layers)")
+        || err.chain().any(|e| {
+            e.downcast_ref::<acropolis_oci::tar::DuplicatePath>().is_some()
+                || e.downcast_ref::<std::io::Error>()
+                    .and_then(|io| io.get_ref())
+                    .is_some_and(|inner| inner.is::<acropolis_oci::tar::DuplicatePath>())
+        })
+    {
+        return ErrorClass::Internal;
+    }
     if let Some(cf) = err
         .chain()
         .find_map(|e| e.downcast_ref::<acropolis_exec::CommandFailed>())
@@ -159,5 +170,12 @@ mod tests {
             ErrorClass::User
         );
         assert_eq!(classify(&failed(137, "")), ErrorClass::Infra);
+        // A duplicate layer path is an Acropolis bug (exit 70), even when the path reads like a config error.
+        let dup = anyhow::Error::new(std::io::Error::other(acropolis_oci::tar::DuplicatePath(
+            "app/not found in/x".into(),
+        )))
+        .context("step layer-deps (layer node_modules)");
+        assert_eq!(classify(&dup), ErrorClass::Internal);
+        assert_eq!(classify(&dup).exit_code(), 70);
     }
 }

@@ -296,6 +296,17 @@ fn image_size(reference: &str) -> Result<(f64, String)> {
 }
 
 pub fn image_size_at(registry: &str, repo_tag: &str) -> Result<(f64, String)> {
+    let (v, digest) = manifest_at(registry, repo_tag)?;
+    let size: u64 = v["layers"]
+        .as_array()
+        .map(|l| l.iter().filter_map(|x| x["size"].as_u64()).sum())
+        .unwrap_or(0)
+        + v["config"]["size"].as_u64().unwrap_or(0);
+    Ok((size as f64 / 1e6, digest))
+}
+
+/// The amd64 image manifest of `repo:tag` in a plain-http registry, and the digest the registry gave for the tag.
+pub fn manifest_at(registry: &str, repo_tag: &str) -> Result<(serde_json::Value, String)> {
     let (repo, tag) = repo_tag.rsplit_once(':').context("bad reference")?;
     let accept = "application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json";
     let url = format!("http://{registry}/v2/{repo}/manifests/{tag}");
@@ -325,12 +336,7 @@ pub fn image_size_at(registry: &str, repo_tag: &str) -> Result<(f64, String)> {
             &url,
         ]))?)?;
     }
-    let size: u64 = v["layers"]
-        .as_array()
-        .map(|l| l.iter().filter_map(|x| x["size"].as_u64()).sum())
-        .unwrap_or(0)
-        + v["config"]["size"].as_u64().unwrap_or(0);
-    Ok((size as f64 / 1e6, digest))
+    Ok((v, digest))
 }
 
 fn verify(app: &AppSpec, reference: &str) -> Result<()> {
