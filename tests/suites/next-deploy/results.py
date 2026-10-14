@@ -40,8 +40,9 @@ with open(out, "w") as fh:
     for t in tests:
         e = by_file.get(t)
         if e is None:
-            lines = [l for l in run_log.splitlines() if t in l][-5:]
-            started = any(l.startswith(f"Starting {t}") for l in lines)
+            mentions = [l for l in run_log.splitlines() if t in l]
+            lines = mentions[-5:]
+            started = any(l.startswith(f"Starting {t}") for l in mentions)
             row = {"example": t, "case": 0, "status": "fail" if started else "skip", "build_s": 0.0, "total_s": 0.0,
                    "detail": ("no test report: " if started else "not run in deploy mode: ") + " | ".join(lines)[:1500]}
         else:

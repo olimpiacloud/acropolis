@@ -46,16 +46,24 @@ if (!pkg.scripts.start) {
   echo "=== acropolis build ($(date -u +%FT%TZ))"
   echo "app env: ${app_env[*]%%=*}"
 } > .adapter-build.log
-# Diagnostics for every deployment, failed ones too, next to the run's results.
-keep_logs() {
-  [ -n "${NEXT_DEPLOY_BUILDS:-}" ] || return 0
-  local keep
-  keep="$(dirname "$NEXT_DEPLOY_BUILDS")/apps/$id"
-  mkdir -p "$keep"
-  cp package.json .acropolis-info.json .adapter-build.log "$keep/" 2>/dev/null || true
-  docker history --no-trunc --format '{{.Size}}\t{{.CreatedBy}}' "$image" > "$keep/layers.tsv" 2>/dev/null || true
+# Diagnostics for every deployment, failed ones too, next to the run's results. A failed deploy gets no URL, so the
+# harness never calls cleanup.sh for it: drop its container and image here.
+on_exit() {
+  local code=$?
+  if [ -n "${NEXT_DEPLOY_BUILDS:-}" ]; then
+    local keep
+    keep="$(dirname "$NEXT_DEPLOY_BUILDS")/apps/$id"
+    mkdir -p "$keep"
+    cp package.json .acropolis-info.json .adapter-build.log "$keep/" 2>/dev/null || true
+    docker history --no-trunc --format '{{.Size}}\t{{.CreatedBy}}' "$image" > "$keep/layers.tsv" 2>/dev/null || true
+  fi
+  if [ "$code" != 0 ]; then
+    docker rm -f "$id" >/dev/null 2>&1 || true
+    docker rmi "$image" >/dev/null 2>&1 || true
+    rm -f .acropolis-image.tar
+  fi
 }
-trap keep_logs EXIT
+trap on_exit EXIT
 start=$(date +%s.%N)
 # Every test app is built once: a per-app cache would only fill the disk (~0.5 GB of node_modules each). The store
 # (tarballs, toolchains) is still shared.

@@ -51,17 +51,22 @@ if [ ! -f packages/next/dist/server/next.js ]; then
   rm -rf "$tmp"
 fi
 # jest's `roots` name workspace packages that are not checked out.
-grep -o "<rootDir>/\.\./packages/[^']*" jest.config.js | sed 's#<rootDir>/\.\./##' | xargs -r mkdir -p
+{ grep -o "<rootDir>/\.\./packages/[^']*" jest.config.js || true; } | sed 's#<rootDir>/\.\./##' | xargs -r mkdir -p
 [ -e node_modules/next ] || ln -s ../packages/next node_modules/next
 # The browser build this checkout's Playwright pins (a no-op when it is already there).
 node_modules/.bin/playwright install chromium-headless-shell >&2 2>/dev/null || node_modules/.bin/playwright install chromium >&2
+test_files() { find "$@" \( -name '*.test.ts' -o -name '*.test.tsx' -o -name '*.test.js' \) | LC_ALL=C sort; }
 if [ $# -eq 0 ]; then
   # A deterministic spread over test/e2e/app-dir: every k-th test file of the sorted list.
-  mapfile -t all < <(find test/e2e/app-dir -name '*.test.ts' -o -name '*.test.tsx' -o -name '*.test.js' | LC_ALL=C sort)
+  mapfile -t all < <(test_files test/e2e/app-dir)
   n="${SAMPLE:-40}"
   step=$(( (${#all[@]} + n - 1) / n ))
   set --
   for ((i = 0; i < ${#all[@]}; i += step)); do set -- "$@" "${all[i]}"; done
+else
+  # Directories become their test files: results are per file.
+  mapfile -t all < <(test_files "$@")
+  set -- "${all[@]}"
 fi
 
 rev=$(git -C "$repo" rev-parse --short HEAD)

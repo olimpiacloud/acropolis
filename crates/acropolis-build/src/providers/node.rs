@@ -793,17 +793,11 @@ fn apply_member(plan: &mut Plan, app: &NodeApp, rel: &str) {
     if !deps.is_empty() {
         plan.facts.insert("workspace-deps".into(), deps.join(" "));
     }
-    // Without a node-modules layer (yarn berry runs its own install in the tree) the packages live in the work dir:
-    // the member's and the root's node_modules (or the PnP files) have to come along with the sources.
-    let tree_modules = !plan.steps.iter().any(|s| {
-        matches!(
-            s.action,
-            Action::Layer {
-                from: LayerFrom::NodeModules { .. },
-                ..
-            }
-        )
-    });
+    // When the package manager installs in the tree itself (yarn berry; no npm-fetch step) the packages live in the
+    // work dir: the member's and the root's node_modules (or the PnP files) have to come along with the sources.
+    // Plans with npm-fetch layer production node_modules on their own (`layer-deps`), so the work dir's
+    // (development) ones must stay out.
+    let tree_modules = !plan.steps.iter().any(|s| matches!(s.action, Action::NpmFetch { .. }));
     let mut whole_tree = false;
     let mut extra_layers: Vec<(String, String)> = Vec::new();
     for s in plan.steps.iter_mut() {
@@ -846,7 +840,7 @@ fn apply_member(plan: &mut Plan, app: &NodeApp, rel: &str) {
         let mut items: Vec<(String, String)> = vec![("package.json".into(), "package.json".into())];
         items.extend(deps.iter().map(|d| (d.clone(), d.clone())));
         if tree_modules {
-            let mut tree = vec!["node_modules", ".pnp.cjs", ".pnp.loader.mjs"];
+            let mut tree = vec!["node_modules", ".pnp.cjs", ".pnp.js", ".pnp.loader.mjs"];
             let linker = std::fs::read_to_string(app.root.join(".yarnrc.yml")).unwrap_or_default();
             if !linker.lines().any(|l| {
                 l.trim()

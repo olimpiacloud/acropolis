@@ -270,11 +270,18 @@ fn tsconfig_refs(dir: &Path) -> Vec<(String, bool)> {
             .filter_map(|s| s.as_str())
         {
             let dir = alias.split('*').next().unwrap_or("").trim_end_matches('/');
+            // `inside` normalizes it and decides: a target in the member is covered by the member itself, one out of
+            // the root makes the whole list `["."]`.
             let joined = Path::new(base).join(dir);
             let joined = joined.to_string_lossy();
-            if joined.starts_with("../") || joined.starts_with("./../") || joined == ".." {
-                out.push((format!("./{joined}"), false));
-            }
+            out.push((
+                if joined.starts_with('/') {
+                    joined.into_owned()
+                } else {
+                    format!("./{joined}")
+                },
+                false,
+            ));
         }
         for t in targets {
             let relative = t.starts_with("./") || t.starts_with("../") || t == "." || t == "..";
@@ -400,6 +407,20 @@ mod tests {
                 r#"{"compilerOptions": {"paths": {"@shared/*": ["../../shared/*"]}}}"#
             ),
             ["apps/web", "package.json", "packages/ui", "shared"]
+        );
+        assert_eq!(
+            web(
+                pj,
+                r#"{"compilerOptions": {"paths": {"@shared/*": ["./../../shared/*"], "@/*": ["./src/*"]}}}"#
+            ),
+            ["apps/web", "package.json", "packages/ui", "shared"]
+        );
+        assert_eq!(
+            web(
+                pj,
+                r#"{"compilerOptions": {"baseUrl": "src", "paths": {"@x/*": ["../../../../x/*"]}}}"#
+            ),
+            ["."]
         );
         let pj = r#"{"name": "web", "scripts": {"build": "cp -r ../../shared dist", "start": "node dist/index.js"}}"#;
         assert_eq!(web(pj, "{}"), ["."]);

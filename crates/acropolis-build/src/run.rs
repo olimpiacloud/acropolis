@@ -842,38 +842,35 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                             && (!want.corepack || d.join("lib/node_modules/corepack").is_dir())
                             && (!want.headers || d.join("include/node").is_dir())
                     };
-                    let base = toolchain_dir(&ctx.opts.home, &format!("node-{version}"))?;
                     let p = acropolis_toolchain::node::Parts {
                         npm: true,
                         corepack: want.corepack,
                         headers: true,
                     };
-                    let dest = if !base.join(".acropolis-complete").exists() || complete(&base) {
-                        base
-                    } else {
-                        let suffix = if p.corepack { "+corepack" } else { "" };
-                        toolchain_dir(&ctx.opts.home, &format!("node-{version}+npm+headers{suffix}"))?
-                    };
-                    if complete(&dest) {
-                        return Ok(Out::Tool(Installed {
-                            name: "node".into(),
-                            version,
-                            bin_dir: dest.join("bin"),
-                            root: dest,
-                            archive: None,
-                        }));
+                    let suffix = if p.corepack { "+corepack" } else { "" };
+                    let candidates = [
+                        toolchain_dir(&ctx.opts.home, &format!("node-{version}"))?,
+                        toolchain_dir(&ctx.opts.home, &format!("node-{version}+npm+headers{suffix}"))?,
+                    ];
+                    for dest in candidates {
+                        if !complete(&dest) && !dest.join(".acropolis-complete").exists() {
+                            let tmp = staging(&dest);
+                            acropolis_toolchain::node::install(fetcher, &version, &tmp, p).await?;
+                            publish(&tmp, &dest)?;
+                            acropolis_events::log(&step.id, format!("node {version}"));
+                        }
+                        // Another build may have published this dir first with fewer parts: then try the next one.
+                        if complete(&dest) {
+                            return Ok(Out::Tool(Installed {
+                                name: "node".into(),
+                                version,
+                                bin_dir: dest.join("bin"),
+                                root: dest,
+                                archive: None,
+                            }));
+                        }
                     }
-                    let tmp = staging(&dest);
-                    acropolis_toolchain::node::install(fetcher, &version, &tmp, p).await?;
-                    publish(&tmp, &dest)?;
-                    acropolis_events::log(&step.id, format!("node {version}"));
-                    Ok(Out::Tool(Installed {
-                        name: "node".into(),
-                        version,
-                        bin_dir: dest.join("bin"),
-                        root: dest,
-                        archive: None,
-                    }))
+                    bail!("node {version}: no toolchain dir with the requested parts ({parts:?})")
                 }
                 "go" => {
                     let version = acropolis_toolchain::go::resolve(fetcher, spec).await?;
