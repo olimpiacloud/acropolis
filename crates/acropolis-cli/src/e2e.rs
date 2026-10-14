@@ -630,10 +630,17 @@ fn check_layer_paths(registry: &str, repo_tag: &str) -> Result<()> {
             .spawn()?;
         let checked = acropolis_oci::layer::verify_unique_paths(media, curl.stdout.take().unwrap());
         let status = curl.wait()?;
-        checked.with_context(|| format!("layer {digest} of {repo_tag}"))?;
-        if !status.success() {
+        // A duplicate stops the read early and curl then dies of SIGPIPE: the duplicate is the finding. Any other
+        // read error after a failed fetch (truncated stream, bad zstd frame) is the fetch's fault.
+        let duplicate = checked
+            .as_ref()
+            .err()
+            .and_then(|e| e.get_ref())
+            .is_some_and(|inner| inner.is::<acropolis_oci::tar::DuplicatePath>());
+        if !duplicate && !status.success() {
             bail!("fetching layer {digest} of {repo_tag}: curl {status}");
         }
+        checked.with_context(|| format!("layer {digest} of {repo_tag}"))?;
     }
     Ok(())
 }

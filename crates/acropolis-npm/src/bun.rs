@@ -281,6 +281,10 @@ impl BunLock {
             // `inBundle`. Extracting them again wrote every file of the package twice.
             let bundled = e.meta.get("bundled").and_then(|b| b.as_bool()).unwrap_or(false);
             let source = if bundled {
+                // Their bins still get `.bin` links: the files come with the parent, the lock lists the bins.
+                if !bins.is_empty() {
+                    plan.known_bins.insert(path.clone(), bins.clone());
+                }
                 Source::Bundled
             } else if e.spec.starts_with("github:") || e.spec.starts_with("git+") || e.spec.starts_with("git:") {
                 Source::Git { url: e.spec.clone() }
@@ -492,7 +496,7 @@ mod tests {
   "workspaces": { "": { "name": "app", "dependencies": { "@parcel/watcher-wasm": "2.5.1" } } },
   "packages": {
     "@parcel/watcher-wasm": ["@parcel/watcher-wasm@2.5.1", "", { "dependencies": { "napi-wasm": "^1.1.0" } }, "sha512-RJxlQQLkaMMIuWRozy+z2vEqbaQlCuaCgVZIUCzQLYggY22LZbP5Y1+ia+FD724Ids9e+XIyOLXLrLgQSHIthw=="],
-    "@parcel/watcher-wasm/napi-wasm": ["napi-wasm@1.1.3", "", { "bundled": true }, "sha512-h/4nMGsHjZDCYmQVNODIrYACVJ+I9KItbG+0si6W/jSjdA9JbWDoU4LLeMXVcEQGHjttI2tuXqDrbGF7qkUHHg=="],
+    "@parcel/watcher-wasm/napi-wasm": ["napi-wasm@1.1.3", "", { "bundled": true, "bin": { "napi": "cli.js" } }, "sha512-h/4nMGsHjZDCYmQVNODIrYACVJ+I9KItbG+0si6W/jSjdA9JbWDoU4LLeMXVcEQGHjttI2tuXqDrbGF7qkUHHg=="],
   }
 }"#,
         )
@@ -513,5 +517,9 @@ mod tests {
             source("node_modules/@parcel/watcher-wasm/node_modules/napi-wasm"),
             Source::Bundled
         ));
+        assert_eq!(
+            plan.known_bins["node_modules/@parcel/watcher-wasm/node_modules/napi-wasm"],
+            [("napi".to_string(), "cli.js".to_string())]
+        );
     }
 }

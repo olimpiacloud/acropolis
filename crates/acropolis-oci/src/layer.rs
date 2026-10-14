@@ -207,7 +207,7 @@ pub fn verify_unique_paths(media_type: &str, blob: impl io::Read) -> io::Result<
         loop {
             let n = r.read(&mut buf)?;
             if n == 0 {
-                return Ok(());
+                return guard.finish();
             }
             guard.feed(&buf[..n])?;
         }
