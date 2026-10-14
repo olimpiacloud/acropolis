@@ -36,6 +36,23 @@ struct HttpCheck {
     expected_output: Option<StrOrVec>,
 }
 
+/// One check, or several against the same container (TechEmpower's `/json` and `/plaintext`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum HttpChecks {
+    One(HttpCheck),
+    Many(Vec<HttpCheck>),
+}
+
+impl HttpChecks {
+    fn list(&self) -> Vec<HttpCheck> {
+        match self {
+            HttpChecks::One(c) => vec![c.clone()],
+            HttpChecks::Many(v) => v.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TestCase {
@@ -50,11 +67,14 @@ struct TestCase {
     #[serde(default)]
     should_fail: bool,
     #[serde(default)]
-    http_check: Option<HttpCheck>,
+    http_check: Option<HttpChecks>,
     #[serde(default)]
     stderr_allowed: bool,
     #[serde(default)]
     skip_arch: Vec<String>,
+    /// Builds this subdirectory of the example (a workspace member) instead of its root.
+    #[serde(default)]
+    directory: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -300,19 +320,19 @@ fn run_output_check(image: &str, case: &TestCase, network: Option<&str>, name: &
     }
 }
 
-fn run_http_check(image: &str, case: &TestCase, hc: &HttpCheck, network: Option<&str>, name: &str) -> Result<()> {
-    let port = {
-        let l = std::net::TcpListener::bind("127.0.0.1:0")?;
-        l.local_addr()?.port()
-    };
-    let mut args: Vec<String> = vec![
-        "run".into(),
-        "-d".into(),
-        "--name".into(),
-        name.into(),
-        "-p".into(),
-        format!("127.0.0.1:{port}:{}", hc.internal_port),
-    ];
+fn run_http_check(image: &str, case: &TestCase, checks: &[HttpCheck], network: Option<&str>, name: &str) -> Result<()> {
+    let mut ports: BTreeMap<u16, u16> = BTreeMap::new();
+    for hc in checks {
+        if let std::collections::btree_map::Entry::Vacant(e) = ports.entry(hc.internal_port) {
+            let l = std::net::TcpListener::bind("127.0.0.1:0")?;
+            e.insert(l.local_addr()?.port());
+        }
+    }
+    let mut args: Vec<String> = vec!["run".into(), "-d".into(), "--name".into(), name.into()];
+    for (internal, host) in &ports {
+        args.push("-p".into());
+        args.push(format!("127.0.0.1:{host}:{internal}"));
+    }
     if let Some(n) = network {
         args.push("--network".into());
         args.push(n.into());
@@ -324,12 +344,20 @@ fn run_http_check(image: &str, case: &TestCase, hc: &HttpCheck, network: Option<
     args.push(image.into());
     let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     docker(&refs)?;
+    let result = checks
+        .iter()
+        .try_for_each(|hc| http_check_once(hc, ports[&hc.internal_port], name));
+    let _ = docker(&["rm", "-f", name]);
+    result
+}
+
+fn http_check_once(hc: &HttpCheck, port: u16, name: &str) -> Result<()> {
     let path = hc.path.clone().unwrap_or_else(|| "/".into());
     let want = hc.expected.unwrap_or(200);
     let url = format!("http://127.0.0.1:{port}{path}");
     let deadline = Instant::now() + Duration::from_secs(35);
     let mut last;
-    let result = loop {
+    loop {
         let out = Command::new("curl")
             .args(["-s", "-m", "3", "-w", "\n%{http_code}", &url])
             .output()?;
@@ -345,13 +373,13 @@ fn run_http_check(image: &str, case: &TestCase, hc: &HttpCheck, network: Option<
                 .filter(|e| !body.contains(e.as_str()))
                 .collect();
             if missing.is_empty() {
-                break Ok(());
+                return Ok(());
             }
-            break Err(anyhow::anyhow!(
-                "body missing {:?}: {}",
+            bail!(
+                "{url}: body missing {:?}: {}",
                 missing,
                 body.chars().take(400).collect::<String>()
-            ));
+            );
         }
         last = format!(
             "status {} body {}",
@@ -372,15 +400,13 @@ fn run_http_check(image: &str, case: &TestCase, hc: &HttpCheck, network: Option<
                     )
                 })
                 .unwrap_or_default();
-            break Err(anyhow::anyhow!(
+            bail!(
                 "http check {url} wanted {want}, last {last}\nlogs: {}",
                 head_tail(&logs, 1500, 1500)
-            ));
+            );
         }
         std::thread::sleep(Duration::from_millis(200));
-    };
-    let _ = docker(&["rm", "-f", name]);
-    result
+    }
 }
 
 fn head_tail(text: &str, head: usize, tail: usize) -> String {
@@ -409,6 +435,10 @@ fn run_case(cfg: &E2eConfig, example: &str, idx: usize, case: &TestCase) -> Case
     };
     if case.http_check.is_some() && case.expected_output.is_some() {
         r.detail = "invalid test.json: httpCheck and expectedOutput are mutually exclusive".into();
+        return r;
+    }
+    if case.http_check.as_ref().is_some_and(|h| h.list().is_empty()) {
+        r.detail = "invalid test.json: empty httpCheck list".into();
         return r;
     }
     let arch = if std::env::consts::ARCH == "x86_64" {
@@ -445,7 +475,26 @@ fn run_case(cfg: &E2eConfig, example: &str, idx: usize, case: &TestCase) -> Case
         cmd.env("ACROPOLIS_ROOTFS", home.join("rootfs"));
     }
 
-    cmd.arg("--home").arg(&home).arg("build").arg(&dir).arg("-t").arg(&tag);
+    let build_dir = match &case.directory {
+        Some(d)
+            if Path::new(d)
+                .components()
+                .all(|c| matches!(c, std::path::Component::Normal(_))) =>
+        {
+            dir.join(d)
+        }
+        Some(d) => {
+            r.detail = format!("invalid test.json: directory {d:?} must be a relative path inside the example");
+            return r;
+        }
+        None => dir.clone(),
+    };
+    cmd.arg("--home")
+        .arg(&home)
+        .arg("build")
+        .arg(&build_dir)
+        .arg("-t")
+        .arg(&tag);
     let oci = std::env::var_os("E2E_OCI").map(|_| cfg.home.join(format!("oci-{example}-{idx}.tar")));
     if let Some(o) = &oci {
         cmd.arg("--oci").arg(o);
@@ -549,7 +598,7 @@ fn run_case(cfg: &E2eConfig, example: &str, idx: usize, case: &TestCase) -> Case
     let res = match pulled {
         Err(e) => Err(e),
         Ok(_) => match &case.http_check {
-            Some(hc) => run_http_check(&tag, case, hc, network.as_deref(), &name),
+            Some(hc) => run_http_check(&tag, case, &hc.list(), network.as_deref(), &name),
             None => run_output_check(&tag, case, network.as_deref(), &name),
         },
     };

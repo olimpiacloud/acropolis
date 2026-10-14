@@ -147,6 +147,7 @@ enum Command {
 }
 
 fn build_info(
+    dir: &std::path::Path,
     plan: Option<&acropolis_build::Plan>,
     res: Option<&acropolis_build::BuildResult>,
     err: Option<&anyhow::Error>,
@@ -190,6 +191,8 @@ fn build_info(
         "planHash": plan.map(|p| p.hash.clone()),
         "manifestDigest": res.map(|r| r.manifest_digest.clone()),
         "warnings": plan.map(|p| p.warnings.clone()).unwrap_or_default(),
+        // Relative to the workspace root (the built dir minus `metadata.workspace-member`); `["."]` when unknown.
+        "watchPaths": plan.map_or_else(|| vec![".".to_string()], |p| acropolis_build::watch::watch_paths(dir, p)),
         "success": res.is_some(),
         "error": err.map(|e| format!("{e:#}")),
         // Same class and exit code as the process: lets a caller pick retry (infra) or fallback (config) from the file.
@@ -492,6 +495,7 @@ async fn run(cli: Cli) -> Result<()> {
                     };
                     let plan = built.as_ref().ok().map(|(p, _)| p).or(replanned.as_ref());
                     serde_json::to_vec_pretty(&build_info(
+                        &dir,
                         plan,
                         built.as_ref().ok().map(|(_, r)| r),
                         built.as_ref().err(),

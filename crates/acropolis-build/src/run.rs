@@ -828,9 +828,33 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                 "node" => {
                     let fuzzy = acropolis_semver::fuzzy_version(spec);
                     let version = acropolis_toolchain::node::resolve(fetcher, &fuzzy).await?;
-                    let dest = toolchain_dir(&ctx.opts.home, &format!("node-{version}"))?;
-                    let marker = dest.join(".acropolis-complete");
-                    if marker.exists() {
+                    let want = acropolis_toolchain::node::Parts {
+                        npm: parts.iter().any(|p| p == "npm"),
+                        corepack: parts.iter().any(|p| p == "corepack"),
+                        headers: parts.iter().any(|p| p == "headers"),
+                    };
+                    // Install scripts need npm's node-gyp: a dir that a plan asking for fewer parts (yarn berry
+                    // only wants the headers) installed first must not serve it. Missing parts go to a sibling dir
+                    // instead of rewriting one that running builds may be using.
+                    let complete = |d: &Path| {
+                        d.join(".acropolis-complete").exists()
+                            && (!want.npm || d.join("lib/node_modules/npm").is_dir())
+                            && (!want.corepack || d.join("lib/node_modules/corepack").is_dir())
+                            && (!want.headers || d.join("include/node").is_dir())
+                    };
+                    let base = toolchain_dir(&ctx.opts.home, &format!("node-{version}"))?;
+                    let p = acropolis_toolchain::node::Parts {
+                        npm: true,
+                        corepack: want.corepack,
+                        headers: true,
+                    };
+                    let dest = if !base.join(".acropolis-complete").exists() || complete(&base) {
+                        base
+                    } else {
+                        let suffix = if p.corepack { "+corepack" } else { "" };
+                        toolchain_dir(&ctx.opts.home, &format!("node-{version}+npm+headers{suffix}"))?
+                    };
+                    if complete(&dest) {
                         return Ok(Out::Tool(Installed {
                             name: "node".into(),
                             version,
@@ -839,11 +863,6 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                             archive: None,
                         }));
                     }
-                    let p = acropolis_toolchain::node::Parts {
-                        npm: parts.iter().any(|p| p == "npm"),
-                        corepack: parts.iter().any(|p| p == "corepack"),
-                        headers: parts.iter().any(|p| p == "headers"),
-                    };
                     let tmp = staging(&dest);
                     acropolis_toolchain::node::install(fetcher, &version, &tmp, p).await?;
                     publish(&tmp, &dest)?;
@@ -1259,7 +1278,9 @@ async fn run_step(ctx: &Arc<Ctx>, step: &Step) -> Result<Out> {
                 })
                 .collect();
             versions.sort();
-            let key = format!("{} {}", step.hash, versions.join(" "));
+            // The release salts the key: a newer install plan (more links, other paths) must not reuse the tree an
+            // older Acropolis materialized from the same lockfile.
+            let key = format!("{} {} {}", env!("CARGO_PKG_VERSION"), step.hash, versions.join(" "));
             if let Some(cache_dir) = &reuse {
                 if restore_node_modules(cache_dir, &root, &key) {
                     std::fs::write(cache_dir.join("nm.key"), &key)?;
@@ -2522,8 +2543,11 @@ fn layer_cache_key(ctx: &Arc<Ctx>, step: &Step, from: &LayerFrom) -> Option<Stri
         .collect();
     versions.sort();
     let o = ctx.opts.layer;
+    // The release salts it like the node_modules reuse key: the files of a node-modules layer come from the install
+    // plan, which a newer Acropolis may compute differently for the same step.
     let text = format!(
-        "v1 {} {:?} {} {} {}",
+        "v1 {} {} {:?} {} {} {}",
+        env!("CARGO_PKG_VERSION"),
         step.hash,
         o.compression,
         o.level,

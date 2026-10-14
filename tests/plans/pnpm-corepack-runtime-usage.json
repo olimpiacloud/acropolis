@@ -91,7 +91,7 @@
     "dev": false,
     "kind": "npm-fetch",
     "lockfile": "",
-    "lockfile_sha256": "",
+    "lockfile_sha256": "manifests:768a55fc71dc331ec60cb29d460cd63b6fccd00b215552b82c3092cc87c8c87b",
     "manager": "npm"
    },
    "deps": [],

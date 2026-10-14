@@ -232,12 +232,17 @@ impl BunLock {
             if opts.include_optional {
                 deps.extend(obj_map(e.meta.get("optionalDependencies")).into_keys());
             }
+            // bun installs every member's devDependencies; a member reached from the app needs its own at build
+            // time too (a tsconfig `extends`, a bundler plugin, types).
             if let Some(ws) = e.spec.strip_prefix("workspace:")
                 && let Some(w) = self.workspaces.iter().find(|w| w.path == ws)
             {
                 deps.extend(w.deps.keys().cloned());
                 if opts.include_optional {
                     deps.extend(w.optional.keys().cloned());
+                }
+                if opts.include_dev {
+                    deps.extend(w.dev.keys().cloned());
                 }
             }
             for d in deps {
@@ -430,6 +435,45 @@ mod tests {
                 .iter()
                 .any(|d| d.dir == "packages/pkg-a/node_modules"
                     && d.packages == ["packages/pkg-a/node_modules/abbrev"])
+        );
+    }
+
+    #[test]
+    fn member_dev_dependencies_are_linked_only_for_the_build() {
+        // apps/app -> @ws/a (dependency) -> @ws/tsconfig (devDependency of @ws/a, its tsconfig `extends` target).
+        let lock = BunLock::parse(include_str!(
+            "../../../tests/suites/workspaces/bun-member-dev-tsconfig/bun.lock"
+        ))
+        .unwrap();
+        let scope = ["".to_string(), "apps/app".to_string()];
+        let links = |include_dev| {
+            let plan = lock
+                .install_plan_scoped(
+                    &InstallOptions {
+                        include_dev,
+                        include_optional: true,
+                        platform: Default::default(),
+                    },
+                    &scope,
+                )
+                .unwrap();
+            let mut links: Vec<(String, String)> = plan.links.into_iter().map(|l| (l.path, l.target)).collect();
+            links.sort();
+            links
+        };
+        assert_eq!(
+            links(true),
+            [
+                ("node_modules/@ws/a".to_string(), "../../packages/a".to_string()),
+                (
+                    "node_modules/@ws/tsconfig".to_string(),
+                    "../../packages/tsconfig".to_string()
+                ),
+            ]
+        );
+        assert_eq!(
+            links(false),
+            [("node_modules/@ws/a".to_string(), "../../packages/a".to_string())]
         );
     }
 }

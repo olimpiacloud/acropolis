@@ -1,0 +1,39 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "ws-dev-tsconfig",
+    },
+    "apps/app": {
+      "name": "app",
+      "version": "0.0.0",
+      "dependencies": {
+        "@ws/a": "workspace:*",
+      },
+      "devDependencies": {
+        "typescript": "5.9.3",
+      },
+    },
+    "packages/a": {
+      "name": "@ws/a",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@ws/tsconfig": "workspace:*",
+      },
+    },
+    "packages/tsconfig": {
+      "name": "@ws/tsconfig",
+      "version": "0.0.0",
+    },
+  },
+  "packages": {
+    "@ws/a": ["@ws/a@workspace:packages/a"],
+
+    "@ws/tsconfig": ["@ws/tsconfig@workspace:packages/tsconfig"],
+
+    "app": ["app@workspace:apps/app"],
+
+    "typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
+  }
+}

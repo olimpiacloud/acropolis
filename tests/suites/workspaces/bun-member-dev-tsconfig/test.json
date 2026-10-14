@@ -1,0 +1,6 @@
+[
+  {
+    "directory": "apps/app",
+    "expectedOutput": "hello from @ws/a (marker-bun-member-dev-tsconfig)"
+  }
+]

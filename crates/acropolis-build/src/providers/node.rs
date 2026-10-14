@@ -747,24 +747,25 @@ pub fn plan(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
     Ok(p)
 }
 
-fn workspace_deps(app: &NodeApp, rel: &str) -> Vec<String> {
-    let root_pj = crate::detect::read_package_json(&app.root).unwrap_or(Value::Null);
-    let members = crate::detect::workspace_members(&app.root, &root_pj);
+/// Workspace members that `rel` reaches through `keys` of its package.json, transitively, as root-relative dirs.
+pub(crate) fn workspace_deps(root: &std::path::Path, rel: &str, keys: &[&str]) -> Vec<String> {
+    let root_pj = crate::detect::read_package_json(root).unwrap_or(Value::Null);
+    let members = crate::detect::workspace_members(root, &root_pj);
     let names: Vec<(String, String)> = members
         .iter()
         .filter_map(|m| {
-            let pj = crate::detect::read_package_json(&app.root.join(m)).ok()?;
+            let pj = crate::detect::read_package_json(&root.join(m)).ok()?;
             Some((pj.get("name")?.as_str()?.to_string(), m.clone()))
         })
         .collect();
     let mut out: Vec<String> = Vec::new();
     let mut stack = vec![rel.to_string()];
     while let Some(dir) = stack.pop() {
-        let Ok(pj) = crate::detect::read_package_json(&app.root.join(&dir)) else {
+        let Ok(pj) = crate::detect::read_package_json(&root.join(&dir)) else {
             continue;
         };
-        for key in ["dependencies", "optionalDependencies"] {
-            for (dep, spec) in pj.get(key).and_then(|d| d.as_object()).into_iter().flatten() {
+        for key in keys {
+            for (dep, spec) in pj.get(*key).and_then(|d| d.as_object()).into_iter().flatten() {
                 let local = spec.as_str().map(|s| s.starts_with("workspace:")).unwrap_or(false)
                     || names.iter().any(|(n, _)| n == dep);
                 if !local {
@@ -788,10 +789,21 @@ fn apply_member(plan: &mut Plan, app: &NodeApp, rel: &str) {
     let depth = rel.split('/').filter(|c| !c.is_empty()).count();
     plan.context = Some(vec![".."; depth].join("/"));
     plan.facts.insert("workspace-member".into(), rel.to_string());
-    let deps = workspace_deps(app, rel);
+    let deps = workspace_deps(&app.root, rel, &["dependencies", "optionalDependencies"]);
     if !deps.is_empty() {
         plan.facts.insert("workspace-deps".into(), deps.join(" "));
     }
+    // Without a node-modules layer (yarn berry runs its own install in the tree) the packages live in the work dir:
+    // the member's and the root's node_modules (or the PnP files) have to come along with the sources.
+    let tree_modules = !plan.steps.iter().any(|s| {
+        matches!(
+            s.action,
+            Action::Layer {
+                from: LayerFrom::NodeModules { .. },
+                ..
+            }
+        )
+    });
     let mut whole_tree = false;
     let mut extra_layers: Vec<(String, String)> = Vec::new();
     for s in plan.steps.iter_mut() {
@@ -804,7 +816,7 @@ fn apply_member(plan: &mut Plan, app: &NodeApp, rel: &str) {
                 whole_tree = true;
                 *path = rel.to_string();
                 *dest = format!("app/{rel}");
-                if !exclude.iter().any(|e| e == "**/node_modules") {
+                if !tree_modules && !exclude.iter().any(|e| e == "**/node_modules") {
                     exclude.push("**/node_modules".into());
                 }
                 extra_layers.push((s.id.clone(), s.deps.first().cloned().unwrap_or_default()));
@@ -833,6 +845,18 @@ fn apply_member(plan: &mut Plan, app: &NodeApp, rel: &str) {
     for (layer_id, dep) in extra_layers {
         let mut items: Vec<(String, String)> = vec![("package.json".into(), "package.json".into())];
         items.extend(deps.iter().map(|d| (d.clone(), d.clone())));
+        if tree_modules {
+            let mut tree = vec!["node_modules", ".pnp.cjs", ".pnp.loader.mjs"];
+            let linker = std::fs::read_to_string(app.root.join(".yarnrc.yml")).unwrap_or_default();
+            if !linker.lines().any(|l| {
+                l.trim()
+                    .strip_prefix("nodeLinker:")
+                    .is_some_and(|v| matches!(v.trim().trim_matches(['"', '\'']), "node-modules" | "pnpm"))
+            }) {
+                tree.push(".yarn");
+            }
+            items.extend(tree.into_iter().map(|p| (p.to_string(), p.to_string())));
+        }
         let id = format!("{layer_id}-workspace");
         let idx = plan
             .steps
@@ -920,7 +944,17 @@ fn plan_inner(app: &NodeApp, env: &Env, name: &str) -> Result<Plan> {
     let lockfile = app.lockfile.clone().unwrap_or_default();
     let lock_sha = if lockfile.is_empty() {
         b.plan.warnings.push("no lockfile: dependencies are resolved from the npm registry at build time, so the build is not reproducible".into());
-        String::new()
+        // The manifests stand in for the lockfile in the step hashes: without them two apps (or two versions of
+        // one app) would share the cached node_modules and their layer.
+        let root_pj = crate::detect::read_package_json(&app.root).unwrap_or(Value::Null);
+        let mut manifests = serde_json::to_vec(&root_pj)?;
+        for m in crate::detect::workspace_members(&app.root, &root_pj) {
+            manifests.extend(m.as_bytes());
+            manifests.extend(serde_json::to_vec(
+                &crate::detect::read_package_json(&app.root.join(&m)).unwrap_or(Value::Null),
+            )?);
+        }
+        format!("manifests:{}", acropolis_store::sha256_bytes(&manifests).hex())
     } else {
         acropolis_store::sha256_bytes(&std::fs::read(app.root.join(&lockfile))?).hex()
     };

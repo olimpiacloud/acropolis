@@ -32,7 +32,7 @@ mkdir -p "$EXT/bin"
 bin="$EXT/bin/acropolis-e2e-$rev-$stamp"
 cp target/"${PROFILE:-fast}"/acropolis "$bin"
 ls -t "$EXT"/bin/acropolis-e2e-* 2>/dev/null | tail -n +4 | xargs -r rm -f || true
-out="tests/results/railpack-e2e-$rev-$stamp.jsonl"
+out="tests/results/${SUITE:-railpack}-e2e-$rev-$stamp.jsonl"
 log="/tmp/acropolis-e2e-$stamp.log"
 ls -t /tmp/acropolis-e2e-*.log 2>/dev/null | tail -n +6 | xargs -r rm -f || true
 
