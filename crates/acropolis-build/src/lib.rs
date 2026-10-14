@@ -9,6 +9,7 @@ pub mod plan;
 pub mod providers;
 pub mod run;
 pub mod source;
+pub mod watch;
 
 use anyhow::Result;
 use std::path::Path;

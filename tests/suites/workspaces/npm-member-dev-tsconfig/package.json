@@ -1,0 +1,8 @@
+{
+  "name": "ws-dev-tsconfig",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ]
+}

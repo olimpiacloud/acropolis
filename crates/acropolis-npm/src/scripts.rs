@@ -127,7 +127,7 @@ pub fn policy_for(manager: &str, app_root: &Path, package_json: &Value, override
 fn pnpm_policy(app_root: &Path, package_json: &Value) -> Policy {
     let workspace: Value = std::fs::read_to_string(app_root.join("pnpm-workspace.yaml"))
         .ok()
-        .and_then(|t| serde_yaml::from_str(&t).ok())
+        .and_then(|t| serde_norway::from_str(&t).ok())
         .unwrap_or_default();
     let setting = |key: &str| {
         package_json

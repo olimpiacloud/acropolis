@@ -1,0 +1,6 @@
+[
+  {
+    "directory": "apps/app",
+    "expectedOutput": "hello from @ws/a (marker-pnpm-member-dev-tsconfig)"
+  }
+]

@@ -1,0 +1,74 @@
+diff --git a/test/lib/next-modes/next-deploy.ts b/test/lib/next-modes/next-deploy.ts
+index ebe8281..775b129 100644
+--- a/test/lib/next-modes/next-deploy.ts
++++ b/test/lib/next-modes/next-deploy.ts
+@@ -25,6 +25,11 @@ export class NextDeployInstance extends NextInstance {
+     super.setup(parentSpan)
+     await super.createTestDir({ parentSpan, skipInstall: true })
+ 
++    // Backport of the Next 16 custom deploy contract (NEXT_TEST_DEPLOY_SCRIPT_PATH, *_LOGS_*, *_CLEANUP_*).
++    if (process.env.NEXT_TEST_DEPLOY_SCRIPT_PATH) {
++      return this.deployUsingCustomScript()
++    }
++
+     await this.writeMirrorNpmrcIfNecessary()
+     // ensure Vercel CLI is installed
+     try {
+@@ -211,6 +216,57 @@ export class NextDeployInstance extends NextInstance {
+     return this._cliOutput || ''
+   }
+ 
++  private scriptEnv() {
++    return {
++      ...process.env,
++      NEXT_TEST_DIR: this.testDir,
++      ...(this._url ? { NEXT_TEST_DEPLOY_URL: this._url } : {}),
++      ...this.env,
++    }
++  }
++
++  private async deployUsingCustomScript() {
++    const deployment = execa(process.env.NEXT_TEST_DEPLOY_SCRIPT_PATH!, [], {
++      cwd: this.testDir,
++      env: this.scriptEnv(),
++      reject: false,
++    })
++    deployment.stderr?.pipe(process.stderr)
++    const deployRes = await deployment
++    if (deployRes.exitCode !== 0) {
++      throw new Error(
++        `Custom deploy script failed: ${deployRes.stdout} ${deployRes.stderr} (${deployRes.exitCode})`
++      )
++    }
++    this._url = deployRes.stdout.trim()
++    this._parsedUrl = new URL(this._url)
++    require('console').log(`Deployment URL: ${this._url}`)
++    const logsRes = await execa(
++      process.env.NEXT_TEST_DEPLOY_LOGS_SCRIPT_PATH!,
++      [],
++      { cwd: this.testDir, env: this.scriptEnv(), reject: false }
++    )
++    this._cliOutput = logsRes.stdout + logsRes.stderr
++    const buildId = this._cliOutput.match(/BUILD_ID: (.+)/)?.[1]?.trim()
++    if (!buildId) {
++      throw new Error(`Failed to get buildId from logs ${this._cliOutput}`)
++    }
++    this._buildId = buildId
++    require('console').log(`Got buildId: ${this._buildId}`)
++  }
++
++  public async destroy(): Promise<void> {
++    if (process.env.NEXT_TEST_CLEANUP_SCRIPT_PATH && this._url) {
++      await execa(process.env.NEXT_TEST_CLEANUP_SCRIPT_PATH, [], {
++        cwd: this.testDir,
++        env: this.scriptEnv(),
++        reject: false,
++        stdio: 'inherit',
++      })
++    }
++    return super.destroy()
++  }
++
+   public async start() {
+     // no-op as the deployment is created during setup()
+   }

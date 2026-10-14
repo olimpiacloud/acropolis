@@ -21,7 +21,7 @@ futures.workspace = true
 flate2.workspace = true
 rayon.workspace = true
 libc.workspace = true
-serde_yaml = "0.9"
+serde_norway = "0.9"
 json5.workspace = true
 acropolis-semver = { path = "../acropolis-semver" }
 semver.workspace = true

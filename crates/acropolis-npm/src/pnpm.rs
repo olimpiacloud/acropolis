@@ -4,7 +4,7 @@ use crate::install::{
 };
 use acropolis_store::Integrity;
 use anyhow::{Context, Result, bail};
-use serde_yaml::Value;
+use serde_norway::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::Path;
 
@@ -91,7 +91,7 @@ fn importer_of(v: &Value) -> Importer {
 
 impl PnpmLock {
     pub fn parse(text: &str) -> Result<Self> {
-        let root: Value = serde_yaml::from_str(text).context("parsing pnpm-lock.yaml")?;
+        let root: Value = serde_norway::from_str(text).context("parsing pnpm-lock.yaml")?;
         let version = root.get("lockfileVersion").and_then(s).unwrap_or_default();
         let major: u32 = version.split('.').next().and_then(|m| m.parse().ok()).unwrap_or(0);
         if major < 5 {
@@ -506,7 +506,7 @@ pub fn workspace_globs(app_dir: &Path) -> Vec<String> {
     let Ok(text) = std::fs::read_to_string(app_dir.join("pnpm-workspace.yaml")) else {
         return Vec::new();
     };
-    let Ok(v) = serde_yaml::from_str::<Value>(&text) else {
+    let Ok(v) = serde_norway::from_str::<Value>(&text) else {
         return Vec::new();
     };
     str_list(v.get("packages")).unwrap_or_default()

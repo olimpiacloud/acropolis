@@ -1,6 +1,6 @@
 use crate::hoist::{Graph, PkgId, hoist};
 use crate::install::{
-    BinDir, InstallOptions, InstallPackage, InstallPlan, Link, Source, parent_node_modules, platform_matches,
+    BinDir, InstallOptions, InstallPackage, InstallPlan, Link, Source, parent_node_modules, platform_matches_named,
     relative_link,
 };
 use crate::lockfile::bins_of;
@@ -139,7 +139,9 @@ impl<'a> Resolver<'a> {
                 let os = list(meta.get("os"));
                 let cpu = list(meta.get("cpu"));
                 let libc = list(meta.get("libc"));
-                if !platform_matches(&os, &cpu, &libc, &opts.platform) {
+                // The abbreviated packument carries `os` and `cpu` but not `libc`: the name tells
+                // `@next/swc-linux-x64-musl` (98 MB) apart from the glibc build the image runs.
+                if !platform_matches_named(&name, &os, &cpu, &libc, &opts.platform) {
                     if optional {
                         continue;
                     }

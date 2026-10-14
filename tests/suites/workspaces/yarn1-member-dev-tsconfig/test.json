@@ -1,0 +1,6 @@
+[
+  {
+    "directory": "apps/app",
+    "expectedOutput": "hello from @ws/a (marker-yarn1-member-dev-tsconfig)"
+  }
+]

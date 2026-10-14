@@ -4,6 +4,29 @@ All notable changes to Acropolis. The format follows [Keep a Changelog](https://
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/olimpiacloud/acropolis/releases/tag/v0.3.0) - 2026-10-13
+
+### Builds
+
+- Workspace members get the devDependencies of the members they depend on at build time (bun installed only their dependencies: a `tsconfig` `extends` of a devDependency member failed in Vite and Astro). The runtime image still gets only dependencies.
+- yarn berry workspace members keep the root `node_modules` (or the PnP files) in the image; they were left out and the app could not import its workspace dependencies.
+- A node toolchain that a plan asking for fewer parts installed first (yarn berry only takes the headers) no longer serves a plan that needs npm: install scripts failed with `node-gyp: not found` on a shared `--home`.
+- The reused `node_modules` of an app cache and the cached `node_modules` layers are keyed by the Acropolis release too: a newer install plan does not reuse what an older release built from the same lockfile.
+- Without a lockfile, glibc images no longer get the musl builds of native packages (`@next/swc-linux-x64-musl`, `@img/sharp-libvips-linuxmusl-x64`): the registry's abbreviated metadata has no `libc`, so the package name decides, as it already did with a lockfile.
+- Without a lockfile, the `package.json` files take the lockfile's place in the step hashes: two such apps on one `--home` (or one app after changing its dependencies) reused each other's cached `node_modules` layer, and ran with the wrong packages.
+
+### Output
+
+- `info.json` has `watchPaths`: the repo paths, relative to the workspace root, whose changes can change the image (the member, the workspace members it depends on, devDependencies included, and the root's lockfile, `package.json` and install/toolchain files). `["."]` when Acropolis cannot narrow it down.
+
+### Tests
+
+- New suites: workspace members with a devDependency member (bun, pnpm, npm, yarn 1 and berry), the Next.js deploy tests (`NEXT_TEST_MODE=deploy`, Next 15.5.27 and 16.4.0), TechEmpower FrameworkBenchmarks without their Dockerfiles, and the Heroku getting-started apps and Paketo samples. e2e cases can build a subdirectory (`directory`) and run several HTTP checks against one container.
+
+### Security
+
+- YAML (`pnpm-lock.yaml`, `pnpm-workspace.yaml`, `package.yaml`) is parsed with `serde_norway` instead of `serde_yaml`, whose `unsafe-libyaml` is unmaintained (RUSTSEC-2024-0449).
+
 ## [0.2.1](https://github.com/olimpiacloud/acropolis/releases/tag/v0.2.1) - 2026-10-09
 
 ### Packaging
