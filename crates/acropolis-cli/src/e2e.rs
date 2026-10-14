@@ -580,7 +580,10 @@ fn run_case(cfg: &E2eConfig, example: &str, idx: usize, case: &TestCase) -> Case
     r.image_mb = crate::bench::image_size_at(&host, tag.trim_start_matches(&format!("{}/", cfg.registry)))
         .ok()
         .map(|(mb, _)| (mb * 10.0).round() / 10.0);
-    let pulled = match &oci {
+    // The local Docker uses the containerd image store, which accepts a layer with a path twice; overlay2 (Docker
+    // without the containerd store, as on Olimpia's hosts) refuses it at pull time. Check every layer like it does.
+    let pulled = check_layer_paths(&host, tag.trim_start_matches(&format!("{}/", cfg.registry)));
+    let pulled = pulled.and_then(|()| match &oci {
         Some(o) => {
             remove_image(&tag);
             let loaded = docker(&["load", "-i", &o.to_string_lossy()]);
@@ -594,7 +597,7 @@ fn run_case(cfg: &E2eConfig, example: &str, idx: usize, case: &TestCase) -> Case
             })
         }
         None => docker(&["pull", "-q", &tag]),
-    };
+    });
     let res = match pulled {
         Err(e) => Err(e),
         Ok(_) => match &case.http_check {
@@ -611,6 +614,35 @@ fn run_case(cfg: &E2eConfig, example: &str, idx: usize, case: &TestCase) -> Case
         Err(e) => r.detail = format!("{e:#}"),
     }
     r
+}
+
+/// Every layer of `repo:tag` in the local registry, base layers included, checked for paths that appear twice.
+fn check_layer_paths(registry: &str, repo_tag: &str) -> Result<()> {
+    let (manifest, _) = crate::bench::manifest_at(registry, repo_tag)?;
+    let repo = repo_tag.rsplit_once(':').map_or(repo_tag, |(r, _)| r);
+    for layer in manifest["layers"].as_array().into_iter().flatten() {
+        let digest = layer["digest"].as_str().unwrap_or_default();
+        let media = layer["mediaType"].as_str().unwrap_or_default();
+        let mut curl = Command::new("curl")
+            .args(["-sf", &format!("http://{registry}/v2/{repo}/blobs/{digest}")])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?;
+        let checked = acropolis_oci::layer::verify_unique_paths(media, curl.stdout.take().unwrap());
+        let status = curl.wait()?;
+        // A duplicate stops the read early and curl then dies of SIGPIPE: the duplicate is the finding. Any other
+        // read error after a failed fetch (truncated stream, bad zstd frame) is the fetch's fault.
+        let duplicate = checked
+            .as_ref()
+            .err()
+            .and_then(|e| e.get_ref())
+            .is_some_and(|inner| inner.is::<acropolis_oci::tar::DuplicatePath>());
+        if !duplicate && !status.success() {
+            bail!("fetching layer {digest} of {repo_tag}: curl {status}");
+        }
+        checked.with_context(|| format!("layer {digest} of {repo_tag}"))?;
+    }
+    Ok(())
 }
 
 const MIN_FREE_BYTES: u64 = 6 << 30;

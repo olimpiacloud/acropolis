@@ -6,6 +6,6 @@ pub mod registry;
 pub mod tar;
 pub mod unpack;
 
-pub use layer::{Compression, Layer, LayerOptions, LayerWriter};
+pub use layer::{Compression, Layer, LayerOptions};
 pub use reference::Reference;
 pub use registry::{Registry, ResolvedImage};

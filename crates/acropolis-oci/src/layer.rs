@@ -1,10 +1,10 @@
-use crate::tar::TarWriter;
-use acropolis_store::{BlobWriter, HashingWriter, Integrity, Store};
+use crate::tar::PathGuard;
+use acropolis_store::{BlobWriter, Integrity, Store};
 use anyhow::Result;
 use flate2::Compression as GzLevel;
 use flate2::write::GzEncoder;
 use serde::{Deserialize, Serialize};
-use std::io::{self, BufWriter, Write};
+use std::io::{self, Write};
 use std::path::PathBuf;
 
 pub const MT_OCI_LAYER_GZIP: &str = "application/vnd.oci.image.layer.v1.tar+gzip";
@@ -49,46 +49,6 @@ pub struct Layer {
     pub comment: String,
 }
 
-pub enum Compressor<W: Write> {
-    Plain(W),
-    Gzip(GzEncoder<W>),
-    Zstd(zstd::stream::write::Encoder<'static, W>),
-}
-
-impl<W: Write> Write for Compressor<W> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        match self {
-            Compressor::Plain(w) => w.write(buf),
-            Compressor::Gzip(w) => w.write(buf),
-            Compressor::Zstd(w) => w.write(buf),
-        }
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        match self {
-            Compressor::Plain(w) => w.flush(),
-            Compressor::Gzip(w) => w.flush(),
-            Compressor::Zstd(w) => w.flush(),
-        }
-    }
-}
-
-impl<W: Write> Compressor<W> {
-    fn finish(self) -> io::Result<W> {
-        match self {
-            Compressor::Plain(w) => Ok(w),
-            Compressor::Gzip(w) => w.finish(),
-            Compressor::Zstd(w) => w.finish(),
-        }
-    }
-}
-
-pub struct LayerWriter<'s> {
-    tar: TarWriter<BufWriter<HashingWriter<Compressor<BlobWriter<'s>>>>>,
-    compression: Compression,
-    comment: String,
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct LayerOptions {
     pub compression: Compression,
@@ -103,57 +63,6 @@ impl Default for LayerOptions {
             level: 0,
             threads: 0,
         }
-    }
-}
-
-impl<'s> LayerWriter<'s> {
-    pub fn new(store: &'s Store, comment: impl Into<String>, opts: LayerOptions) -> Result<Self> {
-        let comment = comment.into();
-        let blob = store.writer(format!("layer {comment}"), None)?;
-        let comp = match opts.compression {
-            Compression::None => Compressor::Plain(blob),
-            Compression::Gzip => {
-                let level = if opts.level > 0 { opts.level as u32 } else { 6 };
-                Compressor::Gzip(GzEncoder::new(blob, GzLevel::new(level)))
-            }
-            Compression::Zstd => {
-                let level = if opts.level != 0 { opts.level } else { 3 };
-                let mut enc = zstd::stream::write::Encoder::new(blob, level)?;
-                if opts.threads > 1 {
-                    enc.multithread(opts.threads)?;
-                }
-                enc.include_checksum(false)?;
-                enc.include_contentsize(false)?;
-                Compressor::Zstd(enc)
-            }
-        };
-        let hashing = HashingWriter::new(comp);
-        Ok(LayerWriter {
-            tar: TarWriter::new(BufWriter::with_capacity(256 * 1024, hashing)),
-            compression: opts.compression,
-            comment,
-        })
-    }
-
-    pub fn tar(&mut self) -> &mut TarWriter<BufWriter<HashingWriter<Compressor<BlobWriter<'s>>>>> {
-        &mut self.tar
-    }
-
-    pub fn finish(self) -> Result<Layer> {
-        let buf = self.tar.finish()?;
-        let hashing = buf.into_inner().map_err(|e| e.into_error())?;
-        let (diff_id, uncompressed_size, comp) = hashing.finish();
-        let blob = comp.finish()?;
-        let stored = blob.commit()?;
-        Ok(Layer {
-            digest: stored.sha256.clone(),
-            diff_id,
-            size: stored.size,
-            uncompressed_size,
-            media_type: self.compression.media_type().to_string(),
-            path: stored.path,
-            comment: self.comment,
-        })
     }
 }
 
@@ -174,6 +83,8 @@ fn compress_chunk(data: &[u8], opts: &LayerOptions) -> io::Result<Option<Vec<u8>
     }
 }
 
+/// Every layer goes through here: the tar stream is checked as it is written, so no layer can carry a path twice
+/// (overlay2's `docker pull` refuses it with "duplicates of file paths not supported", `docker load` does not).
 pub struct LayerBuilder<'a> {
     blob: BlobWriter<'a>,
     diff: sha2::Sha256,
@@ -183,6 +94,7 @@ pub struct LayerBuilder<'a> {
     batch: usize,
     uncompressed_size: u64,
     comment: String,
+    guard: PathGuard,
 }
 
 const LAYER_CHUNK: usize = 1 << 20;
@@ -200,6 +112,7 @@ impl<'a> LayerBuilder<'a> {
             batch: (rayon::current_num_threads() * 2).max(2),
             uncompressed_size: 0,
             comment,
+            guard: PathGuard::default(),
         })
     }
 
@@ -234,6 +147,7 @@ impl<'a> LayerBuilder<'a> {
 
     pub fn finish(mut self) -> Result<Layer> {
         use sha2::Digest;
+        self.guard.finish()?;
         self.cur.extend_from_slice(&[0u8; 1024]);
         self.seal_chunk()?;
         self.flush_batch()?;
@@ -252,6 +166,7 @@ impl<'a> LayerBuilder<'a> {
 
 impl Write for LayerBuilder<'_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.guard.feed(buf)?;
         let mut rest = buf;
         while !rest.is_empty() {
             let room = LAYER_CHUNK.saturating_sub(self.cur.len()).max(1);
@@ -281,4 +196,49 @@ pub fn from_fragments(
         b.write_all(&f)?;
     }
     b.finish()
+}
+
+/// Reads a layer blob of `media_type` and fails on the first path it has twice: the check `docker pull` makes on
+/// overlay2, for images that did not come from this crate's writer (or to double-check it).
+pub fn verify_unique_paths(media_type: &str, blob: impl io::Read) -> io::Result<()> {
+    fn scan(mut r: impl io::Read) -> io::Result<()> {
+        let mut guard = PathGuard::default();
+        let mut buf = vec![0u8; 1 << 16];
+        loop {
+            let n = r.read(&mut buf)?;
+            if n == 0 {
+                return guard.finish();
+            }
+            guard.feed(&buf[..n])?;
+        }
+    }
+    if media_type.ends_with("+zstd") {
+        scan(zstd::stream::read::Decoder::new(blob)?)
+    } else if media_type.ends_with("gzip") {
+        scan(flate2::read::GzDecoder::new(blob))
+    } else {
+        scan(blob)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verify_reads_compressed_blobs_and_finds_the_duplicate() {
+        let mut w = crate::tar::TarWriter::new(Vec::new());
+        w.dir("app/node_modules/debug", 0o755).unwrap();
+        w.file_bytes("app/node_modules/debug/package.json", 0o644, b"{}")
+            .unwrap();
+        w.dir("app/node_modules/debug", 0o755).unwrap();
+        let tar = w.finish().unwrap();
+        let zst = zstd::bulk::compress(&tar, 3).unwrap();
+        let err = verify_unique_paths(MT_OCI_LAYER_ZSTD, &zst[..]).unwrap_err();
+        assert!(err.to_string().contains("app/node_modules/debug twice"), "{err}");
+        let mut gz = GzEncoder::new(Vec::new(), GzLevel::default());
+        gz.write_all(&tar[..tar.len() - 1536]).unwrap();
+        gz.write_all(&[0; 1024]).unwrap();
+        assert!(verify_unique_paths(MT_OCI_LAYER_GZIP, &gz.finish().unwrap()[..]).is_ok());
+    }
 }
