@@ -617,7 +617,7 @@ fn pnpm_allowed_builds(app: &NodeApp) -> Vec<String> {
         .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
         .unwrap_or_default();
     if let Ok(text) = std::fs::read_to_string(app.root.join("pnpm-workspace.yaml"))
-        && let Ok(y) = serde_yaml::from_str::<serde_yaml::Value>(&text)
+        && let Ok(y) = serde_norway::from_str::<serde_norway::Value>(&text)
     {
         if let Some(m) = y.get("allowBuilds").and_then(|m| m.as_mapping()) {
             for (k, v) in m {

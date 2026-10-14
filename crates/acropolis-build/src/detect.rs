@@ -315,7 +315,7 @@ pub fn read_package_json(dir: &Path) -> Result<Value> {
         )
     })?;
     if file == "package.yaml" {
-        return serde_yaml::from_str(&text).context("parsing package.yaml");
+        return serde_norway::from_str(&text).context("parsing package.yaml");
     }
     match serde_json::from_str(&text) {
         Ok(v) => Ok(v),

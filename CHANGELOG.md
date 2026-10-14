@@ -23,6 +23,10 @@ All notable changes to Acropolis. The format follows [Keep a Changelog](https://
 
 - New suites: workspace members with a devDependency member (bun, pnpm, npm, yarn 1 and berry), the Next.js deploy tests (`NEXT_TEST_MODE=deploy`, Next 15.5.27 and 16.4.0), TechEmpower FrameworkBenchmarks without their Dockerfiles, and the Heroku getting-started apps and Paketo samples. e2e cases can build a subdirectory (`directory`) and run several HTTP checks against one container.
 
+### Security
+
+- YAML (`pnpm-lock.yaml`, `pnpm-workspace.yaml`, `package.yaml`) is parsed with `serde_norway` instead of `serde_yaml`, whose `unsafe-libyaml` is unmaintained (RUSTSEC-2024-0449).
+
 ## [0.2.1](https://github.com/olimpiacloud/acropolis/releases/tag/v0.2.1) - 2026-10-09
 
 ### Packaging
