@@ -202,7 +202,7 @@ Una ejecución fallida termina con `build_failed`. En los modos `human` y `quiet
 | `0` | | Éxito. | |
 | `1` | `user` | Falló el build propio de la app, incluidos los timeouts de build y de paso. | Mostrá el log, no reintentes. |
 | `70` | `internal` | Bug de Acropolis, incluido un panic. | Pasá a otro builder y reportalo. |
-| `75` | `infra` | Infraestructura: red, registry, disco, un paso matado con SIGKILL, SIGTERM/SIGINT. | Reintentá una vez. |
+| `75` | `infra` | Infraestructura: red, registry, disco, falta de memoria, un paso matado por una señal como SIGKILL, o el propio build interrumpido por SIGTERM o SIGINT. | Reintentá una vez. |
 | `78` | `config` | La app no se puede construir tal como está configurada: stack o configuración no soportados, rutas fuera de la app, registries privados. | Pasá a otro builder o mostrá el error. |
 
-Estas clases aplican a todos los comandos. El parser de argumentos rechaza los argumentos inválidos antes de que corra nada, con un mensaje de uso.
+La clase sale del error: un comando de un paso que termina con un código distinto de cero es `user`, y uno matado por una señal es `infra`; los demás errores se comparan con mensajes conocidos (los errores de red y de registry son `infra`; los stacks no soportados, la configuración inválida, las rutas fuera de la app y los registries privados son `config`), y todo lo que no se reconoce es `internal`. Estas clases aplican a todos los comandos. El parser de argumentos rechaza los argumentos inválidos antes de que corra nada, con un mensaje de uso.

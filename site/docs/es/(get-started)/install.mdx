@@ -21,11 +21,14 @@ Cada [release](https://github.com/olimpiacloud/acropolis/releases) trae el binar
 
 ```bash
 v=v0.3.1 target=x86_64-unknown-linux-gnu   # or aarch64-unknown-linux-gnu
-gh release download "$v" -R olimpiacloud/acropolis -p "acropolis-$v-$target.tar.gz" -p SHA256SUMS
-sha256sum --ignore-missing -c SHA256SUMS
-gh attestation verify "acropolis-$v-$target.tar.gz" -R olimpiacloud/acropolis
-tar xzf "acropolis-$v-$target.tar.gz" && sudo install "acropolis-$v-$target/acropolis" /usr/local/bin/
+gh release download "$v" -R olimpiacloud/acropolis -p "acropolis-$v-$target.tar.gz" -p SHA256SUMS &&
+  sha256sum --ignore-missing -c SHA256SUMS &&
+  gh attestation verify "acropolis-$v-$target.tar.gz" -R olimpiacloud/acropolis &&
+  tar xzf "acropolis-$v-$target.tar.gz" &&
+  sudo install "acropolis-$v-$target/acropolis" /usr/local/bin/
 ```
+
+Los comandos van encadenados con `&&`, así que si falla la verificación del checksum o de la attestation, se corta antes de extraer o instalar nada.
 
 ## Imagen builder [#builder-image]
 

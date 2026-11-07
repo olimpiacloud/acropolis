@@ -131,7 +131,7 @@ acropolis cache import cache.tar.zst --key my-app
 acropolis cache export cache.tar.zst --key my-app
 ```
 
-`--key` toma por defecto `ACROPOLIS_CACHE_KEY` y no puede estar vacía. Poné la misma `ACROPOLIS_CACHE_KEY` para el build: sin ella, el build usa un hash de la ruta de la app y no va a encontrar la caché importada. Salida en stdout: `cache my-app: imported 12.3 MB from cache.tar.zst in 1.2s`. Si el archivo no está o está roto, salteá el import: el build anda igual sin él.
+`--key` toma por defecto `ACROPOLIS_CACHE_KEY` y no puede estar vacía. Poné la misma `ACROPOLIS_CACHE_KEY` para el build: sin ella, el build usa un hash de la ruta de la app y no va a encontrar la caché importada. Salida en stdout: `cache my-app: imported 12.3 MB from cache.tar.zst in 1.2s`. Si el archivo no está o está roto, `cache import` sale con un código distinto de cero. Si la caché es opcional, ignorá esa falla (`acropolis cache import ... || true`): el build anda igual sin ella.
 
 ## `prewarm` y `gc` [#prewarm-and-gc]
 
@@ -150,7 +150,7 @@ acropolis gc --max-size 20G
 | --- | --- | --- |
 | `0` | | Seguir. |
 | `1` | `user` | Falló el build propio de la app (o se pasó del tiempo). Leé los eventos `log` y `step_failed`, arreglá la app y buildeá de nuevo. No reintentes sin cambios. |
-| `75` | `infra` | Red, registry, disco, un paso que mataron, SIGTERM o SIGINT. Reintentá una vez. |
+| `75` | `infra` | Red, registry, disco, falta de memoria, un paso que mató una señal, o el build interrumpido por SIGTERM o SIGINT. Reintentá una vez. |
 | `78` | `config` | La app no se puede buildear tal como está configurada (stack o config no soportados, rutas fuera de la app, registries privados). Arreglá la config o usá otro builder. |
 | `70` | `internal` | Bug de Acropolis. Usá otro builder y reportalo en [GitHub issues](https://github.com/olimpiacloud/acropolis/issues). |
 

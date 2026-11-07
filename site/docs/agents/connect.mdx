@@ -37,12 +37,15 @@ Acropolis runs on Linux x86_64 or arm64 with glibc 2.36 or newer. `build` needs 
 
 ```bash
 v=v0.3.1 target=x86_64-unknown-linux-gnu   # or aarch64-unknown-linux-gnu
-gh release download "$v" -R olimpiacloud/acropolis -p "acropolis-$v-$target.tar.gz" -p SHA256SUMS
-sha256sum --ignore-missing -c SHA256SUMS
-gh attestation verify "acropolis-$v-$target.tar.gz" -R olimpiacloud/acropolis
-tar xzf "acropolis-$v-$target.tar.gz" && sudo install "acropolis-$v-$target/acropolis" /usr/local/bin/
+gh release download "$v" -R olimpiacloud/acropolis -p "acropolis-$v-$target.tar.gz" -p SHA256SUMS &&
+  sha256sum --ignore-missing -c SHA256SUMS &&
+  gh attestation verify "acropolis-$v-$target.tar.gz" -R olimpiacloud/acropolis &&
+  tar xzf "acropolis-$v-$target.tar.gz" &&
+  sudo install "acropolis-$v-$target/acropolis" /usr/local/bin/
 acropolis --version
 ```
+
+The `&&` chain stops before extracting or installing if the checksum or the attestation check fails.
 
 On macOS or Windows, run it in a Linux VM or in the [builder image](/install#builder-image). More options in [Install](/install).
 

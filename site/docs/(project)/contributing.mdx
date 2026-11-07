@@ -31,6 +31,7 @@ CI runs the same plus `cargo deny check`, the minimum Rust version and the plan 
 `tests/plans` stores `acropolis plan --json` for the 131 Railpack examples, the fastest way to see whether a change alters detection:
 
 ```bash
+mkdir -p ../acropolis-ext
 git clone https://github.com/railwayapp/railpack ../acropolis-ext/railpack
 git -C ../acropolis-ext/railpack checkout <RAILPACK_REF from .github/workflows/ci.yml>
 cargo build --bin acropolis
@@ -53,4 +54,4 @@ If a PR changes plans, the `tests/plans` diff must be in the PR and the descript
 
 ## This site
 
-The documentation lives in [`site/`](https://github.com/olimpiacloud/acropolis/tree/main/site) and is built with [Blume](https://useblume.dev). `bun install && bun run dev` serves it on `localhost:4321`.
+The documentation lives in [`site/`](https://github.com/olimpiacloud/acropolis/tree/main/site) and is built with [Blume](https://useblume.dev). `cd site && bun install && bun run dev` serves it on `localhost:4321`.

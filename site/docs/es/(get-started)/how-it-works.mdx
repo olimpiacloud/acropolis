@@ -19,7 +19,7 @@ Un build tiene tres fases: detectar la app y escribir un plan, correr los pasos 
 | **Home** | El directorio con el store direccionado por contenido, los toolchains, el rootfs desempaquetado de las imágenes y las cachés por app. `--home` o `ACROPOLIS_HOME`; por defecto `$XDG_CACHE_HOME/acropolis`, y si no, `~/.cache/acropolis`. |
 | **Caché por app** | Las cachés de build de una app dentro del home, seleccionadas con `ACROPOLIS_CACHE_KEY` (un hash de la ruta de la app si no está definida). Se puede exportar e importar como archivo. |
 | **Variables de la app** | Los valores de `-e KEY=VALUE` y el archivo de configuración. Vienen de la app y no son confiables. |
-| **Settings del operador** | Settings `ACROPOLIS_*` que se leen solo del entorno del proceso `acropolis`, así una app no los puede cambiar. Mirá [Configuración](/configuration#operator-settings). |
+| **Settings del operador** | Los settings que figuran en [settings del operador](/configuration#operator-settings) (`ACROPOLIS_CACHE_KEY`, los timeouts y los demás que están ahí). Solo estos se leen exclusivamente del entorno del proceso `acropolis`, así una app no los puede cambiar; otros settings `ACROPOLIS_*`, como `ACROPOLIS_PROVIDER`, también pueden venir de `-e` o del archivo de configuración. |
 | **Imagen de builder** | `ghcr.io/olimpiacloud/acropolis-builder`, una imagen Debian 12 con Acropolis y toolchains precalentados, para correr un build por contenedor. |
 
 ## La detección y el plan [#detection-and-the-plan]
@@ -36,9 +36,9 @@ Los lenguajes sin binarios relocalizables (Ruby, Python con extensiones, PHP, Ja
 
 Los blobs de 12 MB o más se descargan en segmentos de 8 MB, seis en paralelo sobre conexiones HTTP/1.1 independientes. Si el segmento que bloquea la salida en orden se atrasa (más de 2,5 s o 2,5 veces la mediana), se arranca un duplicado y gana el primero que termina; los streams que pasan 6 s sin bytes se cortan y se retoman con `Range`. Copiar `node:22-bookworm-slim` (80 MB) desde Docker Hub pasó de 12,2 s a 2,9 s.
 
-## La base nunca se descomprime [#the-base-is-never-decompressed]
+## Las capas base se copian, no se descomprimen [#base-layers-are-copied-not-decompressed]
 
-Las capas de la imagen base se copian de registry a registry por digest, arrancando apenas llega el manifest de la plataforma. Solo se comprimen las capas nuevas: cada una es una concatenación de frames zstd independientes de ~1 MB (o miembros gzip) comprimidos en paralelo, válida y determinística. El `node_modules` de producción se escribe directo desde los tarballs del store, sin desempaquetar a disco.
+Al ensamblar la imagen final, las capas de la imagen base se copian de registry a registry por digest, arrancando apenas llega el manifest de la plataforma, y en ese camino nunca se descomprimen. Los builds que corren pasos dentro del rootfs de una imagen oficial (mirá más arriba) sí desempaquetan las capas de esa imagen una vez, para correr los pasos. Solo se comprimen las capas nuevas: cada una es una concatenación de frames zstd independientes de ~1 MB (o miembros gzip) comprimidos en paralelo, válida y determinística. El `node_modules` de producción se escribe directo desde los tarballs del store, sin desempaquetar a disco.
 
 ## Runtimes chicos [#small-runtimes]
 

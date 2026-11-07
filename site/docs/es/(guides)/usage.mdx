@@ -74,12 +74,12 @@ Los builds de Go y Cargo, `node_modules`, `.next/cache` y el resto viven en una 
 
 ```bash
 export ACROPOLIS_CACHE_KEY=my-app
-acropolis cache import cache.tar.zst
+acropolis cache import cache.tar.zst || true
 acropolis build ./my-app -t registry.example.com/team/my-app:latest
 acropolis cache export cache.tar.zst
 ```
 
-`--key` toma por defecto `ACROPOLIS_CACHE_KEY`. Usá la misma clave en el build: sin `ACROPOLIS_CACHE_KEY` usa un hash de la ruta de la app, así que la caché exportada no coincidiría. Si el archivo de caché falta o está roto, salteá el import: el build funciona sin él.
+`--key` toma por defecto `ACROPOLIS_CACHE_KEY`. Usá la misma clave en el build: sin `ACROPOLIS_CACHE_KEY` usa un hash de la ruta de la app, así que la caché exportada no coincidiría. Si el archivo de caché falta o está roto, `cache import` falla con un código de salida distinto de cero; ignorá ese error (`|| true`) y construí igual: el build funciona sin la caché.
 
 ## Precalentar toolchains [#prewarm-toolchains]
 

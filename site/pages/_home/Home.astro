@@ -8,9 +8,58 @@ interface Props {
   locale: Locale;
 }
 
+interface Link {
+  href: string;
+  label: string;
+}
+
+interface Entry {
+  href: string;
+  icon: string;
+  title: string;
+  body: string;
+}
+
+interface Art {
+  src: string;
+  alt: string;
+  quote: string;
+  caption: string;
+}
+
+interface HomeContent {
+  title: string;
+  description: string;
+  og: { image: string; alt: string };
+  eyebrow: string;
+  heading: string;
+  lede: string;
+  tablist: string;
+  agentsTab: string;
+  humansTab: string;
+  agents: {
+    intro: string;
+    clients: { label: string; command: string; logo?: string; icon?: string; invert?: boolean }[];
+    copy: string;
+    machineIntro: string;
+    machine: Link[];
+    tasks: Entry[];
+    cta: Link;
+  };
+  humans: { guides: Entry[]; cta: Link };
+  art: { mobile: string; position?: string; agents: Art; humans: Art };
+  features: {
+    eyebrow: string;
+    heading: string;
+    more: Link;
+    items: { href: string; title: string; body: string; art?: string; icon?: string }[];
+  };
+  soon?: { label: string; href: string; items: string[] };
+}
+
 const { locale } = Astro.props;
 const { config } = data;
-const t = home[locale];
+const t: HomeContent = home[locale];
 const defaultLocale = config.i18n?.defaultLocale ?? locale;
 const homeRoute = (code: string) => (code === defaultLocale ? "/" : `/${code}`);
 const route = homeRoute(locale);
@@ -409,7 +458,13 @@ const redirectTargets = Object.fromEntries(
 
     for (const button of root.querySelectorAll<HTMLButtonElement>("[data-copy]")) {
       button.addEventListener("click", async () => {
-        await navigator.clipboard.writeText(button.dataset.copy!);
+        const code = button.parentElement?.querySelector("code");
+        try {
+          await navigator.clipboard.writeText(button.dataset.copy!);
+        } catch {
+          if (code) getSelection()?.selectAllChildren(code);
+          return;
+        }
         button.dataset.copied = "";
         setTimeout(() => delete button.dataset.copied, 1600);
       });

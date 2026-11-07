@@ -18,7 +18,7 @@ A build has three phases: detect the app and write a plan, run the plan's steps,
 | **Home** | The directory with the content-addressed store, the toolchains, the unpacked image rootfs and the per-app caches. `--home` or `ACROPOLIS_HOME`; by default `$XDG_CACHE_HOME/acropolis`, else `~/.cache/acropolis`. |
 | **Per-app cache** | Build caches of one app inside the home, selected by `ACROPOLIS_CACHE_KEY` (a hash of the app path when it is not set). It can be exported and imported as a file. |
 | **App variables** | `-e KEY=VALUE` values and the config file. They come from the app and are untrusted. |
-| **Operator settings** | `ACROPOLIS_*` settings read only from the environment of the `acropolis` process, so an app cannot change them. See [Configuration](/configuration#operator-settings). |
+| **Operator settings** | The settings listed under [operator settings](/configuration#operator-settings) (`ACROPOLIS_CACHE_KEY`, the timeouts and the others there). Only these are read exclusively from the environment of the `acropolis` process, so an app cannot change them; other `ACROPOLIS_*` settings such as `ACROPOLIS_PROVIDER` can also come from `-e` or the config file. |
 | **Builder image** | `ghcr.io/olimpiacloud/acropolis-builder`, a Debian 12 image with Acropolis and prewarmed toolchains, for running one build per container. |
 
 ## Detection and the plan
@@ -35,9 +35,9 @@ Languages without relocatable binaries (Ruby, Python with extensions, PHP, Java,
 
 Blobs of 12 MB or more are downloaded in 8 MB segments, six in parallel over independent HTTP/1.1 connections. If the segment that blocks in-order output falls behind (more than 2.5 s or 2.5 times the median), a duplicate is started and the first to finish wins; streams with no bytes for 6 s are cut and resumed with `Range`. Copying `node:22-bookworm-slim` (80 MB) from Docker Hub went from 12.2 s to 2.9 s.
 
-## The base is never decompressed
+## Base layers are copied, not decompressed
 
-Base image layers are copied registry to registry by digest, starting as soon as the platform manifest arrives. Only the new layers are compressed: each one is a concatenation of independent ~1 MB zstd frames (or gzip members) compressed in parallel, valid and deterministic. Production `node_modules` is written straight from the store tarballs, without unpacking to disk.
+When the final image is assembled, the base image's layers are copied registry to registry by digest, starting as soon as the platform manifest arrives, and are never decompressed on that path. Builds that run steps inside an official image's rootfs (see above) do unpack that image's layers once, to run the steps. Only the new layers are compressed: each one is a concatenation of independent ~1 MB zstd frames (or gzip members) compressed in parallel, valid and deterministic. Production `node_modules` is written straight from the store tarballs, without unpacking to disk.
 
 ## Small runtimes
 

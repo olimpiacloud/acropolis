@@ -17,7 +17,7 @@ acropolis plan ./app --json > plan.json
 3. Read `warnings`.
 4. If something is wrong, see [Fix detection](#fix-detection).
 
-A failing `plan` exits with `78` when the app cannot be built as configured. No root or image is needed for this step.
+If `plan` fails, read the exit code: it is `78` (`config`) when detection or the config is the problem (no provider detected, no start command, invalid or unsupported config, paths outside the app), and can be another class otherwise, such as `75` for a network error or `70` for an unrecognized error. No root or image is needed for this step.
 
 ## Build an image and run it
 
@@ -82,7 +82,7 @@ acropolis --events json build . -t registry.example.com/team/my-app:"$GIT_SHA" -
 acropolis cache export cache.tar.zst
 ```
 
-Store `cache.tar.zst` with the CI system's cache. `ACROPOLIS_CACHE_KEY` must come from the environment of the `acropolis` process: through `-e` it is ignored, and without it the build uses a hash of the app path, which differs between runners with different checkout paths. For builds of code you don't control, follow [Running in production](/production).
+`|| true` keeps the job going when there is no cache yet or the file is broken: `cache import` exits non-zero then, and the build works without it. Store `cache.tar.zst` with the CI system's cache. `ACROPOLIS_CACHE_KEY` must come from the environment of the `acropolis` process: through `-e` it is ignored, and without it the build uses a hash of the app path, which differs between runners with different checkout paths. For builds of code you don't control, follow [Running in production](/production).
 
 ## Upgrade Acropolis
 

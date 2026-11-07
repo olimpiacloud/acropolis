@@ -73,12 +73,12 @@ Go and Cargo builds, `node_modules`, `.next/cache` and the rest live in a per-ap
 
 ```bash
 export ACROPOLIS_CACHE_KEY=my-app
-acropolis cache import cache.tar.zst
+acropolis cache import cache.tar.zst || true
 acropolis build ./my-app -t registry.example.com/team/my-app:latest
 acropolis cache export cache.tar.zst
 ```
 
-`--key` defaults to `ACROPOLIS_CACHE_KEY`. Use the same key in the build: without `ACROPOLIS_CACHE_KEY` it uses a hash of the app path, so the exported cache would not match. If the cache file is missing or broken, skip the import: the build works without it.
+`--key` defaults to `ACROPOLIS_CACHE_KEY`. Use the same key in the build: without `ACROPOLIS_CACHE_KEY` it uses a hash of the app path, so the exported cache would not match. If the cache file is missing or broken, `cache import` fails with a non-zero exit code; ignore that failure (`|| true`) and build anyway: the build works without the cache.
 
 ## Prewarm toolchains
 

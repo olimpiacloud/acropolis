@@ -1,10 +1,10 @@
 {
   "files": {
     "docs/(get-started)/how-it-works.mdx": {
-      "es": "4a5b73e6fc0a6b60"
+      "es": "7a85c1726303487d"
     },
     "docs/(get-started)/install.mdx": {
-      "es": "f74d3b50b87cedb0"
+      "es": "2e33462bb54ac24e"
     },
     "docs/(get-started)/introduction.mdx": {
       "es": "69d3c0375ded92e9"
@@ -25,16 +25,16 @@
       "es": "630763c5722fc0f5"
     },
     "docs/(guides)/usage.mdx": {
-      "es": "231e9832fd1c8256"
+      "es": "8c7bf643ab344c4e"
     },
     "docs/(project)/changelog.mdx": {
       "es": "a9044ecee33df38d"
     },
     "docs/(project)/contributing.mdx": {
-      "es": "4b3e78d52f36bbe4"
+      "es": "14ee90ea0138cbb3"
     },
     "docs/(project)/faq.mdx": {
-      "es": "221013df9cc53bc6"
+      "es": "8836101d2404fd2c"
     },
     "docs/(project)/meta.ts": {
       "es": "d5a0f9a97c4282af"
@@ -43,13 +43,13 @@
       "es": "cdfef4d3926152d3"
     },
     "docs/(reference)/cli.mdx": {
-      "es": "5a9215d7278a4f53"
+      "es": "885cb03641147f60"
     },
     "docs/(reference)/meta.ts": {
       "es": "6390543a96966713"
     },
     "docs/agents/connect.mdx": {
-      "es": "bb913021d323f09e"
+      "es": "ec1a6bfae94c9c5a"
     },
     "docs/agents/index.mdx": {
       "es": "470232644e92d880"
@@ -64,10 +64,10 @@
       "es": "df7d819f8aac524f"
     },
     "docs/agents/tools.mdx": {
-      "es": "57f96c76505305d7"
+      "es": "416f59806c3b9966"
     },
     "docs/agents/workflows.mdx": {
-      "es": "2ff85106d2e38277"
+      "es": "ccddab279cc825f1"
     }
   },
   "version": 1
