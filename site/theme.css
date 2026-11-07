@@ -1,0 +1,105 @@
+:root {
+  --blume-background: #efe9dd;
+  --blume-foreground: #2b2420;
+  --blume-muted: #e4dbcb;
+  --blume-muted-foreground: #65594f;
+  --blume-border: #d6cbb8;
+  --blume-accent: #9c4a2b;
+  --blume-accent-foreground: #f6f1e7;
+  --blume-action: #2b2420;
+  --blume-action-foreground: #f6f1e7;
+  --blume-code-background: #f6f1e7;
+  --blume-radius: 0.25rem;
+  --olimpia-card: #f6f1e7;
+  --olimpia-egeo: #4f6f8a;
+  --olimpia-olivo: #6b7862;
+  --olimpia-tinta: #2b2420;
+  --olimpia-pergamino: #f6f1e7;
+}
+
+:root[data-theme="dark"] {
+  --blume-background: #1b1714;
+  --blume-foreground: #ebe3d5;
+  --blume-muted: #2f2823;
+  --blume-muted-foreground: #a79a8b;
+  --blume-border: #3b332d;
+  --blume-accent: #d0784f;
+  --blume-accent-foreground: #1b1714;
+  --blume-action: #ebe3d5;
+  --blume-action-foreground: #1b1714;
+  --blume-code-background: #231e1a;
+  --olimpia-card: #231e1a;
+  --olimpia-egeo: #86a3bc;
+  --olimpia-olivo: #9dab91;
+}
+
+h1,
+h2,
+h3,
+h4,
+.font-display {
+  font-weight: 400;
+  letter-spacing: 0.005em;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--olimpia-egeo) 25%, transparent);
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+  opacity: 0.35;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.45 0 0 0 0 0.38 0 0 0 0 0.3 0 0 0 0.28 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+:root[data-theme="dark"] body::after {
+  opacity: 0.3;
+}
+
+header a[href="/"] > span.truncate {
+  font-family: var(--blume-font-display);
+  font-size: 1.3rem;
+  font-weight: 400;
+  letter-spacing: 0.03em;
+}
+
+header a[href="/"] > span:first-child > svg {
+  height: 1.6rem;
+}
+
+.acropolis-brand {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.acropolis-by {
+  color: var(--blume-muted-foreground);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.acropolis-experimental {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid color-mix(in oklab, var(--blume-accent) 55%, transparent);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--blume-accent) 14%, transparent);
+  color: var(--blume-accent);
+  padding: 0.1rem 0.55rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+@media (max-width: 40rem) {
+  .acropolis-by {
+    display: none;
+  }
+}

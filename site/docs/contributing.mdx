@@ -1,0 +1,55 @@
+---
+title: Contributing
+description: Build and test Acropolis, run the plan snapshots and the e2e, and open a pull request.
+sidebar:
+  icon: git-pull-request
+---
+
+Issues and PRs are welcome in Spanish or English; code, error messages and commits are in English. The full guide is [`CONTRIBUTING.md`](https://github.com/olimpiacloud/acropolis/blob/main/CONTRIBUTING.md).
+
+## Requirements
+
+- Linux x86_64 or arm64 (a VM or a `--privileged` container works on other systems).
+- A recent stable Rust (at least the `rust-version` in `Cargo.toml`) with `rustfmt` and `clippy`, and a C compiler.
+- Root for full builds and the sandbox tests; Docker for the e2e suite.
+
+## Build and test
+
+```bash
+cargo build --bin acropolis           # target/debug/acropolis
+cargo test --workspace                # unit tests
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER='sudo -E' cargo test --workspace  # as root, like CI
+cargo fmt --all
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+CI runs the same plus `cargo deny check`, the minimum Rust version and the plan snapshots.
+
+## Plan snapshots
+
+`tests/plans` stores `acropolis plan --json` for the 131 Railpack examples, the fastest way to see whether a change alters detection:
+
+```bash
+git clone https://github.com/railwayapp/railpack ../acropolis-ext/railpack
+git -C ../acropolis-ext/railpack checkout <RAILPACK_REF from .github/workflows/ci.yml>
+cargo build --bin acropolis
+BIN=target/debug/acropolis scripts/plans.sh            # compare
+BIN=target/debug/acropolis scripts/plans.sh update     # regenerate, if the change is intended
+```
+
+If a PR changes plans, the `tests/plans` diff must be in the PR and the description must explain why.
+
+## e2e
+
+`scripts/e2e.sh` builds each Railpack example, runs it with `docker run`, and checks the output; `--filter <example>` runs a single one. It is not required for a PR, but if you touch detection, dependency installation or layer assembly, running the affected examples saves a review round.
+
+## Pull requests
+
+- One change per PR, with a behavior test that fails without the change when possible.
+- The PR title follows [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) (`feat(npm): ...`, `fix(oci): ...`, `docs: ...`). PRs are squash-merged, and release-plz builds the next version and `CHANGELOG.md` from the titles.
+- Design decisions with measurements go in [`docs/decisions.md`](https://github.com/olimpiacloud/acropolis/blob/main/docs/decisions.md).
+- Vulnerabilities are reported privately: see [`SECURITY.md`](https://github.com/olimpiacloud/acropolis/blob/main/SECURITY.md).
+
+## This site
+
+The documentation lives in [`site/`](https://github.com/olimpiacloud/acropolis/tree/main/site) and is built with [Blume](https://useblume.dev). `bun install && bun run dev` serves it on `localhost:4321`.

@@ -1,0 +1,38 @@
+---
+title: Running in production
+description: One build per container, the builder image, privileges, network, caches and how a platform should react to each exit code.
+sidebar:
+  icon: server
+---
+
+:::caution[Experimental]
+Acropolis builds every app on Olimpia, but it is experimental. Keep a fallback builder for exit codes `70` and `78`, and pin the version you run.
+:::
+
+## One build per container
+
+Acropolis runs as root because it uses mount and PID namespaces and overlayfs. The build sandbox is not a VM boundary: for builds from different customers, use one throwaway container (or VM) per build.
+
+The [builder image](/install#builder-image) is made for this. It needs `CAP_SYS_ADMIN` and no seccomp or AppArmor profile that blocks `mount`/`unshare`. `--privileged` works; so does `--cap-add SYS_ADMIN --security-opt seccomp=unconfined --security-opt apparmor=unconfined`. `/var/lib/acropolis/work` must not be on overlayfs: the image declares it as a `VOLUME`, and other runtimes need a volume, `emptyDir` or tmpfs there.
+
+## The contract for a platform
+
+```bash
+ACROPOLIS_BUILD_ID=<deploy id> ACROPOLIS_CACHE_KEY=<app id> ACROPOLIS_BUILD_TIMEOUT=1800 \
+  acropolis --events json build "/src/$ROOT_DIR" -e KEY=VALUE... --oci /out/image.tar --info /out/info.json
+```
+
+- **Settings.** Operator settings come from the process environment; the customer's variables go through `-e`. See [Configuration](/configuration#operator-settings).
+- **Output.** `--oci` writes a tar that `regctl image import`, `skopeo` or `docker load` accept; `-t` pushes to a registry. Layers are zstd by default.
+- **Logs.** `--events json` prints one JSON event per stderr line, ending with `build_failed` on failure.
+- **Exit codes.** `1`: show the log, don't retry. `75`: retry once. `78`: fall back to another builder or show the error. `70`: fall back and report it. See [Usage](/usage#exit-codes).
+- **Caches.** `acropolis cache import` before the build and `acropolis cache export` after it, with the same `ACROPOLIS_CACHE_KEY`.
+- **Watch paths.** `info.json` has `watchPaths`, the repo paths whose changes can change the image (for a workspace member: the member, the members it depends on, and the root's lockfile and install files). `["."]` when Acropolis can't narrow it down.
+
+## Network
+
+Build steps with network (installs with scripts, `next build`) can reach any host the container can reach. Block the cloud metadata endpoint (`169.254.169.254`) and internal networks outside the container. Acropolis only rejects private registries and `http://` for what it downloads itself (`ACROPOLIS_ALLOW_PRIVATE_REGISTRY=1` allows them).
+
+## Dockerfile apps
+
+Dockerfile builds stay on BuildKit. To serve both from one image, extend the builder image with BuildKit and override the entrypoint, as described in [`deploy/builder`](https://github.com/olimpiacloud/acropolis/tree/main/deploy/builder).

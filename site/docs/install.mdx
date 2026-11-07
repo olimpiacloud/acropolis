@@ -1,0 +1,48 @@
+---
+title: Install
+description: Release binaries for Linux x86_64 and arm64, verified with checksums and a GitHub provenance attestation.
+sidebar:
+  icon: download
+---
+
+:::caution[Experimental]
+Acropolis is experimental: pin the version you install and read the [changelog](https://github.com/olimpiacloud/acropolis/blob/main/CHANGELOG.md) before upgrading.
+:::
+
+## Requirements
+
+- Linux x86_64 or arm64 with glibc 2.36 or newer (Debian 12, Ubuntu 24.04 or newer). Acropolis uses mount, PID and network namespaces and overlayfs, so it does not run on macOS or Windows; a Linux VM or a `--privileged` container works.
+- Root for full builds. `acropolis plan` runs without root.
+
+## From a release
+
+Each [release](https://github.com/olimpiacloud/acropolis/releases) ships the binary, its checksums, and a provenance attestation signed by GitHub Actions. Replace `v` with the [latest release](https://github.com/olimpiacloud/acropolis/releases/latest):
+
+```bash
+v=v0.3.1 target=x86_64-unknown-linux-gnu   # or aarch64-unknown-linux-gnu
+gh release download "$v" -R olimpiacloud/acropolis -p "acropolis-$v-$target.tar.gz" -p SHA256SUMS
+sha256sum --ignore-missing -c SHA256SUMS
+gh attestation verify "acropolis-$v-$target.tar.gz" -R olimpiacloud/acropolis
+tar xzf "acropolis-$v-$target.tar.gz" && sudo install "acropolis-$v-$target/acropolis" /usr/local/bin/
+```
+
+## Builder image
+
+A Debian 12 image with native build tools (`python3`, `make`, `g++`, `pkg-config`, `git`) and prewarmed toolchains (Node LTS, Go, Bun, uv, Python) is published as `ghcr.io/olimpiacloud/acropolis-builder:<version>` for amd64 and arm64:
+
+```bash
+docker run --rm --privileged -v "$PWD:/app:ro" -v /tmp/out:/out \
+  ghcr.io/olimpiacloud/acropolis-builder:<version> build /app --oci /out/image.tar --info /out/info.json
+```
+
+See [Running in production](/production) for the privileges it needs.
+
+## From source
+
+With a recent stable Rust (at least the `rust-version` in `Cargo.toml`) and a C compiler:
+
+```bash
+git clone https://github.com/olimpiacloud/acropolis
+cd acropolis
+cargo build --release --bin acropolis   # target/release/acropolis
+```

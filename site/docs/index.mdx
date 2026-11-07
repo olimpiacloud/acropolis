@@ -1,0 +1,49 @@
+---
+title: Acropolis
+description: Source code in, OCI image out. No Dockerfile, no daemon. A single Rust binary, by Olimpia.
+seo:
+  image: /acropolis-banner.jpg
+sidebar:
+  label: Home
+  icon: house
+---
+
+![Acropolis: an acropolis built up in layers facing the bay of Buenos Aires](/acropolis-banner.jpg)
+
+:::caution[Experimental]
+Acropolis is experimental. It builds every app deployed on [Olimpia](https://olimpia.dev) and passes the compatibility suites below, but its CLI, output and defaults can still change between releases. Pin a version and read the [changelog](https://github.com/olimpiacloud/acropolis/blob/main/CHANGELOG.md) before upgrading.
+:::
+
+Acropolis takes an app's source code and returns an OCI image ready to run. It detects the language and framework, downloads verified toolchains and dependencies, compiles, and assembles the image. It is the builder behind [Olimpia](https://olimpia.dev).
+
+```bash
+acropolis build ./my-app -t registry.example.com/team/my-app:latest
+acropolis build ./my-app --oci image.tar --info info.json
+acropolis plan ./my-app
+```
+
+<CardGroup cols={2}>
+  <Card title="Introduction" icon="book-open" href="/introduction">
+    What Acropolis is, why it exists and what it supports.
+  </Card>
+  <Card title="Install" icon="download" href="/install">
+    Verified release binaries for Linux x86_64 and arm64.
+  </Card>
+  <Card title="Usage" icon="terminal" href="/usage">
+    `build`, `plan`, `cache`, `prewarm` and the rest of the CLI.
+  </Card>
+  <Card title="How it works" icon="layers" href="/how-it-works">
+    No builder image, segmented downloads, parallel layers, portable caches.
+  </Card>
+  <Card title="Benchmarks" icon="gauge" href="/benchmarks">
+    Cold builds, rebuilds, image size and RAM against Docker and Railpack.
+  </Card>
+  <Card title="Compatibility" icon="circle-check" href="/compatibility">
+    Tested against other builders' published test suites.
+  </Card>
+</CardGroup>
+
+## Part of Olimpia
+
+- [Olimpia](https://olimpia.dev): the cloud platform that runs the images Acropolis builds. Its docs are at [docs.olimpia.dev](https://docs.olimpia.dev).
+- [Agora](https://agora.olimpia.dev): desktops for AI agents, also open source.
