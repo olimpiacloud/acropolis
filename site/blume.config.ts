@@ -3,7 +3,7 @@ import { family } from "./family";
 
 export default defineConfig({
   ...family("acropolis"),
-  title: "Acropolis",
+  title: "Acropolis by Olimpia",
   description:
     "Acropolis by Olimpia: an experimental, daemonless builder that turns an app's source code into an OCI image with no Dockerfile. A single Rust binary.",
   logo: {
