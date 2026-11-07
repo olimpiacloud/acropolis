@@ -1,0 +1,35 @@
+---
+title: Acropolis for agents
+description: How a coding agent uses Acropolis, the experimental app-to-image builder, through its CLI, its docs as Markdown, and Olimpia's MCP server when deploying on Olimpia.
+sidebar:
+  label: Overview
+  icon: bot
+---
+
+Acropolis is an experimental builder that turns an app's source code into an OCI image with no Dockerfile and no daemon. It is a single Rust binary, `acropolis`, for Linux x86_64 and arm64: it detects the language and framework, downloads verified toolchains and dependencies, compiles, and assembles the image. It is the opt-in builder behind [Olimpia](https://olimpia.dev).
+
+:::caution[Experimental]
+Flags, the `--events json` schema, `info.json` keys and exit codes can change between `0.x` releases. Pin the version an agent uses and check `acropolis --version` before relying on this reference. See [Status](/introduction#status).
+:::
+
+## How an agent uses it
+
+Acropolis has no MCP server and no published skill package. An agent uses it in three ways:
+
+- **The CLI, with machine-readable output.** `acropolis plan --json` prints the build plan as JSON, `acropolis --events json build` writes one JSON event per stderr line, `--info FILE` writes a JSON summary, and the exit code says whether to retry, fall back or fix the app. See [Tools](/agents/tools).
+- **These docs, as Markdown.** [`/llms.txt`](https://acropolis.olimpia.dev/llms.txt), [`/llms-full.txt`](https://acropolis.olimpia.dev/llms-full.txt), [`/skill.md`](https://acropolis.olimpia.dev/skill.md) and `.md` on any page. See [Connect](/agents/connect).
+- **Olimpia's MCP server, when the app runs on Olimpia.** Olimpia builds with Acropolis when an app's builder is set to `acropolis`, and an agent connected to Olimpia's MCP server can set it. See [Build on Olimpia](/agents/workflows#build-on-olimpia).
+
+## What an agent can do
+
+| task | how |
+| --- | --- |
+| Check whether an app can be built, and how | `acropolis plan ./app --json` (no root) |
+| Build an image to a tar or a registry | `acropolis --events json build ./app --oci image.tar --info info.json` or `-t REF` |
+| Decide what to do after a failure | Exit code, or `errorClass` and `exitCode` in `info.json` |
+| Fix detection | `acropolis.json` or `-e ACROPOLIS_*` variables, then `plan` again |
+| Keep caches on an ephemeral machine | `acropolis cache import` and `export` |
+| Inspect a base image | `acropolis inspect node:22-bookworm-slim` |
+| Build on Olimpia with Acropolis | Olimpia MCP: `update_app` with `builder: "acropolis"`, then `deploy` |
+
+The step-by-step sequences are in [Workflows](/agents/workflows), copyable requests in [Prompts](/agents/prompts), and what is safe to run in [Security](/agents/security).

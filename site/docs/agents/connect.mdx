@@ -1,0 +1,90 @@
+---
+title: Connect your agent
+description: "There is no Acropolis MCP server: give your agent these docs as Markdown, install the binary, and use machine-readable output. For Olimpia, connect Olimpia's MCP server."
+sidebar:
+  label: Connect
+  icon: plug
+---
+
+Acropolis has no MCP server and no published skill package. To work with it, an agent needs three things: these docs, the `acropolis` binary, and its machine-readable output. To deploy on Olimpia with Acropolis, it also needs [Olimpia's MCP server](#build-on-olimpia).
+
+## Give the agent the docs
+
+Every page of this site can be read without HTML:
+
+| URL | what it is |
+| --- | --- |
+| [`/llms.txt`](https://acropolis.olimpia.dev/llms.txt) | Index of the docs, in sidebar order, with a summary of each page. |
+| [`/llms-full.txt`](https://acropolis.olimpia.dev/llms-full.txt) | All the docs in one Markdown file. |
+| `/<page>.md` | The Markdown of any page, such as [`/cli.md`](https://acropolis.olimpia.dev/cli.md). |
+| [`/skill.md`](https://acropolis.olimpia.dev/skill.md) | A skill file generated from these docs, with a map of the pages. |
+
+Paste this at the start of a task:
+
+```txt
+Read https://acropolis.olimpia.dev/llms.txt and use it to answer questions about Acropolis.
+```
+
+Or fetch one page:
+
+```bash
+curl https://acropolis.olimpia.dev/cli.md
+```
+
+## Install the binary
+
+Acropolis runs on Linux x86_64 or arm64 with glibc 2.36 or newer. `build` needs root; `plan` does not. Install a pinned release and verify it:
+
+```bash
+v=v0.3.1 target=x86_64-unknown-linux-gnu   # or aarch64-unknown-linux-gnu
+gh release download "$v" -R olimpiacloud/acropolis -p "acropolis-$v-$target.tar.gz" -p SHA256SUMS
+sha256sum --ignore-missing -c SHA256SUMS
+gh attestation verify "acropolis-$v-$target.tar.gz" -R olimpiacloud/acropolis
+tar xzf "acropolis-$v-$target.tar.gz" && sudo install "acropolis-$v-$target/acropolis" /usr/local/bin/
+acropolis --version
+```
+
+On macOS or Windows, run it in a Linux VM or in the [builder image](/install#builder-image). More options in [Install](/install).
+
+## Use machine-readable output
+
+| to get | use |
+| --- | --- |
+| The build plan as JSON, on stdout | `acropolis plan ./app --json` |
+| One JSON event per stderr line | `acropolis --events json build ...` (global flag) |
+| A JSON summary of the build, also on failure | `acropolis build ./app --info info.json` |
+| The digest, manifest and config of an image, on stdout | `acropolis inspect REF` |
+| What to do after a failure | The exit code: `1`, `70`, `75` or `78` |
+
+Shapes and fields are in [Tools](/agents/tools) and the [CLI reference](/cli).
+
+## Build on Olimpia [#build-on-olimpia]
+
+[Olimpia](https://olimpia.dev) can build an app with Acropolis as an opt-in builder. Agents drive Olimpia through its MCP server:
+
+```txt
+https://api.olimpia.dev/mcp
+```
+
+<Tabs>
+  <Tab title="Claude Code">
+    ```bash
+    claude mcp add --transport http olimpia https://api.olimpia.dev/mcp
+    ```
+  </Tab>
+  <Tab title="Codex">
+    ```bash
+    codex mcp add olimpia --url https://api.olimpia.dev/mcp
+    ```
+  </Tab>
+</Tabs>
+
+The first time, the client opens olimpia.dev so you approve the connection with your session. Other clients are in [Olimpia's docs](https://docs.olimpia.dev/agentes/conectar).
+
+Olimpia's skill teaches the agent its deploy flow:
+
+```bash
+bunx skills add olimpiacloud/olimpia-skills
+```
+
+Olimpia's `create_app` and `update_app` tools take `builder`: `"acropolis"` builds with Acropolis, `"default"` uses the Dockerfile when there is one and Railpack otherwise. If Acropolis cannot build the app, Olimpia continues with the default builder. See [Build on Olimpia](/agents/workflows#build-on-olimpia).

@@ -1,0 +1,205 @@
+---
+title: CLI reference
+description: Every acropolis command and flag with its default, plus environment variables, output, events, info.json and exit codes.
+sidebar:
+  label: CLI
+  icon: square-terminal
+---
+
+:::caution[Experimental]
+This reference matches Acropolis v0.3.1. Commands, flags, output and exit codes can change between `0.x` releases: check the [changelog](/changelog) before upgrading.
+:::
+
+```bash
+acropolis [--events human|json|quiet] [--home DIR] [--mirror REGISTRY=MIRROR] <command> [options]
+acropolis --help
+acropolis --version
+```
+
+Commands: [`build`](#build), [`plan`](#plan), [`inspect`](#inspect), [`cache`](#cache), [`prewarm`](#prewarm) and [`gc`](#gc). `acropolis <command> --help` lists the flags of one command. The binary also has hidden commands for the project's own benchmark and e2e harness (`bench`, `report`, `e2e`); they are not covered here and are not a stable interface.
+
+## Global flags
+
+Global flags go before or after the command.
+
+| flag | default | environment | what it does |
+| --- | --- | --- | --- |
+| `--events MODE` | `human` | | `human`: readable progress lines on stderr. `json`: one JSON event per stderr line. `quiet`: no events. See [Events](#events). |
+| `--home DIR` | `$XDG_CACHE_HOME/acropolis`, else `$HOME/.cache/acropolis` | `ACROPOLIS_HOME` | Store, toolchains, image rootfs and per-app caches. |
+| `--mirror REGISTRY=MIRROR` | none | `ACROPOLIS_MIRRORS` | Registry mirror, such as `docker.io=mirror.example.com`. Repeatable or comma-separated. |
+
+## build
+
+Builds the app in a directory and writes the image. Needs root.
+
+```bash
+acropolis build [DIR] [options]
+```
+
+| argument or flag | default | what it does |
+| --- | --- | --- |
+| `DIR` | `.` | App directory. |
+| `-t`, `--tag REF` | none | Push the image to this reference. |
+| `--oci FILE` | none | Write an OCI image layout tar that `docker load`, `skopeo` and `regctl image import` accept. |
+| `--info FILE` | none | Write a JSON summary, also when the build fails. See [info.json](#info-json). |
+| `-e`, `--env KEY=VALUE` | none | App variable. Repeatable. `KEY` cannot be empty; the value can. See [Configuration](/configuration#variables). |
+| `--config FILE` | `acropolis.json`, else `railpack.json` | Config file, relative to the app directory and inside it. |
+| `--compression CODEC` | `zstd` | Layer compression: `zstd` (`zst`), `gzip` (`gz`) or `none` (`tar`). Use `gzip` for runtimes older than Docker 23 or containerd 1.5. |
+| `--level N` | `0` (codec default) | Compression level. For gzip, values above 9 are rejected. |
+| `--hermetic on\|off` | `on` | `off` runs steps without namespaces. With `on`, the build fails if the host cannot create network namespaces. |
+| `--concurrency N` | `64` | Parallel downloads. Must be at least 1. |
+| `--keep-work` | off | Keep the work directory after the build, for debugging. |
+
+Output on stdout, unless `--events json`: `REF@DIGEST` with `-t`, otherwise `DIGEST`. With `--events json` the `build_finished` event carries `image` and `digest`.
+
+## plan
+
+Prints what `build` would do without building: provider, toolchains, steps and the runtime image. Runs without root.
+
+```bash
+acropolis plan [DIR] [options]
+```
+
+| argument or flag | default | what it does |
+| --- | --- | --- |
+| `DIR` | `.` | App directory. |
+| `-e`, `--env KEY=VALUE` | none | App variable, as in `build`. Repeatable. |
+| `--json` | off | Print the plan as JSON instead of text. |
+
+`--json` prints one pretty-printed object on stdout with the keys `app`, `provider`, `facts` (detected facts such as `framework` or `package-manager`), `steps` (each with `id`, `name`, `action` and `deps`), `image` (`layers`, `workdir`, `env`, `cmd`, `entrypoint`, `ports`, `user`), `warnings` and `hash`. The repo keeps the plan of each of the 131 Railpack examples in [`tests/plans`](https://github.com/olimpiacloud/acropolis/tree/main/tests/plans) as examples.
+
+## inspect
+
+Resolves an image reference for the host platform and prints JSON with `reference`, `digest`, `manifest` and `config`.
+
+```bash
+acropolis inspect node:22-bookworm-slim
+```
+
+| argument | what it does |
+| --- | --- |
+| `REFERENCE` | Image reference. Required. |
+
+## cache
+
+Exports or imports the per-app cache as a `tar.zst`, to keep it between ephemeral builders.
+
+```bash
+acropolis cache export FILE --key KEY
+acropolis cache import FILE --key KEY
+```
+
+| argument or flag | default | what it does |
+| --- | --- | --- |
+| `export` or `import` | | Action. Required. |
+| `FILE` | | Cache file to write or read. Required. |
+| `--key KEY` | `ACROPOLIS_CACHE_KEY` | Per-app cache key. Required, and cannot be empty. |
+
+Output on stdout: `cache KEY: exported 12.3 MB to FILE in 1.2s` (or `imported ... from FILE`).
+
+## prewarm
+
+Downloads toolchains into the home ahead of time.
+
+```bash
+acropolis prewarm [--tools LIST]
+```
+
+| flag | default | what it does |
+| --- | --- | --- |
+| `--tools LIST` | `node:lts,node:22,node:24,go:latest,bun:latest,uv:latest` | Comma-separated `tool:version` list. A tool without a version means `latest`. `python` is accepted. |
+
+## gc
+
+Trims the home down to a size.
+
+```bash
+acropolis gc --max-size SIZE
+```
+
+| flag | default | what it does |
+| --- | --- | --- |
+| `--max-size SIZE` | | Target size. Required. A number with an optional `K`, `M`, `G` or `T` suffix (powers of 1024), such as `20G`. |
+
+Entries in use by running builds are kept; while builds run, only entries idle for over an hour are removed. Output on stdout: `gc: 25.10 GB -> 19.80 GB, 312 entries removed`, with `(builds running: only entries idle for over 1h)` when other builds were running.
+
+## Environment variables
+
+Read from the environment of the `acropolis` process. App settings (`ACROPOLIS_BUILD_CMD`, `ACROPOLIS_NODE_VERSION` and the rest) are in [Configuration](/configuration#variables).
+
+| variable | what it does |
+| --- | --- |
+| `ACROPOLIS_HOME` | Same as `--home`. |
+| `ACROPOLIS_MIRRORS` | Same as `--mirror`, comma-separated. |
+| `ACROPOLIS_CACHE_KEY` | Per-app cache key for `build`, and the default `--key` of `cache`. |
+| `ACROPOLIS_CACHE_MAX` | After each build, trim the home to this size, like `gc`. |
+| `ACROPOLIS_NO_CACHE` | Build without the per-app cache. |
+| `ACROPOLIS_BUILD_TIMEOUT` | Whole-build timeout; 1 h by default. |
+| `ACROPOLIS_STEP_TIMEOUT` | Timeout for each step. |
+| `ACROPOLIS_BUILD_ID` | Build id written in every JSON event. Generated when unset. |
+| `ACROPOLIS_ALLOW_PRIVATE_REGISTRY` | `1` allows private hosts and `http://` for what Acropolis downloads itself. |
+| `ACROPOLIS_REGISTRY`, `ACROPOLIS_REGISTRY_USER`, `ACROPOLIS_REGISTRY_PASSWORD` | Credentials for one registry host. |
+| `DOCKER_CONFIG` | Directory of the Docker `config.json` whose `auths` entries are used as registry credentials; `~/.docker` by default. |
+| `XDG_CACHE_HOME`, `HOME` | Used for the default home. Only absolute values count. |
+
+Settings in the [operator settings](/configuration#operator-settings) list are ignored when they come through `-e` or the config file.
+
+## Events
+
+`--events` controls what goes to stderr. With `human`, each event is a line prefixed with the seconds since start. With `json`, each line is one JSON object with these fields plus the event's own:
+
+| field | meaning |
+| --- | --- |
+| `v` | Schema version, currently `1`. |
+| `build_id` | `ACROPOLIS_BUILD_ID`, or a generated id. |
+| `ts` | Unix time in milliseconds. |
+| `t` | Milliseconds since the process started. |
+| `type` | Event type, below. |
+
+| `type` | fields |
+| --- | --- |
+| `build_started` | `app` |
+| `plan_ready` | `hash`, `steps` |
+| `step_started` | `id`, `name` |
+| `step_finished` | `id`, `name`, `ms` |
+| `step_failed` | `id`, `name`, `error` |
+| `log` | `step`, `line` |
+| `downloaded` | `what`, `bytes`, `ms` |
+| `uploaded` | `what`, `bytes`, `skipped` |
+| `image_pushed` | `reference`, `digest` |
+| `stats` | `bytes_downloaded`, `bytes_uploaded`, `bytes_written`, `requests`, `peak_rss_bytes`, `children_peak_rss_bytes` |
+| `build_finished` | `ms`, `image`, `digest` |
+| `build_failed` | `ms`, `class`, `exit_code`, `error` |
+
+A failed run ends with `build_failed`. In `human` and `quiet` modes a failure also prints `error: ...` and `error class: CLASS (exit N)` on stderr; in `json` mode stderr has only JSON lines.
+
+## info.json [#info-json]
+
+`build --info FILE` writes this JSON, on success and on failure:
+
+| key | meaning |
+| --- | --- |
+| `acropolisVersion` | Version of the binary. |
+| `detectedProviders` | Detected provider, as a list (Railpack-compatible). |
+| `resolvedPackages` | Toolchains by name, with `name`, `resolvedVersion`, `source` and, when the plan asked for one, `requestedVersion` (Railpack-compatible). |
+| `metadata` | The plan's facts, plus `nodePackageManager` for Node apps (Railpack-compatible). |
+| `planHash` | Hash of the plan. |
+| `manifestDigest` | Digest of the image manifest; `null` on failure. |
+| `warnings` | Warnings from the plan. |
+| `watchPaths` | Repo paths, relative to the workspace root, whose changes can change the image. `["."]` when Acropolis can't narrow it down. |
+| `success` | `true` or `false`. |
+| `error` | Error message, or `null`. |
+| `errorClass` | `user`, `infra`, `config` or `internal`, or `null`. |
+| `exitCode` | Exit code of the failure, or `null`. |
+
+## Exit codes
+
+| code | class | meaning | what to do |
+| --- | --- | --- | --- |
+| `0` | | Success. | |
+| `1` | `user` | The app's own build failed, including build and step timeouts. | Show the log, don't retry. |
+| `70` | `internal` | Acropolis bug, including a panic. | Fall back to another builder and report it. |
+| `75` | `infra` | Infrastructure: network, registry, disk, a step killed with SIGKILL, SIGTERM/SIGINT. | Retry once. |
+| `78` | `config` | The app cannot be built as configured: unsupported stack or config, paths outside the app, private registries. | Fall back to another builder or show the error. |
+
+These classes apply to every command. Invalid arguments are rejected by the argument parser before anything runs, with a usage message.

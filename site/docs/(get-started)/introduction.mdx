@@ -1,0 +1,78 @@
+---
+title: Introduction
+description: What Acropolis is, its experimental status, why it exists and what it supports.
+seo:
+  image: /acropolis-banner.jpg
+sidebar:
+  icon: book-open
+---
+
+![Acropolis: an acropolis built up in layers facing the bay of Buenos Aires](/acropolis-banner.jpg)
+
+Acropolis turns an app's source code into an OCI image with no Dockerfile and no daemon. It detects the language and framework, downloads verified toolchains and dependencies, compiles, and assembles the image. It is a single Rust binary, `acropolis`, licensed Apache-2.0 or MIT, and it is the builder behind [Olimpia](https://olimpia.dev).
+
+```bash
+acropolis build ./my-app -t registry.example.com/team/my-app:latest
+acropolis build ./my-app --oci image.tar --info info.json
+acropolis plan ./my-app
+```
+
+## Status
+
+:::caution[Experimental]
+Acropolis is experimental software. In practice that means:
+
+- The CLI flags, the `--events json` schema, `info.json` keys and exit codes may change between minor releases while the version is `0.x`. Every change is listed in the [changelog](/changelog).
+- Detection follows Railpack's rules, but a new release can pick a different runtime base or install plan for the same app. [`acropolis plan`](/usage#check-the-plan-first) shows what it will do before building.
+- It only runs on Linux, as root, and the build sandbox is not a VM boundary. Read [Running in production](/production) before building untrusted code.
+
+Pin a version, keep a fallback builder for apps it cannot build (exit code `78`), and report what breaks in [GitHub issues](https://github.com/olimpiacloud/acropolis/issues). On [Olimpia](https://olimpia.dev) it is an opt-in builder that falls back to the Dockerfile or Railpack when it cannot build an app.
+:::
+
+## Why
+
+On a PaaS every build starts on an empty machine, and the tools available there were slow, heavy, or produced huge images:
+
+- **Cold builds are slow.** In our benchmark Railpack takes 54 to 170 s because it first downloads its builder image, and BuildKit does not retry a download that hangs: we saw a 68 MB layer download at 200 KB/s for 10 minutes. Docker is faster, but only if someone wrote a multi-stage Dockerfile by hand.
+- **Images are bloated.** Railpack leaves devDependencies, the cache and its toolchain manager in the image: a sample Next app weighs 345 MB against 105 MB with a well-made Dockerfile.
+- **A lot of memory for little work.** Railpack uses more than 2.9 GB of RAM to build an Express server with 7.5 MB of dependencies.
+- **Rebuilds reuse nothing.** With Docker, changing one line of a Go app recompiles everything (41 s).
+- **No cache survives on an ephemeral builder.**
+
+The results are in [Benchmarks](/benchmarks), and how Acropolis gets there is in [Concepts](/how-it-works).
+
+## What it supports
+
+| ecosystem | image runtime |
+| --- | --- |
+| Node: npm, pnpm, yarn 1, yarn berry, bun; Next, Nuxt, Astro, SvelteKit, Remix, React Router, TanStack Start, Angular, Vite, Nx, Turborepo | distroless with a minimal shell when possible; otherwise `node:<version>-bookworm-slim`. Next standalone, Nitro, SPA on Caddy |
+| Bun | `distroless/cc` + bun, or Debian slim |
+| Go | `distroless/static` |
+| Rust | `distroless/cc` |
+| Python: uv, poetry, pdm, pipenv, pip | `python:<version>-slim` |
+| Ruby, PHP/Laravel, Java, .NET, Elixir, Gleam, Deno, C/C++ | the official slim image of each one |
+| Static sites and scripts | Caddy, Debian slim |
+
+It honors `railpack.json` and `acropolis.json`: see [Configuration](/configuration). Apps with a Dockerfile are out of scope: keep building those with BuildKit.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Install" icon="download" href="/install">
+    Verified release binaries for Linux x86_64 and arm64.
+  </Card>
+  <Card title="Usage" icon="terminal" href="/usage">
+    Build to a registry or a tar, check the plan, keep caches.
+  </Card>
+  <Card title="CLI reference" icon="square-terminal" href="/cli">
+    Every command, flag, default, exit code and event.
+  </Card>
+  <Card title="For agents" icon="bot" href="/agents">
+    How a coding agent drives Acropolis.
+  </Card>
+</CardGroup>
+
+## Part of Olimpia
+
+- [Olimpia](https://olimpia.dev): the cloud platform that runs the images Acropolis builds. Its docs are at [docs.olimpia.dev](https://docs.olimpia.dev).
+- [Agora](https://agora.olimpia.dev): desktops for AI agents, also open source.

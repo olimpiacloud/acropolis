@@ -1,11 +1,25 @@
 ---
-title: How it works
-description: No builder image, downloads that don't hang, a base that is never decompressed, small runtimes and portable caches.
+title: Concepts
+description: "How Acropolis builds an image: the plan, the home and its caches, no builder image, segmented downloads, small runtimes and step isolation."
 sidebar:
+  label: Concepts
   icon: layers
 ---
 
-A build has three phases: detect the app and write a plan, run the plan's steps, and assemble the image. [`acropolis plan`](/usage#plan) prints the first phase on its own.
+A build has three phases: detect the app and write a plan, run the plan's steps, and assemble the image. [`acropolis plan`](/cli#plan) prints the first phase on its own.
+
+## Key terms
+
+| term | meaning |
+| --- | --- |
+| **Provider** | The ecosystem Acropolis detected for the app (`node`, `go`, `rust`, `python` and so on), picked with Railpack's precedence. `ACROPOLIS_PROVIDER` forces one. |
+| **Plan** | The list of steps a build will run (toolchains, installs, build commands) plus the runtime image spec. It has a hash, `planHash` in `info.json`. |
+| **Step** | One unit of the plan, with the steps it depends on. Each step runs isolated (see [Isolation](#isolation)). |
+| **Home** | The directory with the content-addressed store, the toolchains, the unpacked image rootfs and the per-app caches. `--home` or `ACROPOLIS_HOME`; by default `$XDG_CACHE_HOME/acropolis`, else `~/.cache/acropolis`. |
+| **Per-app cache** | Build caches of one app inside the home, selected by `ACROPOLIS_CACHE_KEY`. It can be exported and imported as a file. |
+| **App variables** | `-e KEY=VALUE` values and the config file. They come from the app and are untrusted. |
+| **Operator settings** | `ACROPOLIS_*` settings read only from the environment of the `acropolis` process, so an app cannot change them. See [Configuration](/configuration#operator-settings). |
+| **Builder image** | `ghcr.io/olimpiacloud/acropolis-builder`, a Debian 12 image with Acropolis and prewarmed toolchains, for running one build per container. |
 
 ## Detection and the plan
 
@@ -35,7 +49,7 @@ Base image layers are copied registry to registry by digest, starting as soon as
 
 ## Portable caches
 
-Go and Cargo build caches, `.next/cache`, the reused `node_modules` and the rest live in a per-app cache in the home. On an ephemeral builder it travels as a file: [`acropolis cache export|import`](/usage#cache) writes and reads it as a `tar.zst`.
+Go and Cargo build caches, `.next/cache`, the reused `node_modules` and the rest live in a per-app cache in the home. On an ephemeral builder it travels as a file: [`acropolis cache export|import`](/cli#cache) writes and reads it as a `tar.zst`.
 
 ## Isolation
 
