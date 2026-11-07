@@ -49,7 +49,7 @@ acropolis plan ./my-app
 acropolis plan ./my-app --json
 ```
 
-Si el plan está mal, guiá la detección con un archivo de configuración o con variables: mirá [Configuración](/configuration).
+`plan` no tiene `--config`: si `build` usa `--config FILE`, pasale `-e ACROPOLIS_CONFIG_FILE=FILE` a `plan`. Si el plan está mal, guiá la detección con un archivo de configuración o con variables: mirá [Configuración](/configuration).
 
 ## Pasar variables de la app [#pass-app-variables]
 
@@ -57,7 +57,7 @@ Si el plan está mal, guiá la detección con un archivo de configuración o con
 acropolis build ./my-app --oci image.tar -e NODE_ENV=production -e API_URL=https://api.example.com
 ```
 
-Las variables llegan a los pasos del build, pero el plan e `info.json` solo llevan referencias `{env:NAME}`, y la config de la imagen no las recibe. Definí las variables de runtime en el contenedor que corre la imagen. `plan` acepta los mismos flags `-e`.
+Las variables que pasás con `-e` llegan a los pasos del build, pero el plan e `info.json` solo llevan referencias `{env:NAME}` (las `variables` escritas en los pasos personalizados de un archivo de configuración sí forman parte del plan), y la config de la imagen no las recibe. Definí las variables de runtime en el contenedor que corre la imagen. `plan` acepta los mismos flags `-e`.
 
 ## Leer el resultado [#read-the-result]
 
@@ -79,7 +79,7 @@ acropolis build ./my-app -t registry.example.com/team/my-app:latest
 acropolis cache export cache.tar.zst
 ```
 
-`--key` toma por defecto `ACROPOLIS_CACHE_KEY`. Si el archivo de caché falta o está roto, salteá el import: el build funciona sin él.
+`--key` toma por defecto `ACROPOLIS_CACHE_KEY`. Usá la misma clave en el build: sin `ACROPOLIS_CACHE_KEY` usa un hash de la ruta de la app, así que la caché exportada no coincidiría. Si el archivo de caché falta o está roto, salteá el import: el build funciona sin él.
 
 ## Precalentar toolchains [#prewarm-toolchains]
 
@@ -112,5 +112,5 @@ Acropolis rechaza `http://` y los hosts privados para lo que descarga por su cue
 ## Runtimes y hosts más viejos [#older-runtimes-and-hosts]
 
 - `--compression gzip` para runtimes anteriores a Docker 23 o containerd 1.5. Las capas son zstd por defecto.
-- `--hermetic off` cuando el host no puede crear network namespaces. En ese caso los pasos corren sin namespaces, así que usalo solo con código en el que confiás.
+- `--hermetic off` cuando el host no puede crear network namespaces. En ese caso los pasos corren como procesos comunes del host, sin nada del aislamiento de los pasos, así que usalo solo con código en el que confiás.
 - `--keep-work` conserva el directorio de trabajo después del build, para depurar.

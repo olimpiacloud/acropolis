@@ -19,7 +19,8 @@ Los issues y PRs son bienvenidos en español o en inglés; el código, los mensa
 ```bash
 cargo build --bin acropolis           # target/debug/acropolis
 cargo test --workspace                # unit tests
-CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER='sudo -E' cargo test --workspace  # as root, like CI
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER='sudo -E' \
+CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER='sudo -E' cargo test --workspace  # as root, like CI
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 ```
@@ -42,7 +43,7 @@ Si un PR cambia planes, el diff de `tests/plans` tiene que estar en el PR y la d
 
 ## e2e
 
-`scripts/e2e.sh` compila cada ejemplo de Railpack, lo corre con `docker run` y verifica la salida; con `--filter <example>` corrés uno solo. No es obligatorio para un PR, pero si tocás la detección, la instalación de dependencias o el armado de capas, correr los ejemplos afectados te ahorra una ronda de revisión.
+`scripts/e2e.sh` usa `target/fast/acropolis`, así que primero corré `scripts/build.sh`. Compila cada ejemplo de Railpack, lo corre con `docker run` y verifica la salida; con `--filter <example>` corrés uno solo. No es obligatorio para un PR, pero si tocás la detección, la instalación de dependencias o el armado de capas, correr los ejemplos afectados te ahorra una ronda de revisión.
 
 ## Pull requests
 

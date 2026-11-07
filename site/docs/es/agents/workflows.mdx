@@ -83,7 +83,7 @@ acropolis --events json build . -t registry.example.com/team/my-app:"$GIT_SHA" -
 acropolis cache export cache.tar.zst
 ```
 
-Guardá `cache.tar.zst` con la caché del sistema de CI. `ACROPOLIS_CACHE_KEY` tiene que venir del entorno del proceso `acropolis`: si la pasás con `-e`, se ignora. Para builds de código que no controlás, seguí [Correr en producción](/production).
+Guardá `cache.tar.zst` con la caché del sistema de CI. `ACROPOLIS_CACHE_KEY` tiene que venir del entorno del proceso `acropolis`: si la pasás con `-e`, se ignora, y sin ella el build usa un hash de la ruta de la app, que cambia entre runners con rutas de checkout distintas. Para builds de código que no controlás, seguí [Correr en producción](/production).
 
 ## Actualizá Acropolis [#upgrade-acropolis]
 

@@ -1,7 +1,7 @@
 {
   "files": {
     "docs/(get-started)/how-it-works.mdx": {
-      "es": "82626ece45a3bbdc"
+      "es": "4a5b73e6fc0a6b60"
     },
     "docs/(get-started)/install.mdx": {
       "es": "f74d3b50b87cedb0"
@@ -13,10 +13,10 @@
       "es": "2d8bfd0bd3143dfa"
     },
     "docs/(guides)/compatibility.mdx": {
-      "es": "2ecab0ae8957c4a7"
+      "es": "5097d97c6e6b85f5"
     },
     "docs/(guides)/configuration.mdx": {
-      "es": "9a990decd8f820c6"
+      "es": "bfa74a6ce0c1f20b"
     },
     "docs/(guides)/meta.ts": {
       "es": "f46da3383d9a180b"
@@ -25,13 +25,13 @@
       "es": "630763c5722fc0f5"
     },
     "docs/(guides)/usage.mdx": {
-      "es": "62038bba7db42bdb"
+      "es": "231e9832fd1c8256"
     },
     "docs/(project)/changelog.mdx": {
       "es": "a9044ecee33df38d"
     },
     "docs/(project)/contributing.mdx": {
-      "es": "4e59e09a70772eeb"
+      "es": "4b3e78d52f36bbe4"
     },
     "docs/(project)/faq.mdx": {
       "es": "221013df9cc53bc6"
@@ -40,10 +40,10 @@
       "es": "d5a0f9a97c4282af"
     },
     "docs/(reference)/benchmarks.mdx": {
-      "es": "cc9085ce743745f9"
+      "es": "cdfef4d3926152d3"
     },
     "docs/(reference)/cli.mdx": {
-      "es": "bafa9b7b78631b24"
+      "es": "5a9215d7278a4f53"
     },
     "docs/(reference)/meta.ts": {
       "es": "6390543a96966713"
@@ -61,13 +61,13 @@
       "es": "92080792ff911f8d"
     },
     "docs/agents/security.mdx": {
-      "es": "6f0221f84dd0134e"
+      "es": "074e18a117f8ff6d"
     },
     "docs/agents/tools.mdx": {
-      "es": "4b1943cad9782b62"
+      "es": "909ca9c2a369d6c6"
     },
     "docs/agents/workflows.mdx": {
-      "es": "e4f5cb7b088b7ffc"
+      "es": "e3db40f836e347e8"
     }
   },
   "version": 1

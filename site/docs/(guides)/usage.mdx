@@ -48,7 +48,7 @@ acropolis plan ./my-app
 acropolis plan ./my-app --json
 ```
 
-If the plan is wrong, steer detection with a config file or variables: see [Configuration](/configuration).
+`plan` has no `--config`: if `build` uses `--config FILE`, pass `-e ACROPOLIS_CONFIG_FILE=FILE` to `plan`. If the plan is wrong, steer detection with a config file or variables: see [Configuration](/configuration).
 
 ## Pass app variables
 
@@ -56,7 +56,7 @@ If the plan is wrong, steer detection with a config file or variables: see [Conf
 acropolis build ./my-app --oci image.tar -e NODE_ENV=production -e API_URL=https://api.example.com
 ```
 
-Variables reach build steps, but the plan and `info.json` only carry `{env:NAME}` references, and the image config does not get them. Set runtime variables on the container that runs the image. `plan` takes the same `-e` flags.
+Variables passed with `-e` reach build steps, but the plan and `info.json` only carry `{env:NAME}` references (`variables` written in a config file's custom steps are part of the plan), and the image config does not get them. Set runtime variables on the container that runs the image. `plan` takes the same `-e` flags.
 
 ## Read the result
 
@@ -78,7 +78,7 @@ acropolis build ./my-app -t registry.example.com/team/my-app:latest
 acropolis cache export cache.tar.zst
 ```
 
-`--key` defaults to `ACROPOLIS_CACHE_KEY`. If the cache file is missing or broken, skip the import: the build works without it.
+`--key` defaults to `ACROPOLIS_CACHE_KEY`. Use the same key in the build: without `ACROPOLIS_CACHE_KEY` it uses a hash of the app path, so the exported cache would not match. If the cache file is missing or broken, skip the import: the build works without it.
 
 ## Prewarm toolchains
 
@@ -111,5 +111,5 @@ Acropolis refuses `http://` and private hosts for what it downloads itself. Set 
 ## Older runtimes and hosts
 
 - `--compression gzip` for runtimes older than Docker 23 or containerd 1.5. Layers are zstd by default.
-- `--hermetic off` when the host cannot create network namespaces. Steps then run without namespaces, so use it only with code you trust.
+- `--hermetic off` when the host cannot create network namespaces. Steps then run as plain host processes, with none of the step isolation, so use it only with code you trust.
 - `--keep-work` keeps the work directory after the build, for debugging.

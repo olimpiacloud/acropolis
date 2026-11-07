@@ -16,7 +16,7 @@ A build has three phases: detect the app and write a plan, run the plan's steps,
 | **Plan** | The list of steps a build will run (toolchains, installs, build commands) plus the runtime image spec. It has a hash, `planHash` in `info.json`. |
 | **Step** | One unit of the plan, with the steps it depends on. Each step runs isolated (see [Isolation](#isolation)). |
 | **Home** | The directory with the content-addressed store, the toolchains, the unpacked image rootfs and the per-app caches. `--home` or `ACROPOLIS_HOME`; by default `$XDG_CACHE_HOME/acropolis`, else `~/.cache/acropolis`. |
-| **Per-app cache** | Build caches of one app inside the home, selected by `ACROPOLIS_CACHE_KEY`. It can be exported and imported as a file. |
+| **Per-app cache** | Build caches of one app inside the home, selected by `ACROPOLIS_CACHE_KEY` (a hash of the app path when it is not set). It can be exported and imported as a file. |
 | **App variables** | `-e KEY=VALUE` values and the config file. They come from the app and are untrusted. |
 | **Operator settings** | `ACROPOLIS_*` settings read only from the environment of the `acropolis` process, so an app cannot change them. See [Configuration](/configuration#operator-settings). |
 | **Builder image** | `ghcr.io/olimpiacloud/acropolis-builder`, a Debian 12 image with Acropolis and prewarmed toolchains, for running one build per container. |
@@ -42,7 +42,7 @@ Base image layers are copied registry to registry by digest, starting as soon as
 ## Small runtimes
 
 - Node servers run on distroless with a minimal busybox shell when nothing from Debian is needed, with exactly the `node` binary they were built with; otherwise on `node:<version>-bookworm-slim`.
-- Next 15+ apps without `output` configured are built as standalone, so the image carries only what the server traces.
+- Next 15+ apps without `output` configured are built as standalone when nothing prevents it (a custom `distDir` or `outputFileTracingRoot`, custom build or start scripts, ...), so the image carries only what the server traces. The exact conditions are in [D17](https://github.com/olimpiacloud/acropolis/blob/main/docs/decisions.md#d17-next-without-output-is-built-as-standalone).
 - Bun apps that start with `bun <file>` run on `distroless/cc` with a bun layer and no `node`.
 - Go runs on `distroless/static` and Rust on `distroless/cc`.
 - SPAs and static sites are served by Caddy.
@@ -53,6 +53,6 @@ Go and Cargo build caches, `.next/cache`, the reused `node_modules` and the rest
 
 ## Isolation
 
-Each build step runs in its own PID namespace (it can't see Acropolis or its variables), with the filesystem read-only except its working directory, its app's cache, `/tmp` and `/var/tmp`, a minimal `/dev`, the capabilities of an unprivileged container, a seccomp filter modeled on Docker's default profile, and its own network namespace when it doesn't need network. What Acropolis processes as root (config, lockfiles, patches, layers, caches) is validated so it cannot read or write outside its tree. See [Running in production](/production) for what that does and doesn't protect.
+Each build step runs in its own PID namespace (it can't see Acropolis or its variables), with the filesystem read-only except its working directory, its app's cache, `/tmp` and `/var/tmp`, a minimal `/dev`, the capabilities of an unprivileged container, a seccomp filter modeled on Docker's default profile, and its own network namespace when it doesn't need network. What Acropolis processes as root (config, lockfiles, patches, layers, caches) is validated so it cannot read or write outside its tree. With `--hermetic=off` none of this applies: steps run as plain host processes. See [Running in production](/production) for what that does and doesn't protect.
 
 Every measurement behind these choices, and what was tried and discarded, is in [`docs/decisions.md`](https://github.com/olimpiacloud/acropolis/blob/main/docs/decisions.md).

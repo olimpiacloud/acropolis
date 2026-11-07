@@ -18,7 +18,8 @@ Issues and PRs are welcome in Spanish or English; code, error messages and commi
 ```bash
 cargo build --bin acropolis           # target/debug/acropolis
 cargo test --workspace                # unit tests
-CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER='sudo -E' cargo test --workspace  # as root, like CI
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER='sudo -E' \
+CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER='sudo -E' cargo test --workspace  # as root, like CI
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 ```
@@ -41,7 +42,7 @@ If a PR changes plans, the `tests/plans` diff must be in the PR and the descript
 
 ## e2e
 
-`scripts/e2e.sh` builds each Railpack example, runs it with `docker run`, and checks the output; `--filter <example>` runs a single one. It is not required for a PR, but if you touch detection, dependency installation or layer assembly, running the affected examples saves a review round.
+`scripts/e2e.sh` uses `target/fast/acropolis`, so run `scripts/build.sh` first. It builds each Railpack example, runs it with `docker run`, and checks the output; `--filter <example>` runs a single one. It is not required for a PR, but if you touch detection, dependency installation or layer assembly, running the affected examples saves a review round.
 
 ## Pull requests
 

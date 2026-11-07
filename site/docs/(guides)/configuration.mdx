@@ -26,7 +26,7 @@ Acropolis reads `acropolis.json`, or `railpack.json` if there is none, from the 
 }
 ```
 
-Supported keys: `provider`, `packages`, `buildAptPackages`, `steps` (with `commands`, `variables`, `inputs`, `caches`, `secrets`, `deployOutputs`), `deploy` (`startCommand`, `aptPackages`, `inputs`, `paths`, `variables`, `base`), `exclude`, `secrets` and `caches`. Unknown keys fail the build, so a typo doesn't go unnoticed.
+Supported keys: `provider`, `packages`, `buildAptPackages`, `steps` (with `commands`, `variables`, `secrets`, `deployOutputs`), `deploy` (`startCommand`, `aptPackages`, `inputs`, `paths`, `variables`) and `exclude`. Railpack's top-level `secrets` and `caches`, step `inputs` and `caches`, and `deploy.base` are accepted for compatibility but ignored. Unknown keys fail the build, so a typo doesn't go unnoticed.
 
 ## Variables
 
@@ -41,7 +41,7 @@ App variables are passed with `-e KEY=VALUE`. Each setting is read with an `ACRO
 | `NODE_VERSION`, `BUN_VERSION`, `GO_VERSION`, `RUST_VERSION`, `PYTHON_VERSION`, `UV_VERSION`, `RUBY_VERSION`, `PHP_VERSION`, `JDK_VERSION`, `DOTNET_VERSION`, `ELIXIR_VERSION`, `GLEAM_VERSION`, `DENO_VERSION` | Pin a toolchain version. |
 | `CONFIG_FILE` | Config file path, relative to the app. |
 
-Variables reach build steps, but the plan and `info.json` only carry `{env:NAME}` references, never the values, and the image config doesn't get them: set runtime variables on the container that runs the image.
+Variables passed with `-e` reach build steps, but the plan and `info.json` only carry `{env:NAME}` references, never the values (`variables` written in a config file's custom steps are part of the plan), and the image config doesn't get them: set runtime variables on the container that runs the image.
 
 ## Operator settings
 
@@ -49,7 +49,7 @@ These (with the `ACROPOLIS_` or `RAILPACK_` prefix) are read only from the envir
 
 | variable | what it does |
 | --- | --- |
-| `ACROPOLIS_CACHE_KEY` | Per-app cache key (also the default `--key` for `acropolis cache`). |
+| `ACROPOLIS_CACHE_KEY` | Per-app cache key (also the default `--key` for `acropolis cache`). Without it, a build uses a hash of the app path. |
 | `ACROPOLIS_CACHE_MAX` | After each build, trim the home to this size (`20G`), like `acropolis gc`. |
 | `ACROPOLIS_NO_CACHE` | Build without the per-app cache. |
 | `ACROPOLIS_BUILD_TIMEOUT` | Whole-build timeout; 1 h by default. |

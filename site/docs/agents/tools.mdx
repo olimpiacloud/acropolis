@@ -29,6 +29,8 @@ acropolis plan ./app --json -e ACROPOLIS_NODE_VERSION=22
 | `-e KEY=VALUE` | App variables, repeatable. |
 | `--json` | JSON instead of text. |
 
+`plan` has no `--config`. If the build uses `--config FILE`, pass `-e ACROPOLIS_CONFIG_FILE=FILE` to `plan`.
+
 Output on stdout, one pretty-printed object:
 
 ```json
@@ -126,7 +128,7 @@ acropolis cache import cache.tar.zst --key my-app
 acropolis cache export cache.tar.zst --key my-app
 ```
 
-`--key` defaults to `ACROPOLIS_CACHE_KEY` and cannot be empty. Output on stdout: `cache my-app: imported 12.3 MB from cache.tar.zst in 1.2s`. If the file is missing or broken, skip the import: the build works without it.
+`--key` defaults to `ACROPOLIS_CACHE_KEY` and cannot be empty. Set the same `ACROPOLIS_CACHE_KEY` for the build: without it the build uses a hash of the app path and won't find the imported cache. Output on stdout: `cache my-app: imported 12.3 MB from cache.tar.zst in 1.2s`. If the file is missing or broken, skip the import: the build works without it.
 
 ## `prewarm` and `gc`
 

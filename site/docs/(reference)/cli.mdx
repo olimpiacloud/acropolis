@@ -43,10 +43,10 @@ acropolis build [DIR] [options]
 | `--oci FILE` | none | Write an OCI image layout tar that `docker load`, `skopeo` and `regctl image import` accept. |
 | `--info FILE` | none | Write a JSON summary, also when the build fails. See [info.json](#info-json). |
 | `-e`, `--env KEY=VALUE` | none | App variable. Repeatable. `KEY` cannot be empty; the value can. See [Configuration](/configuration#variables). |
-| `--config FILE` | `acropolis.json`, else `railpack.json` | Config file, relative to the app directory and inside it. |
+| `--config FILE` | `acropolis.json`, else `railpack.json` | Config file, relative to the app directory and inside it. Same as `-e ACROPOLIS_CONFIG_FILE=FILE`. |
 | `--compression CODEC` | `zstd` | Layer compression: `zstd` (`zst`), `gzip` (`gz`) or `none` (`tar`). Use `gzip` for runtimes older than Docker 23 or containerd 1.5. |
 | `--level N` | `0` (codec default) | Compression level. For gzip, values above 9 are rejected. |
-| `--hermetic on\|off` | `on` | `off` runs steps without namespaces. With `on`, the build fails if the host cannot create network namespaces. |
+| `--hermetic on\|off` | `on` | `off` runs steps as plain host processes, with no namespaces, seccomp filter or read-only filesystem. With `on`, the build fails if the host cannot create network namespaces. |
 | `--concurrency N` | `64` | Parallel downloads. Must be at least 1. |
 | `--keep-work` | off | Keep the work directory after the build, for debugging. |
 
@@ -65,6 +65,8 @@ acropolis plan [DIR] [options]
 | `DIR` | `.` | App directory. |
 | `-e`, `--env KEY=VALUE` | none | App variable, as in `build`. Repeatable. |
 | `--json` | off | Print the plan as JSON instead of text. |
+
+`plan` has no `--config`: to plan with the config file a build gets through `--config FILE`, pass `-e ACROPOLIS_CONFIG_FILE=FILE`.
 
 `--json` prints one pretty-printed object on stdout with the keys `app`, `provider`, `facts` (detected facts such as `framework` or `package-manager`), `steps` (each with `id`, `name`, `action` and `deps`), `image` (`layers`, `workdir`, `env`, `cmd`, `entrypoint`, `ports`, `user`), `warnings` and `hash`. The repo keeps the plan of each of the 131 Railpack examples in [`tests/plans`](https://github.com/olimpiacloud/acropolis/tree/main/tests/plans) as examples.
 
@@ -131,7 +133,7 @@ Read from the environment of the `acropolis` process. App settings (`ACROPOLIS_B
 | --- | --- |
 | `ACROPOLIS_HOME` | Same as `--home`. |
 | `ACROPOLIS_MIRRORS` | Same as `--mirror`, comma-separated. |
-| `ACROPOLIS_CACHE_KEY` | Per-app cache key for `build`, and the default `--key` of `cache`. |
+| `ACROPOLIS_CACHE_KEY` | Per-app cache key for `build`, and the default `--key` of `cache`. Without it, a build uses a hash of the app path. |
 | `ACROPOLIS_CACHE_MAX` | After each build, trim the home to this size, like `gc`. |
 | `ACROPOLIS_NO_CACHE` | Build without the per-app cache. |
 | `ACROPOLIS_BUILD_TIMEOUT` | Whole-build timeout; 1 h by default. |

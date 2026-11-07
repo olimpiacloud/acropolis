@@ -37,4 +37,4 @@ Acá mandan los compiladores (`vp build` ~20 s, `cargo build --release` de la AP
 
 ## Cómo reproducirlo [#reproducing]
 
-`scripts/bench.sh` corre el benchmark contra Docker y Railpack, y `AB=1 scripts/bench.sh` compara dos binarios de Acropolis intercalados (`APPS=`, `RUNS=`). Las apps están en [`bench/apps`](https://github.com/olimpiacloud/acropolis/tree/main/bench/apps).
+`TOOLS=acropolis,docker,railpack FRESH=1 scripts/bench.sh` corre el benchmark contra Docker y Railpack (por defecto, `TOOLS` incluye solo Acropolis; sin `FRESH=1` se reutilizan los resultados cacheados), y `AB=1 scripts/bench.sh` compara dos binarios de Acropolis intercalados (`APPS=`, `RUNS=`). Las apps están en [`bench/apps`](https://github.com/olimpiacloud/acropolis/tree/main/bench/apps).

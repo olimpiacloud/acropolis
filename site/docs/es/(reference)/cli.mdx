@@ -44,10 +44,10 @@ acropolis build [DIR] [options]
 | `--oci FILE` | ninguno | Escribe un tar con layout de imagen OCI que aceptan `docker load`, `skopeo` y `regctl image import`. |
 | `--info FILE` | ninguno | Escribe un resumen en JSON, también cuando el build falla. Mirá [info.json](#info-json). |
 | `-e`, `--env KEY=VALUE` | ninguno | Variable de la app. Se puede repetir. `KEY` no puede estar vacía; el valor sí. Mirá [Configuración](/configuration#variables). |
-| `--config FILE` | `acropolis.json`, si no `railpack.json` | Archivo de configuración, relativo al directorio de la app y dentro de él. |
+| `--config FILE` | `acropolis.json`, si no `railpack.json` | Archivo de configuración, relativo al directorio de la app y dentro de él. Igual que `-e ACROPOLIS_CONFIG_FILE=FILE`. |
 | `--compression CODEC` | `zstd` | Compresión de las capas: `zstd` (`zst`), `gzip` (`gz`) o `none` (`tar`). Usá `gzip` para runtimes anteriores a Docker 23 o containerd 1.5. |
 | `--level N` | `0` (el del códec) | Nivel de compresión. Para gzip, se rechazan valores mayores a 9. |
-| `--hermetic on\|off` | `on` | `off` corre los pasos sin namespaces. Con `on`, el build falla si el host no puede crear namespaces de red. |
+| `--hermetic on\|off` | `on` | `off` corre los pasos como procesos comunes del host, sin namespaces, sin filtro seccomp y sin sistema de archivos de solo lectura. Con `on`, el build falla si el host no puede crear namespaces de red. |
 | `--concurrency N` | `64` | Descargas en paralelo. Tiene que ser al menos 1. |
 | `--keep-work` | desactivado | Conserva el directorio de trabajo después del build, para depurar. |
 
@@ -66,6 +66,8 @@ acropolis plan [DIR] [options]
 | `DIR` | `.` | Directorio de la app. |
 | `-e`, `--env KEY=VALUE` | ninguno | Variable de la app, como en `build`. Se puede repetir. |
 | `--json` | desactivado | Muestra el plan como JSON en vez de texto. |
+
+`plan` no tiene `--config`: para planificar con el archivo de configuración que un build recibe por `--config FILE`, pasá `-e ACROPOLIS_CONFIG_FILE=FILE`.
 
 `--json` imprime en stdout un objeto formateado con las claves `app`, `provider`, `facts` (datos detectados como `framework` o `package-manager`), `steps` (cada uno con `id`, `name`, `action` y `deps`), `image` (`layers`, `workdir`, `env`, `cmd`, `entrypoint`, `ports`, `user`), `warnings` y `hash`. El repo guarda como ejemplos el plan de cada uno de los 131 ejemplos de Railpack en [`tests/plans`](https://github.com/olimpiacloud/acropolis/tree/main/tests/plans).
 
@@ -132,7 +134,7 @@ Se leen del entorno del proceso `acropolis`. Los ajustes de la app (`ACROPOLIS_B
 | --- | --- |
 | `ACROPOLIS_HOME` | Igual que `--home`. |
 | `ACROPOLIS_MIRRORS` | Igual que `--mirror`, separado por comas. |
-| `ACROPOLIS_CACHE_KEY` | Clave de caché por app para `build`, y el `--key` por defecto de `cache`. |
+| `ACROPOLIS_CACHE_KEY` | Clave de caché por app para `build`, y el `--key` por defecto de `cache`. Si no está, el build usa un hash de la ruta de la app. |
 | `ACROPOLIS_CACHE_MAX` | Después de cada build, recorta el home a este tamaño, como `gc`. |
 | `ACROPOLIS_NO_CACHE` | Construye sin la caché por app. |
 | `ACROPOLIS_BUILD_TIMEOUT` | Timeout de todo el build; 1 h por defecto. |

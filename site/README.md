@@ -11,7 +11,7 @@ bun run validate   # broken links
 
 ## Deploy
 
-A static-assets Cloudflare Worker named `acropolis-docs` serves `dist/` on the custom domain `acropolis.olimpia.dev` (`cloudflare.config.ts`, `wrangler.config.ts`). With the `cf` CLI logged in to the Olimpia account:
+A static-assets Cloudflare Worker named `acropolis-docs` serves `dist/` on the custom domain `acropolis.olimpia.dev` (`cloudflare.config.ts`, `wrangler.config.ts`). With the `cf` CLI (it needs Node.js on the `PATH`) logged in to the Olimpia account:
 
 ```bash
 bun run deploy     # blume build && cf deploy

@@ -27,7 +27,7 @@ Acropolis lee `acropolis.json`, o `railpack.json` si no existe, desde el directo
 }
 ```
 
-Claves soportadas: `provider`, `packages`, `buildAptPackages`, `steps` (con `commands`, `variables`, `inputs`, `caches`, `secrets`, `deployOutputs`), `deploy` (`startCommand`, `aptPackages`, `inputs`, `paths`, `variables`, `base`), `exclude`, `secrets` y `caches`. Las claves desconocidas hacen fallar el build, así que un typo no pasa desapercibido.
+Claves soportadas: `provider`, `packages`, `buildAptPackages`, `steps` (con `commands`, `variables`, `secrets`, `deployOutputs`), `deploy` (`startCommand`, `aptPackages`, `inputs`, `paths`, `variables`) y `exclude`. Los `secrets` y `caches` de primer nivel de Railpack, los `inputs` y `caches` de los steps y `deploy.base` se aceptan por compatibilidad, pero se ignoran. Las claves desconocidas hacen fallar el build, así que un typo no pasa desapercibido.
 
 ## Variables
 
@@ -42,7 +42,7 @@ Las variables de la app se pasan con `-e KEY=VALUE`. Cada setting se lee primero
 | `NODE_VERSION`, `BUN_VERSION`, `GO_VERSION`, `RUST_VERSION`, `PYTHON_VERSION`, `UV_VERSION`, `RUBY_VERSION`, `PHP_VERSION`, `JDK_VERSION`, `DOTNET_VERSION`, `ELIXIR_VERSION`, `GLEAM_VERSION`, `DENO_VERSION` | Fijan la versión de un toolchain. |
 | `CONFIG_FILE` | Ruta del archivo de configuración, relativa a la app. |
 
-Las variables llegan a los steps del build, pero el plan y `info.json` solo llevan referencias `{env:NAME}`, nunca los valores, y la config de la imagen no las recibe: definí las variables de runtime en el contenedor que corre la imagen.
+Las variables que pasás con `-e` llegan a los steps del build, pero el plan y `info.json` solo llevan referencias `{env:NAME}`, nunca los valores (las `variables` escritas en los steps personalizados de un archivo de configuración sí forman parte del plan), y la config de la imagen no las recibe: definí las variables de runtime en el contenedor que corre la imagen.
 
 ## Settings del operador [#operator-settings]
 
@@ -50,7 +50,7 @@ Estas (con el prefijo `ACROPOLIS_` o `RAILPACK_`) se leen solo del entorno del p
 
 | variable | qué hace |
 | --- | --- |
-| `ACROPOLIS_CACHE_KEY` | Clave de caché por app (también es el `--key` por defecto de `acropolis cache`). |
+| `ACROPOLIS_CACHE_KEY` | Clave de caché por app (también es el `--key` por defecto de `acropolis cache`). Si no está, el build usa un hash de la ruta de la app. |
 | `ACROPOLIS_CACHE_MAX` | Después de cada build, recorta el home a este tamaño (`20G`), como `acropolis gc`. |
 | `ACROPOLIS_NO_CACHE` | Hace el build sin la caché por app. |
 | `ACROPOLIS_BUILD_TIMEOUT` | Timeout del build completo; 1 h por defecto. |
