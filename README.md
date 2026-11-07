@@ -8,7 +8,7 @@
 
 Acropolis takes an app's source code and returns an OCI image ready to run, with no Dockerfile and no daemon. It detects the language and framework, downloads verified toolchains and dependencies, compiles, and assembles the image. It is a single Rust binary (`acropolis`) and it is the builder behind [Olimpia](https://olimpia.dev).
 
-> **Experimental.** Acropolis builds every app on Olimpia, but its CLI, output and defaults can still change between releases. Documentation: **[acropolis.olimpia.dev](https://acropolis.olimpia.dev)**.
+> **Experimental:** the CLI, output and defaults can still change between releases. Documentation: **[acropolis.olimpia.dev](https://acropolis.olimpia.dev)**.
 
 ```
 acropolis build ./my-app -t registry.example.com/team/my-app:latest
