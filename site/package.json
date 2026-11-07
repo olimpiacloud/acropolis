@@ -9,7 +9,7 @@
     "deploy": "blume build && cf deploy"
   },
   "dependencies": {
-    "blume": "^2.1.0"
+    "blume": "2.2.6"
   },
   "devDependencies": {
     "cf": "^1.0.0-beta.28",

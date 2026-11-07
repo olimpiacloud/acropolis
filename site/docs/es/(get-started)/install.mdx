@@ -1,0 +1,58 @@
+---
+title: Instalación
+description: >-
+  Binarios de release para Linux x86_64 y arm64, verificados con checksums y una
+  attestation de procedencia de GitHub.
+sidebar:
+  icon: download
+---
+:::caution[Experimental]
+Acropolis es experimental: fijá la versión que instalás y leé el [changelog](/changelog) antes de actualizar.
+:::
+
+## Requisitos [#requirements]
+
+- Linux x86_64 o arm64 con glibc 2.36 o más nuevo (Debian 12, Ubuntu 24.04 o más nuevo). Acropolis usa namespaces de mount, PID y red, y overlayfs, así que no corre en macOS ni en Windows; te sirve una VM Linux o un contenedor `--privileged`.
+- Root para builds completos. `acropolis plan` corre sin root.
+
+## Desde un release [#from-a-release]
+
+Cada [release](https://github.com/olimpiacloud/acropolis/releases) trae el binario, sus checksums y una attestation de procedencia firmada por GitHub Actions. Reemplazá `v` por el [último release](https://github.com/olimpiacloud/acropolis/releases/latest):
+
+```bash
+v=v0.3.1 target=x86_64-unknown-linux-gnu   # or aarch64-unknown-linux-gnu
+gh release download "$v" -R olimpiacloud/acropolis -p "acropolis-$v-$target.tar.gz" -p SHA256SUMS
+sha256sum --ignore-missing -c SHA256SUMS
+gh attestation verify "acropolis-$v-$target.tar.gz" -R olimpiacloud/acropolis
+tar xzf "acropolis-$v-$target.tar.gz" && sudo install "acropolis-$v-$target/acropolis" /usr/local/bin/
+```
+
+## Imagen builder [#builder-image]
+
+Hay una imagen de Debian 12 con herramientas de build nativas (`python3`, `make`, `g++`, `pkg-config`, `git`) y toolchains precalentadas (Node LTS, Go, Bun, uv, Python) publicada como `ghcr.io/olimpiacloud/acropolis-builder:<version>` para amd64 y arm64:
+
+```bash
+docker run --rm --privileged -v "$PWD:/app:ro" -v /tmp/out:/out \
+  ghcr.io/olimpiacloud/acropolis-builder:<version> build /app --oci /out/image.tar --info /out/info.json
+```
+
+Mirá [Correr en producción](/production) para ver qué privilegios necesita.
+
+## Desde el código fuente [#from-source]
+
+Con un Rust estable reciente (como mínimo la `rust-version` de `Cargo.toml`) y un compilador de C:
+
+```bash
+git clone https://github.com/olimpiacloud/acropolis
+cd acropolis
+cargo build --release --bin acropolis   # target/release/acropolis
+```
+
+## Verificá la instalación [#check-the-install]
+
+```bash
+acropolis --version
+acropolis plan ./my-app   # no root needed
+```
+
+Siguiente: [Uso](/usage).

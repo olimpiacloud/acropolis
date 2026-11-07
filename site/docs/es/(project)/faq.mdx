@@ -1,0 +1,59 @@
+---
+title: Preguntas frecuentes
+description: >-
+  Respuestas cortas sobre plataformas, root, Dockerfiles, Olimpia, agentes,
+  fallos y licencia.
+sidebar:
+  icon: circle-help
+---
+## ¿Acropolis está listo para producción? [#is-acropolis-ready-for-production]
+
+Es experimental. Olimpia lo usa como builder opcional con un fallback, y pasa las [suites de compatibilidad](/compatibility), pero los flags, la salida y los valores por defecto pueden cambiar entre versiones `0.x`. Fijá una versión y tené un builder de respaldo. Mirá [Estado](/introduction#status).
+
+## ¿Corre en macOS o Windows? [#does-it-run-on-macos-or-windows]
+
+No. Necesita Linux x86_64 o arm64 con glibc 2.36 o más nuevo, porque usa namespaces de montaje, PID y red, y overlayfs. En otros sistemas, usá una VM Linux o un contenedor `--privileged`. Mirá [Instalación](/install).
+
+## ¿Necesita root? [#does-it-need-root]
+
+`acropolis build` sí. `acropolis plan` no.
+
+## ¿Necesita Docker? [#does-it-need-docker]
+
+No. No hay daemon: Acropolis descarga, buildea y pushea por su cuenta. Necesitás Docker (u otro runtime) solo para correr las imágenes o para usar la [imagen del builder](/install#builder-image).
+
+## ¿Y las apps con Dockerfile? [#what-about-apps-with-a-dockerfile]
+
+Quedan fuera del alcance: Acropolis no lee el Dockerfile, detecta el stack a partir del código fuente. Las apps que necesitan su Dockerfile seguí buildeándolas con BuildKit.
+
+## ¿Mi configuración de Railpack sigue funcionando? [#does-my-railpack-configuration-still-work]
+
+Sí. Acropolis lee `railpack.json` cuando no hay un `acropolis.json`, sigue el esquema y la precedencia de providers de Railpack, y lee cada ajuste primero con el prefijo `ACROPOLIS_` y después con `RAILPACK_`. Mirá [Configuración](/configuration).
+
+## ¿Para qué plataforma es la imagen? [#which-platform-is-the-image-for]
+
+Para la plataforma del host que corre el build. Buildeá en arm64 para obtener una imagen arm64.
+
+## ¿Qué pasa cuando no puede buildear una app? [#what-happens-when-it-cannot-build-an-app]
+
+Termina con un código que te dice qué hacer: `1` falló el build propio de la app, `75` infraestructura (reintentá una vez), `78` la app no se puede buildear tal como está configurada, `70` un bug de Acropolis. Con `78` y `70`, pasá a otro builder. Mirá [códigos de salida](/cli#exit-codes).
+
+## ¿Cómo lo uso en Olimpia? [#how-do-i-use-it-on-olimpia]
+
+Elegilo en **Settings → Builder** de tu app en [Olimpia](https://olimpia.dev), o con `builder: "acropolis"` desde el servidor MCP de Olimpia. Si Acropolis no puede buildear la app, el build sigue con el Dockerfile o con Railpack. Mirá [Para agentes](/agents/workflows#build-on-olimpia).
+
+## ¿Acropolis tiene un servidor MCP? [#does-acropolis-have-an-mcp-server]
+
+No. Los agentes usan la CLI `acropolis`, con `--events json` y `plan --json` para obtener una salida legible por máquinas, y leen esta documentación como Markdown. Olimpia tiene su propio servidor MCP para deployar ahí. Mirá [Conectar](/agents/connect).
+
+## ¿Dónde guarda sus archivos? [#where-does-it-keep-its-files]
+
+En el home: `$XDG_CACHE_HOME/acropolis`, si no `~/.cache/acropolis`, o lo que digan `--home` o `ACROPOLIS_HOME`. `acropolis gc --max-size 20G` lo recorta.
+
+## ¿Cuál es la licencia? [#what-is-the-license]
+
+Apache-2.0 o MIT, a tu elección. El código fuente está en [github.com/olimpiacloud/acropolis](https://github.com/olimpiacloud/acropolis).
+
+## ¿Cómo reporto una vulnerabilidad? [#how-do-i-report-a-vulnerability]
+
+En privado, mediante el formulario **Report a vulnerability** de GitHub. Mirá [`SECURITY.md`](https://github.com/olimpiacloud/acropolis/blob/main/SECURITY.md).

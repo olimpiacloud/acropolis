@@ -1,0 +1,74 @@
+{
+  "files": {
+    "docs/(get-started)/how-it-works.mdx": {
+      "es": "82626ece45a3bbdc"
+    },
+    "docs/(get-started)/install.mdx": {
+      "es": "f74d3b50b87cedb0"
+    },
+    "docs/(get-started)/introduction.mdx": {
+      "es": "69d3c0375ded92e9"
+    },
+    "docs/(get-started)/meta.ts": {
+      "es": "2d8bfd0bd3143dfa"
+    },
+    "docs/(guides)/compatibility.mdx": {
+      "es": "2ecab0ae8957c4a7"
+    },
+    "docs/(guides)/configuration.mdx": {
+      "es": "9a990decd8f820c6"
+    },
+    "docs/(guides)/meta.ts": {
+      "es": "f46da3383d9a180b"
+    },
+    "docs/(guides)/production.mdx": {
+      "es": "630763c5722fc0f5"
+    },
+    "docs/(guides)/usage.mdx": {
+      "es": "62038bba7db42bdb"
+    },
+    "docs/(project)/changelog.mdx": {
+      "es": "a9044ecee33df38d"
+    },
+    "docs/(project)/contributing.mdx": {
+      "es": "4e59e09a70772eeb"
+    },
+    "docs/(project)/faq.mdx": {
+      "es": "221013df9cc53bc6"
+    },
+    "docs/(project)/meta.ts": {
+      "es": "d5a0f9a97c4282af"
+    },
+    "docs/(reference)/benchmarks.mdx": {
+      "es": "cc9085ce743745f9"
+    },
+    "docs/(reference)/cli.mdx": {
+      "es": "bafa9b7b78631b24"
+    },
+    "docs/(reference)/meta.ts": {
+      "es": "6390543a96966713"
+    },
+    "docs/agents/connect.mdx": {
+      "es": "bb913021d323f09e"
+    },
+    "docs/agents/index.mdx": {
+      "es": "470232644e92d880"
+    },
+    "docs/agents/meta.ts": {
+      "es": "9a46dc95956e02fe"
+    },
+    "docs/agents/prompts.mdx": {
+      "es": "92080792ff911f8d"
+    },
+    "docs/agents/security.mdx": {
+      "es": "6f0221f84dd0134e"
+    },
+    "docs/agents/tools.mdx": {
+      "es": "4b1943cad9782b62"
+    },
+    "docs/agents/workflows.mdx": {
+      "es": "e4f5cb7b088b7ffc"
+    }
+  },
+  "version": 1
+}

@@ -60,31 +60,60 @@ body::after {
   opacity: 0.3;
 }
 
-header a[href="/"] > span.truncate {
+@keyframes olimpia-drift {
+  from {
+    transform: scale(1);
+  }
+  to {
+    transform: scale(1.06) translate3d(-1%, 0, 0);
+  }
+}
+
+@keyframes olimpia-enter {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+    filter: blur(4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  @keyframes olimpia-enter {
+    from {
+      opacity: 0;
+    }
+  }
+}
+
+header a[href="/"] > span.truncate,
+header a[href="/en"] > span.truncate,
+header a[href="/es"] > span.truncate {
   font-family: var(--blume-font-display);
   font-size: 1.3rem;
   font-weight: 400;
   letter-spacing: 0.03em;
 }
 
-header a[href="/"] > span:first-child > svg {
+header a[href="/"] > span:first-child > svg,
+header a[href="/en"] > span:first-child > svg,
+header a[href="/es"] > span:first-child > svg {
   height: 1.6rem;
 }
 
-.acropolis-brand {
+.family-brand {
   display: inline-flex;
   min-width: 0;
   align-items: center;
   gap: 0.6rem;
 }
 
-.acropolis-by {
+.family-by {
   color: var(--blume-muted-foreground);
   font-size: 0.8rem;
   white-space: nowrap;
 }
 
-.acropolis-experimental {
+.family-badge {
   display: inline-flex;
   align-items: center;
   border: 1px solid color-mix(in oklab, var(--blume-accent) 55%, transparent);
@@ -99,7 +128,7 @@ header a[href="/"] > span:first-child > svg {
 }
 
 @media (max-width: 40rem) {
-  .acropolis-by {
+  .family-by {
     display: none;
   }
 }

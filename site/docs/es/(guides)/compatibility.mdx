@@ -1,0 +1,27 @@
+---
+title: Suites de compatibilidad
+description: >-
+  Acropolis se prueba contra las suites de tests que publican otros builders, no
+  solo contra sus propias apps.
+sidebar:
+  icon: circle-check
+---
+No confiamos en nuestras propias apps de prueba: usamos los tests de otros builders tal como los publican. Cada caso arma la imagen con Acropolis, la corre con `docker run` y chequea la salida o un request HTTP, con los mismos timeouts que el original. Resultados a la v0.3.1:
+
+| suite | qué es | resultado |
+| --- | --- | --- |
+| Ejemplos de [Railpack](https://github.com/railwayapp/railpack/tree/main/examples) | 131 apps y 156 casos: Node (npm, pnpm, yarn, bun, Next, Nuxt, Astro, SvelteKit, Remix, Angular, Nx, Turborepo), Python (pip, uv, poetry, pdm), Go, Rust, Ruby/Rails, PHP/Laravel, Java, .NET, Elixir, Gleam, Deno, sitios estáticos y scripts | **149 pasan**; 2 son para arm64 y se saltean en x86; los otros 5 fallan también con la v0.2.1 desde el 2026-10-13 (el `apt-get` de las imágenes de Ruby se topa con archivos `Release` de Debian vencidos, y `greenlet` 3.2.4 no tiene wheel para el Python que le toca y pide `g++`) |
+| Next.js y Turbopack (`tests/suites/next`) | Next 15 con `--turbopack`, Next 16 con Turbopack por defecto, `--webpack`, `output: standalone`, `output: export`, `next/image`, lecturas de archivos en runtime y un monorepo de Turborepo; con npm, pnpm, yarn y bun | **8/8** |
+| Workspaces (`tests/suites/workspaces`) | Un miembro que depende de otro miembro cuya devDependency es un tercer miembro que solo tiene una base de `tsconfig`, con bun, pnpm, npm, yarn 1 y yarn berry | **5/5** |
+| [Tests de deploy de Next.js](https://nextjs.org/docs/app/api-reference/adapters/testing-adapters) (`tests/suites/next-deploy`) | El harness propio de Next con `NEXT_TEST_MODE=deploy`: 40 archivos repartidos en `test/e2e/app-dir`, armados con Acropolis y corridos con docker; Next 15.5.27 (webpack) y 16.4.0 (Turbopack) | **15.5.27: 48 de 49 tests** (35 de 36 archivos que corren); **16.4.0: 154 de 160 tests** (22 de 27 archivos); el resto se saltea en modo deploy |
+| [TechEmpower](https://github.com/TechEmpower/FrameworkBenchmarks) (`scripts/techempower-suite.py`) | 297 frameworks en los lenguajes que buildeamos, sin su Dockerfile, chequeando `/json` y `/plaintext` | **55 pasan**; 98 fallan por diseño (paquetes del sistema o un runtime compilado desde el código fuente en el Dockerfile, extensiones de PHP por fuera de `composer.json`, servidores estilo Swoole/Workerman, C/C++ sin CMake ni Meson), 31 están marcados como rotos upstream y 13 necesitan la base de datos de TechEmpower al arrancar |
+| [Heroku getting-started](https://github.com/heroku) y [samples de Paketo](https://github.com/paketo-buildpacks/samples) (`scripts/smoke-suite.py`) | 6 apps de Heroku y 43 samples de Paketo (Java, Node, Go, Python, Ruby, PHP, .NET, estáticos) | **22 pasan**; 7 fallan por diseño (binarios de .NET precompilados, apps sin `package.json`, `requirements.txt` ni `composer.json`) |
+| Tests de [Nixpacks](https://github.com/railwayapp/nixpacks) (`scripts/nixpacks-suite.py`) | 73 casos convertidos desde `tests/docker_run_tests.rs` | **37 pasan**; el resto son lenguajes que Railpack tampoco soporta (Clojure, Crystal, Dart, Haskell, Scala, Scheme, Swift, Zig), configs propias de Nixpacks (`nixpacks.toml`, `NIXPACKS_*`) o apps que esperan el compilador dentro de la imagen final |
+| Snapshots de planes (`tests/plans`) | `acropolis plan --json` para los 131 ejemplos de Railpack | cualquier cambio en la detección aparece como diff antes de buildear nada |
+| Tests unitarios | instalación de paquetes, capas, sandbox, registry, rutas que se escapan de la app, watch paths, errores | 132 |
+
+## Qué encontraron [#what-they-found]
+
+Estas suites encontraron bugs que nuestras propias apps nunca habrían mostrado: yarn v1 instalando binarios para todas las plataformas (177 MB de `sharp` para darwin, windows y arm en una imagen linux), `node_modules` de miembros de workspaces de pnpm que no llegaban a la imagen, Next 15 necesitando `typescript` en runtime para leer `next.config.ts`, parches de `patchedDependencies` que no se aplicaban, hardlinks duplicados que inflaban las capas, Go sin `go.mod` y Java con un Gradle viejo. Después vinieron otros: miembros de workspaces de yarn berry sin `node_modules` en la imagen, apps sin lockfile que compartían entre sí la capa cacheada de `node_modules` y terminaban con los builds musl de `@next/swc` y `sharp` (41 MB más por imagen de Next), `node-gyp` faltante cuando otro plan había instalado el mismo Node sin npm, y capas con una ruta escrita dos veces, que `docker pull` rechaza en overlay2.
+
+Las imágenes se prueban con `docker pull` desde un registry local, y en cada capa de cada imagen (las capas base también) se chequea que no haya rutas duplicadas. Con `E2E_OCI=1`, el harness además carga el tar de `--oci` con `docker load`, que es como las consume Olimpia.

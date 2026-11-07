@@ -1,0 +1,40 @@
+---
+title: Benchmarks
+description: >-
+  Builds en frío, rebuilds, tamaño de imagen y pico de RAM de Acropolis frente a
+  Docker y Railpack.
+sidebar:
+  icon: gauge
+---
+## Apps de ejemplo [#sample-apps]
+
+Benchmark de builds en frío y rebuilds con 2 CPUs: las tres herramientas corrieron el mismo día y en las mismas condiciones, y se toma la mediana de 2 corridas. Para Docker se usa un Dockerfile multi-stage idiomático para cada app ([`bench/dockerfiles`](https://github.com/olimpiacloud/acropolis/tree/main/bench/dockerfiles)).
+
+| app | tiempo en frío (Docker / Railpack / **Acropolis**) | imagen (Docker / Railpack / **Acropolis**) | pico de RAM (Docker / Railpack / **Acropolis**) |
+| --- | --- | --- | --- |
+| Express | 16.1 s / 53.7 s / **6.6 s** | 81.2 / 147.5 / **54.6 MB** | 562 / 2955 / **83 MB** |
+| Go | 77.9 s / 85.3 s / **41.7 s** | 4.3 / 40.8 / **4.2 MB** | 2221 / 2944 / **1088 MB** |
+| Rust | 75.3 s / 112.4 s / **48.2 s** | 10.0 / 38.0 / **11.4 MB** | 2910 / 4523 / **1509 MB** |
+| Vite + React | 23.0 s / 55.3 s / **5.2 s** | 26.4 / 54.7 / **25.0 MB** | 933 / 2863 / **594 MB** |
+| Vite + MUI | 48.3 s / 77.8 s / **8.4 s** | 26.5 / 54.7 / **25.0 MB** | 1329 / 3262 / **898 MB** |
+| TanStack Start | 26.8 s / 78.1 s / **8.1 s** | 80.1 / 203.0 / **53.6 MB** | 1242 / 3575 / **960 MB** |
+| Next 15 | 118.1 s / 170.5 s / **47.5 s** | 105.4 / 345.6 / **69.8 MB** | 3075 / 4560 / **1936 MB** |
+
+Rebuild después de cambiar un archivo (Docker / Railpack / **Acropolis**): Go 41 s / 5.8 s / **1.1 s**, Rust 49 s / 15 s / **6.5 s** y Next 71 s / 81 s / **24.8 s**.
+
+El pico de RAM incluye la page cache. La memoria anónima, que no se puede liberar, está a la par de Docker en los builds en frío y por debajo en los rebuilds: la mayor parte es el compilador de cada lenguaje, no Acropolis.
+
+## Un monorepo real [#a-real-monorepo]
+
+olimpia-cloud (workspace de bun; una app web con TanStack Start/Nitro y una API con Axum + sqlx), frente a sus propios Dockerfiles de producción, con 4 CPUs y la mediana de 2 corridas:
+
+| app | en frío (Docker / **Acropolis**) | rebuild, un archivo cambiado | imagen, comprimida / descomprimida | pico de RAM, en frío / rebuild |
+| --- | --- | --- | --- | --- |
+| web | 53.3 s / **42.4 s** | 26.0 s / **26.9 s** | 66.4 / 259.2 MB vs **57.1 / 224.0 MB** | 3077 / 3187 MB vs **3708 / 1875 MB** |
+| api | 240.5 s / **228.0 s** | 109.7 s / **115.3 s** | 23.2 / 91.1 MB vs **24.5 / 95.2 MB** | 3988 / 3918 MB vs **3483 / 1781 MB** |
+
+Acá mandan los compiladores (`vp build` ~20 s, `cargo build --release` de la API ~190 s), y esos Dockerfiles ya están bien afinados (cache mounts, runtimes distroless/alpine), así que la diferencia es chica. Acropolis los buildea sin Dockerfile: solo hizo falta un input en `acropolis.json` para copiar `regctl` a la imagen de la API, como hace el Dockerfile.
+
+## Cómo reproducirlo [#reproducing]
+
+`scripts/bench.sh` corre el benchmark contra Docker y Railpack, y `AB=1 scripts/bench.sh` compara dos binarios de Acropolis intercalados (`APPS=`, `RUNS=`). Las apps están en [`bench/apps`](https://github.com/olimpiacloud/acropolis/tree/main/bench/apps).

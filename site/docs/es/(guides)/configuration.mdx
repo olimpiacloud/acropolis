@@ -1,0 +1,59 @@
+---
+title: Configuración
+description: >-
+  Configurá un build con acropolis.json o railpack.json y con variables
+  ACROPOLIS_ o RAILPACK_.
+sidebar:
+  icon: settings
+---
+La mayoría de las apps no necesitan configuración: Acropolis detecta el provider a partir del repo, con la misma precedencia que Railpack (Go, Rust, Python, Java y otros ganan sobre un `package.json`). Cuando la detección necesita ayuda, tenés dos formas de orientarla.
+
+## Archivo de configuración [#config-file]
+
+Acropolis lee `acropolis.json`, o `railpack.json` si no existe, desde el directorio de la app. `--config` (o la variable `CONFIG_FILE`) elige otro archivo, que tiene que estar dentro del directorio de la app. El archivo es JSON (también se acepta JSON5) y sigue el schema de Railpack:
+
+```json acropolis.json
+{
+  "provider": "node",
+  "buildAptPackages": ["libvips-dev"],
+  "steps": {
+    "build": { "commands": ["npm run build:prod"] }
+  },
+  "deploy": {
+    "startCommand": "node dist/server.js",
+    "aptPackages": ["ffmpeg"],
+    "paths": ["dist"]
+  }
+}
+```
+
+Claves soportadas: `provider`, `packages`, `buildAptPackages`, `steps` (con `commands`, `variables`, `inputs`, `caches`, `secrets`, `deployOutputs`), `deploy` (`startCommand`, `aptPackages`, `inputs`, `paths`, `variables`, `base`), `exclude`, `secrets` y `caches`. Las claves desconocidas hacen fallar el build, así que un typo no pasa desapercibido.
+
+## Variables
+
+Las variables de la app se pasan con `-e KEY=VALUE`. Cada setting se lee primero con el prefijo `ACROPOLIS_` y después con el prefijo `RAILPACK_`, así una configuración de Railpack sigue funcionando:
+
+| variable | qué hace |
+| --- | --- |
+| `BUILD_CMD`, `START_CMD` | Reemplazan los comandos de build y de arranque detectados. |
+| `PROVIDER` | Fuerza un provider en lugar de detectarlo. |
+| `PACKAGES` | Herramientas extra que se instalan con mise, como `node@22 jq`. |
+| `BUILD_APT_PACKAGES`, `DEPLOY_APT_PACKAGES` | Paquetes de Debian para el build y para la imagen de runtime. |
+| `NODE_VERSION`, `BUN_VERSION`, `GO_VERSION`, `RUST_VERSION`, `PYTHON_VERSION`, `UV_VERSION`, `RUBY_VERSION`, `PHP_VERSION`, `JDK_VERSION`, `DOTNET_VERSION`, `ELIXIR_VERSION`, `GLEAM_VERSION`, `DENO_VERSION` | Fijan la versión de un toolchain. |
+| `CONFIG_FILE` | Ruta del archivo de configuración, relativa a la app. |
+
+Las variables llegan a los steps del build, pero el plan y `info.json` solo llevan referencias `{env:NAME}`, nunca los valores, y la config de la imagen no las recibe: definí las variables de runtime en el contenedor que corre la imagen.
+
+## Settings del operador [#operator-settings]
+
+Estas (con el prefijo `ACROPOLIS_` o `RAILPACK_`) se leen solo del entorno del proceso `acropolis`. Si llegan por `-e` o por el archivo de configuración se ignoran, así que una app no puede cambiarlas:
+
+| variable | qué hace |
+| --- | --- |
+| `ACROPOLIS_CACHE_KEY` | Clave de caché por app (también es el `--key` por defecto de `acropolis cache`). |
+| `ACROPOLIS_CACHE_MAX` | Después de cada build, recorta el home a este tamaño (`20G`), como `acropolis gc`. |
+| `ACROPOLIS_NO_CACHE` | Hace el build sin la caché por app. |
+| `ACROPOLIS_BUILD_TIMEOUT` | Timeout del build completo; 1 h por defecto. |
+| `ACROPOLIS_STEP_TIMEOUT` | Timeout de cada step. |
+| `ACROPOLIS_BUILD_ID` | Id del build que se escribe en cada evento JSON. |
+| `ACROPOLIS_ALLOW_PRIVATE_REGISTRY` | Permite registries privados y `http://` para lo que Acropolis descarga por su cuenta. |

@@ -1,0 +1,59 @@
+---
+title: Conceptos
+description: >-
+  Cómo arma una imagen Acropolis: el plan, el home y sus cachés, sin imagen de
+  builder, descargas segmentadas, runtimes chicos y aislamiento de pasos.
+sidebar:
+  label: Conceptos
+  icon: layers
+---
+Un build tiene tres fases: detectar la app y escribir un plan, correr los pasos del plan y ensamblar la imagen. [`acropolis plan`](/cli#plan) imprime solo la primera fase.
+
+## Términos clave [#key-terms]
+
+| término | significado |
+| --- | --- |
+| **Provider** | El ecosistema que Acropolis detectó para la app (`node`, `go`, `rust`, `python`, etc.), elegido con la precedencia de Railpack. `ACROPOLIS_PROVIDER` fuerza uno. |
+| **Plan** | La lista de pasos que va a correr un build (toolchains, instalaciones, comandos de build) más la especificación de la imagen de runtime. Tiene un hash, `planHash` en `info.json`. |
+| **Paso** | Una unidad del plan, con los pasos de los que depende. Cada paso corre aislado (mirá [Aislamiento](#isolation)). |
+| **Home** | El directorio con el store direccionado por contenido, los toolchains, el rootfs desempaquetado de las imágenes y las cachés por app. `--home` o `ACROPOLIS_HOME`; por defecto `$XDG_CACHE_HOME/acropolis`, y si no, `~/.cache/acropolis`. |
+| **Caché por app** | Las cachés de build de una app dentro del home, seleccionadas con `ACROPOLIS_CACHE_KEY`. Se puede exportar e importar como archivo. |
+| **Variables de la app** | Los valores de `-e KEY=VALUE` y el archivo de configuración. Vienen de la app y no son confiables. |
+| **Settings del operador** | Settings `ACROPOLIS_*` que se leen solo del entorno del proceso `acropolis`, así una app no los puede cambiar. Mirá [Configuración](/configuration#operator-settings). |
+| **Imagen de builder** | `ghcr.io/olimpiacloud/acropolis-builder`, una imagen Debian 12 con Acropolis y toolchains precalentados, para correr un build por contenedor. |
+
+## La detección y el plan [#detection-and-the-plan]
+
+Acropolis lee el repo (lockfiles, `package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml`, configs de frameworks, `acropolis.json` o `railpack.json`) y elige un provider con la precedencia de Railpack. El plan lista los toolchains, los pasos de instalación y de build, la base del runtime y los archivos que toma cada capa. Su hash está en `info.json` como `planHash`, y `tests/plans` guarda un snapshot del plan de cada uno de los 131 ejemplos de Railpack, así que cualquier cambio en la detección aparece como diff antes de buildear nada.
+
+## Sin imagen de builder [#no-builder-image]
+
+Node, Go y Rust se descargan de sus fuentes oficiales con checksum y se corren directamente. Las dependencias (npm, pnpm, yarn, bun, módulos de Go, crates) las instala el propio Acropolis desde los lockfiles y las verifica mientras se descargan: los módulos de Go contra `go.sum`, los paquetes de npm contra sus hashes de integridad. Después, los builds de Go corren con `GOPROXY=off` y sin red.
+
+Los lenguajes sin binarios relocalizables (Ruby, Python con extensiones, PHP, Java, .NET, Elixir) y los paquetes de apt corren en cambio dentro del rootfs de la imagen oficial: sus capas se desempaquetan una sola vez, cada paso tiene su propio upper dir de overlayfs y ese upper dir se convierte en una capa OCI.
+
+## Descargas que no se cuelgan [#downloads-that-dont-hang]
+
+Los blobs de 12 MB o más se descargan en segmentos de 8 MB, seis en paralelo sobre conexiones HTTP/1.1 independientes. Si el segmento que bloquea la salida en orden se atrasa (más de 2,5 s o 2,5 veces la mediana), se arranca un duplicado y gana el primero que termina; los streams que pasan 6 s sin bytes se cortan y se retoman con `Range`. Copiar `node:22-bookworm-slim` (80 MB) desde Docker Hub pasó de 12,2 s a 2,9 s.
+
+## La base nunca se descomprime [#the-base-is-never-decompressed]
+
+Las capas de la imagen base se copian de registry a registry por digest, arrancando apenas llega el manifest de la plataforma. Solo se comprimen las capas nuevas: cada una es una concatenación de frames zstd independientes de ~1 MB (o miembros gzip) comprimidos en paralelo, válida y determinística. El `node_modules` de producción se escribe directo desde los tarballs del store, sin desempaquetar a disco.
+
+## Runtimes chicos [#small-runtimes]
+
+- Los servidores Node corren sobre distroless con un shell busybox mínimo cuando no necesitan nada de Debian, con exactamente el binario `node` con el que se buildearon; si no, sobre `node:<version>-bookworm-slim`.
+- Las apps de Next 15+ sin `output` configurado se buildean como standalone, así que la imagen lleva solo lo que traza el servidor.
+- Las apps de Bun que arrancan con `bun <file>` corren sobre `distroless/cc` con una capa de bun y sin `node`.
+- Go corre sobre `distroless/static` y Rust sobre `distroless/cc`.
+- Las SPAs y los sitios estáticos los sirve Caddy.
+
+## Cachés portables [#portable-caches]
+
+Las cachés de build de Go y Cargo, `.next/cache`, el `node_modules` reutilizado y el resto viven en una caché por app en el home. En un builder efímero viaja como archivo: [`acropolis cache export|import`](/cli#cache) la escribe y la lee como `tar.zst`.
+
+## Aislamiento [#isolation]
+
+Cada paso del build corre en su propio PID namespace (no puede ver a Acropolis ni sus variables), con el filesystem en solo lectura salvo su directorio de trabajo, la caché de su app, `/tmp` y `/var/tmp`, un `/dev` mínimo, las capabilities de un contenedor sin privilegios, un filtro seccomp basado en el perfil por defecto de Docker y su propio network namespace cuando no necesita red. Lo que Acropolis procesa como root (config, lockfiles, patches, capas, cachés) se valida para que no pueda leer ni escribir fuera de su árbol. Mirá [Correr en producción](/production) para ver qué protege eso y qué no.
+
+Todas las mediciones detrás de estas decisiones, y lo que se probó y se descartó, están en [`docs/decisions.md`](https://github.com/olimpiacloud/acropolis/blob/main/docs/decisions.md).

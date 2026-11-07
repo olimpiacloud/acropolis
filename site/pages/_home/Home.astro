@@ -1,0 +1,423 @@
+---
+import PageLayout from "blume/components/layout/PageLayout.astro";
+import Icon from "blume/components/Icon.astro";
+import data from "blume:data";
+import { home, type Locale } from "./content";
+
+interface Props {
+  locale: Locale;
+}
+
+const { locale } = Astro.props;
+const { config } = data;
+const t = home[locale];
+const defaultLocale = config.i18n?.defaultLocale ?? locale;
+const homeRoute = (code: string) => (code === defaultLocale ? "/" : `/${code}`);
+const route = homeRoute(locale);
+const base = data.navigationByLocale?.[locale] ?? data.navigation;
+const [agentsTab, humansTab] = base.tabs;
+const navigation = {
+  ...base,
+  tabs: [
+    { ...agentsTab, path: route, href: agentsTab.href ?? agentsTab.path },
+    { ...humansTab, path: humansTab.href ?? humansTab.path },
+  ],
+};
+const locales = config.i18n?.locales ?? [];
+const localeSwitch = locales.map((item) => ({
+  code: item.code,
+  label: item.label,
+  dir: item.dir ?? "ltr",
+  href: homeRoute(item.code),
+  current: item.code === locale,
+  untranslated: false,
+}));
+const product = config.logo?.text ?? "";
+const brandPrefix = locale === defaultLocale ? "" : `/${locale}`;
+const artPosition = t.art.position ?? "object-top";
+const redirectTargets = Object.fromEntries(
+  locales.filter((item) => item.code !== defaultLocale).map((item) => [item.code, homeRoute(item.code)])
+);
+---
+
+<PageLayout
+  site={{ title: config.title, description: t.description }}
+  logo={config.logo}
+  banner={config.banner}
+  analytics={config.analytics}
+  navigation={navigation}
+  favicon={config.favicon}
+  appleIcon={config.appleIcon}
+  fontCssVars={data.fontCssVars}
+  themeMode={config.theme.mode}
+  searchEnabled={config.search.enabled}
+  siteUrl={config.site}
+  ogEnabled={config.og.enabled}
+  ogImage={t.og.image}
+  ogImageAlt={t.og.alt}
+  ogImageSize={{ width: 1200, height: 630 }}
+  structuredDataEnabled={config.structuredData}
+  locale={locale}
+  localeSwitch={localeSwitch}
+  page={{ title: t.title, description: t.description, route }}
+>
+  {
+    locale === defaultLocale && config.i18n?.routeByBrowserLanguage && (
+      <script is:inline data-default={defaultLocale} data-targets={JSON.stringify(redirectTargets)}>
+        (() => {
+          const script = document.currentScript;
+          try {
+            if (localStorage.getItem("blume-locale")) return;
+            if (document.referrer && new URL(document.referrer).origin === location.origin) return;
+          } catch {
+            return;
+          }
+          const targets = JSON.parse(script.dataset.targets);
+          const fallback = script.dataset.default;
+          for (const wanted of navigator.languages ?? [navigator.language]) {
+            const code = wanted.toLowerCase();
+            const short = code.split("-")[0];
+            if (code === fallback || short === fallback) return;
+            const target = targets[code] ?? targets[short];
+            if (target) {
+              location.replace(target + location.hash);
+              return;
+            }
+          }
+        })();
+      </script>
+    )
+  }
+  <script is:inline data-product={product} data-prefix={brandPrefix}>
+    (() => {
+      const script = document.currentScript;
+      const home = script.dataset.prefix || "/";
+      const link = document.querySelector("header a[href='" + home + "']") ?? document.querySelector("header a[href='/']");
+      if (!link || link.parentElement.classList.contains("family-brand")) return;
+      const product = script.dataset.product;
+      const brand = document.createElement("span");
+      brand.className = "family-brand";
+      link.replaceWith(brand);
+      brand.append(link);
+      link.setAttribute("href", home);
+      if (product !== "Olimpia") {
+        const by = document.createElement("span");
+        by.className = "family-by";
+        by.textContent = "by Olimpia";
+        brand.append(by);
+      }
+      if (product === "Acropolis") {
+        const badge = document.createElement("a");
+        badge.className = "family-badge";
+        badge.href = script.dataset.prefix + "/introduction#status";
+        badge.textContent = "Experimental";
+        brand.append(badge);
+      }
+    })();
+  </script>
+  <div class="home" data-home data-mode="agents">
+    <section class="mx-auto grid w-full max-w-[1400px] gap-6 px-4 pt-6 pb-16 sm:px-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.05fr)] lg:gap-10 lg:px-8">
+      <div class="flex flex-col justify-center py-8 lg:py-16 lg:pl-8">
+        <div class="home-enter relative mb-10 h-56 overflow-hidden rounded-xl ring-1 ring-[color-mix(in_oklab,var(--blume-foreground)_8%,transparent)] sm:h-72 lg:hidden">
+          <img src={t.art.mobile} alt="" class="absolute inset-0 size-full object-cover" />
+          <div class="pointer-events-none absolute inset-2 rounded-lg border border-[color-mix(in_oklab,var(--olimpia-pergamino)_45%,transparent)]"></div>
+        </div>
+        <p class="home-enter flex items-center gap-3 text-xs tracking-[0.24em] text-muted-foreground uppercase">
+          <span aria-hidden="true" class="h-px w-8 bg-current opacity-60"></span>
+          {t.eyebrow}
+        </p>
+        <h1 class="home-enter mt-6 max-w-xl font-display text-5xl leading-[1.05] text-balance sm:text-6xl" style="animation-delay: 60ms">
+          {t.heading}
+        </h1>
+        <p class="home-enter mt-6 max-w-lg text-lg leading-relaxed text-pretty text-muted-foreground" style="animation-delay: 120ms">
+          {t.lede}
+        </p>
+
+        <div class="home-enter mt-10" style="animation-delay: 180ms">
+          <div role="tablist" aria-label={t.tablist} class="relative inline-grid grid-cols-2 rounded-full border border-border bg-[var(--olimpia-card)] p-1 text-sm shadow-[0_1px_0_rgb(43_36_32/0.04)]">
+            <span aria-hidden="true" class="home-pill absolute top-1 bottom-1 left-1 w-[calc(50%-0.25rem)] rounded-full bg-foreground"></span>
+            <button type="button" role="tab" id="tab-agents" aria-controls="panel-agents" aria-selected="true" data-tab="agents" class="home-tab relative z-10 flex items-center justify-center gap-2 rounded-full px-5 py-2">
+              <Icon icon="bot" size={15} />
+              {t.agentsTab}
+            </button>
+            <button type="button" role="tab" id="tab-humans" aria-controls="panel-humans" aria-selected="false" tabindex="-1" data-tab="humans" class="home-tab relative z-10 flex items-center justify-center gap-2 rounded-full px-5 py-2">
+              <Icon icon="book-open" size={15} />
+              {t.humansTab}
+            </button>
+          </div>
+
+          <div id="panel-agents" role="tabpanel" aria-labelledby="tab-agents" data-panel="agents" class="home-panel mt-8 max-w-xl">
+            <p class="text-pretty text-muted-foreground">{t.agents.intro}</p>
+            <ul class="mt-6 space-y-2.5">
+              {
+                t.agents.clients.map((client) => (
+                  <li class="flex items-center gap-3 rounded-blume border border-border bg-[var(--olimpia-card)] py-2 pr-2 pl-3">
+                    {client.logo ? <img src={client.logo} alt="" width="18" height="18" class:list={["size-[18px] shrink-0", client.invert && "dark:invert"]} /> : <span class="grid size-[18px] shrink-0 place-items-center text-accent"><Icon icon={client.icon ?? "terminal"} size={16} /></span>}
+                    <span class="w-24 shrink-0 text-sm font-medium">{client.label}</span>
+                    <code class="min-w-0 flex-1 truncate font-mono text-[12.5px] text-muted-foreground" title={client.command}>{client.command}</code>
+                    <button type="button" data-copy={client.command} class="home-copy grid size-8 shrink-0 place-items-center rounded-blume text-muted-foreground transition-colors duration-150 hover:bg-[var(--blume-muted)] hover:text-foreground" aria-label={`${t.agents.copy} ${client.label}`}>
+                      <span class="home-copy-idle"><Icon icon="copy" size={15} /></span>
+                      <span class="home-copy-done"><Icon icon="check" size={15} /></span>
+                    </button>
+                  </li>
+                ))
+              }
+            </ul>
+            <p class="mt-6 text-sm text-muted-foreground">
+              {t.agents.machineIntro}
+              {
+                t.agents.machine.map((item, index) => (
+                  <>
+                    {index > 0 && <span aria-hidden="true"> · </span>}
+                    <a href={item.href} class="font-mono text-[12.5px] text-foreground underline decoration-border underline-offset-4 hover:decoration-current">{item.label}</a>
+                  </>
+                ))
+              }
+            </p>
+            <ul class="mt-6 divide-y divide-border border-y border-border">
+              {
+                t.agents.tasks.map((task) => (
+                  <li>
+                    <a href={task.href} class="group flex items-start gap-4 py-3 transition-colors duration-150 hover:text-foreground">
+                      <span class="mt-0.5 grid size-8 shrink-0 place-items-center rounded-blume border border-border bg-[var(--olimpia-card)] text-accent">
+                        <Icon icon={task.icon} size={15} />
+                      </span>
+                      <span class="min-w-0 flex-1">
+                        <span class="block text-sm font-medium">{task.title}</span>
+                        <span class="mt-0.5 block text-sm text-muted-foreground">{task.body}</span>
+                      </span>
+                      <span aria-hidden="true" class="mt-1.5 text-muted-foreground transition-transform duration-300 ease-[cubic-bezier(0.23,1,0.32,1)] group-hover:translate-x-1 group-hover:text-foreground">→</span>
+                    </a>
+                  </li>
+                ))
+              }
+            </ul>
+            <a href={t.agents.cta.href} class="mt-8 inline-flex items-center gap-2 rounded-full bg-action px-5 py-2.5 text-sm font-medium text-action-foreground transition-transform duration-150 active:scale-[0.97]">
+              {t.agents.cta.label}
+              <span aria-hidden="true">→</span>
+            </a>
+          </div>
+
+          <div id="panel-humans" role="tabpanel" aria-labelledby="tab-humans" data-panel="humans" class="home-panel mt-8 max-w-xl" hidden>
+            <ul class="divide-y divide-border border-y border-border">
+              {
+                t.humans.guides.map((guide) => (
+                  <li>
+                    <a href={guide.href} class="group flex items-start gap-4 py-4 transition-colors duration-150 hover:text-foreground">
+                      <span class="mt-0.5 grid size-9 shrink-0 place-items-center rounded-blume border border-border bg-[var(--olimpia-card)] text-accent">
+                        <Icon icon={guide.icon} size={17} />
+                      </span>
+                      <span class="min-w-0 flex-1">
+                        <span class="block font-medium">{guide.title}</span>
+                        <span class="mt-0.5 block text-sm text-muted-foreground">{guide.body}</span>
+                      </span>
+                      <span aria-hidden="true" class="mt-2 text-muted-foreground transition-transform duration-300 ease-[cubic-bezier(0.23,1,0.32,1)] group-hover:translate-x-1 group-hover:text-foreground">→</span>
+                    </a>
+                  </li>
+                ))
+              }
+            </ul>
+            <a href={t.humans.cta.href} class="mt-8 inline-flex items-center gap-2 rounded-full bg-action px-5 py-2.5 text-sm font-medium text-action-foreground transition-transform duration-150 active:scale-[0.97]">
+              {t.humans.cta.label}
+              <span aria-hidden="true">→</span>
+            </a>
+          </div>
+        </div>
+      </div>
+
+      <aside class="home-art relative hidden min-h-[640px] overflow-hidden rounded-xl bg-[var(--olimpia-card)] shadow-[0_24px_60px_-24px_rgb(43_36_32/0.35)] ring-1 ring-[color-mix(in_oklab,var(--blume-foreground)_8%,transparent)] lg:block lg:h-[calc(100dvh-7rem)] lg:max-h-[920px]">
+        <img src={t.art.agents.src} alt={t.art.agents.alt} class:list={["home-image absolute inset-0 size-full origin-top object-cover", artPosition]} data-art="agents" />
+        <img src={t.art.humans.src} alt={t.art.humans.alt} class:list={["home-image absolute inset-0 size-full origin-top object-cover", artPosition]} data-art="humans" loading="lazy" />
+        <div class="pointer-events-none absolute inset-3 rounded-lg border border-[color-mix(in_oklab,var(--olimpia-pergamino)_40%,transparent)]"></div>
+        <div class="absolute inset-x-0 bottom-0 bg-linear-to-t from-[rgb(43_36_32/0.78)] via-[rgb(43_36_32/0.35)] to-transparent px-12 pt-40 pb-12 text-[var(--olimpia-pergamino)]">
+          <div class="home-quote" data-art="agents">
+            <p class="max-w-md font-display text-4xl leading-[1.1] text-balance">“{t.art.agents.quote}”</p>
+            <p class="mt-5 flex items-center gap-3 text-sm tracking-[0.18em] uppercase opacity-85">
+              <span aria-hidden="true" class="h-px w-8 bg-current opacity-70"></span>
+              {t.art.agents.caption}
+            </p>
+          </div>
+          <div class="home-quote" data-art="humans">
+            <p class="max-w-md font-display text-4xl leading-[1.1] text-balance">“{t.art.humans.quote}”</p>
+            <p class="mt-5 flex items-center gap-3 text-sm tracking-[0.18em] uppercase opacity-85">
+              <span aria-hidden="true" class="h-px w-8 bg-current opacity-70"></span>
+              {t.art.humans.caption}
+            </p>
+          </div>
+        </div>
+      </aside>
+    </section>
+
+    <section class="mx-auto w-full max-w-[1400px] px-4 pb-24 sm:px-6 lg:px-8">
+      <div class="border-t border-border pt-14 lg:px-8">
+        <div class="flex flex-wrap items-end justify-between gap-6">
+          <div>
+            <p class="text-xs tracking-[0.24em] text-muted-foreground uppercase">{t.features.eyebrow}</p>
+            <h2 class="mt-3 font-display text-3xl sm:text-4xl">{t.features.heading}</h2>
+          </div>
+          <a href={t.features.more.href} class="group text-sm text-muted-foreground transition-colors duration-150 hover:text-foreground">
+            {t.features.more.label}
+            <span aria-hidden="true" class="inline-block transition-transform duration-300 group-hover:translate-x-1">→</span>
+          </a>
+        </div>
+        <ul class="mt-10 grid gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-2 lg:grid-cols-3">
+          {
+            t.features.items.map((feature) => (
+              <li class="bg-[var(--olimpia-card)]">
+                <a href={feature.href} class="group flex h-full gap-5 p-6 transition-colors duration-200 hover:bg-background">
+                  {feature.art ? (
+                    <img src={feature.art} alt="" width="72" height="72" loading="lazy" class="size-[72px] shrink-0 object-contain transition-transform duration-500 ease-[cubic-bezier(0.23,1,0.32,1)] group-hover:-translate-y-1" />
+                  ) : (
+                    <span class="grid size-[72px] shrink-0 place-items-center rounded-blume border border-border bg-background text-accent transition-transform duration-500 ease-[cubic-bezier(0.23,1,0.32,1)] group-hover:-translate-y-1">
+                      <Icon icon={feature.icon ?? "sparkles"} size={28} />
+                    </span>
+                  )}
+                  <span>
+                    <span class="block font-display text-xl">{feature.title}</span>
+                    <span class="mt-2 block text-sm leading-relaxed text-pretty text-muted-foreground">{feature.body}</span>
+                  </span>
+                </a>
+              </li>
+            ))
+          }
+        </ul>
+        {
+          t.soon && (
+            <div class="mt-10 flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
+              <a href={t.soon.href} class="mr-2 hover:text-foreground">{t.soon.label}</a>
+              {t.soon.items.map((item) => <span class="rounded-full border border-dashed border-border px-3 py-1">{item}</span>)}
+            </div>
+          )
+        }
+      </div>
+    </section>
+  </div>
+</PageLayout>
+
+<style>
+  .home-enter {
+    animation: olimpia-enter 0.9s cubic-bezier(0.23, 1, 0.32, 1) both;
+  }
+
+  .home-tab {
+    color: var(--blume-muted-foreground);
+    transition: color 200ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+
+  .home-tab[aria-selected="true"] {
+    color: var(--blume-background);
+  }
+
+  .home-tab:focus-visible {
+    outline: 2px solid var(--olimpia-egeo);
+    outline-offset: 2px;
+  }
+
+  .home-pill {
+    transition: transform 380ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+
+  [data-mode="humans"] .home-pill {
+    transform: translateX(100%);
+  }
+
+  .home-panel:not([hidden]) {
+    animation: olimpia-enter 0.5s cubic-bezier(0.23, 1, 0.32, 1) both;
+  }
+
+  .home-image {
+    animation: olimpia-drift 40s ease-in-out infinite alternate;
+    transition: opacity 700ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+
+  .home-quote {
+    transition:
+      opacity 500ms cubic-bezier(0.23, 1, 0.32, 1),
+      transform 500ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+
+  .home-quote[data-art="humans"] {
+    position: absolute;
+    inset-inline: 3rem;
+    bottom: 3rem;
+  }
+
+  [data-mode="agents"] [data-art="humans"],
+  [data-mode="humans"] [data-art="agents"] {
+    opacity: 0;
+  }
+
+  [data-mode="agents"] .home-quote[data-art="humans"],
+  [data-mode="humans"] .home-quote[data-art="agents"] {
+    transform: translateY(8px);
+  }
+
+  .home-copy-done,
+  .home-copy[data-copied] .home-copy-idle {
+    display: none;
+  }
+
+  .home-copy[data-copied] .home-copy-done {
+    display: inline;
+    color: var(--olimpia-olivo);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .home-image {
+      animation: none;
+    }
+
+    .home-pill,
+    .home-quote {
+      transition-duration: 0ms;
+    }
+  }
+</style>
+
+<script>
+  function setup() {
+    const root = document.querySelector<HTMLElement>("[data-home]");
+    if (!root || root.dataset.ready) return;
+    root.dataset.ready = "true";
+    const tabs = [...root.querySelectorAll<HTMLButtonElement>("[data-tab]")];
+
+    const select = (mode: string, focus = false) => {
+      root.dataset.mode = mode;
+      for (const tab of tabs) {
+        const active = tab.dataset.tab === mode;
+        tab.setAttribute("aria-selected", String(active));
+        tab.tabIndex = active ? 0 : -1;
+        if (active && focus) tab.focus();
+      }
+      for (const panel of root.querySelectorAll<HTMLElement>("[data-panel]")) {
+        panel.hidden = panel.dataset.panel !== mode;
+      }
+    };
+
+    for (const tab of tabs) {
+      tab.addEventListener("click", () => {
+        select(tab.dataset.tab!);
+        history.replaceState(null, "", tab.dataset.tab === "humans" ? "#humans" : location.pathname);
+      });
+      tab.addEventListener("keydown", (event) => {
+        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+        event.preventDefault();
+        const next = tabs[(tabs.indexOf(tab) + 1) % tabs.length];
+        select(next.dataset.tab!, true);
+      });
+    }
+
+    for (const button of root.querySelectorAll<HTMLButtonElement>("[data-copy]")) {
+      button.addEventListener("click", async () => {
+        await navigator.clipboard.writeText(button.dataset.copy!);
+        button.dataset.copied = "";
+        setTimeout(() => delete button.dataset.copied, 1600);
+      });
+    }
+
+    if (location.hash === "#humans" || location.hash === "#humanos") select("humans");
+  }
+
+  document.addEventListener("astro:page-load", setup);
+  setup();
+</script>

@@ -1,0 +1,110 @@
+---
+title: Changelog
+description: >-
+  Todos los cambios importantes de Acropolis por versión, tomados del
+  CHANGELOG.md del repositorio.
+sidebar:
+  icon: history
+---
+:::caution[Experimental]
+Acropolis está en `0.x`: las versiones menores pueden cambiar flags, salida y valores por defecto. Antes de actualizar, leé las entradas entre tu versión y la nueva. Solo la última versión `0.x` recibe correcciones de seguridad.
+:::
+
+Todos los cambios importantes de Acropolis. El formato sigue [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) y el proyecto usa [versionado semántico](https://semver.org/). Desde la 0.1.0, release-plz genera las entradas a partir de los títulos de los PR ([Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)). La fuente es [`CHANGELOG.md`](https://github.com/olimpiacloud/acropolis/blob/main/CHANGELOG.md), y los binarios están en la [página de releases](https://github.com/olimpiacloud/acropolis/releases).
+
+## [0.3.1](https://github.com/olimpiacloud/acropolis/releases/tag/v0.3.1) - 2026-10-14
+
+### Imágenes [#images]
+
+- La capa de `node_modules` ya no tiene directorios duplicados: un paquete con dependencias anidadas (`node_modules/debug/node_modules/ms`, `@mastra/core`, `@types/pg` en una app de bun) se escribía como su propio directorio y de nuevo como ancestro del anidado. `docker load` y el image store de containerd lo aceptan, pero `docker pull` sobre overlay2 falla con `duplicates of file paths not supported`.
+- Los paquetes de bun marcados como `bundled` (que vienen dentro del tarball de su padre, como `napi-wasm` en `@parcel/watcher-wasm`) ya no se extraen una segunda vez: cada uno de sus archivos estaba dos veces en la capa. La nueva verificación de capas lo detectó en `node-tanstack-start` de Railpack.
+- Un tarball de paquete que nombra un archivo dos veces (`package/./dist/cjs/index.js` y `package/dist/cjs/index.js` en `@rollup/plugin-alias` 5.1.1, una dependencia de nitropack) lo pone una sola vez en la capa, con el contenido de la última entrada, como pasaría al extraerlo.
+- Cada capa se verifica mientras se escribe: una ruta que aparece dos veces (archivo, directorio o link) hace fallar el build con exit 70 en vez de producir una imagen que overlay2 rechaza. Las capas cacheadas por la 0.3.0 no se reutilizan (la caché de capas usa la versión como clave).
+
+### Seguridad [#security]
+
+- rustls 0.23.46 (RUSTSEC-2026-0346, RUSTSEC-2026-0347 y el advisory de descompresión de certificados con Brotli contra la 0.23.45).
+
+### Tests
+
+- El e2e verifica que ninguna capa de ninguna imagen (incluidas las capas base) tenga rutas duplicadas, el chequeo que hace `docker pull` sobre overlay2, ya que el Docker local usa el image store de containerd. `tests/suites/layers` buildea una app de bun y una de npm con una dependencia anidada.
+
+## [0.3.0](https://github.com/olimpiacloud/acropolis/releases/tag/v0.3.0) - 2026-10-13
+
+### Builds
+
+- Los miembros de un workspace reciben en tiempo de build las devDependencies de los miembros de los que dependen (bun instalaba solo sus dependencies: un `extends` de `tsconfig` hacia un miembro que era devDependency fallaba en Vite y Astro). La imagen de runtime sigue recibiendo solo las dependencies.
+- Los miembros de workspaces de yarn berry conservan en la imagen el `node_modules` raíz (o los archivos de PnP); quedaban afuera y la app no podía importar sus dependencias del workspace.
+- Un toolchain de node que instaló primero un plan que pedía menos partes (yarn berry solo toma los headers) ya no se usa para un plan que necesita npm: los install scripts fallaban con `node-gyp: not found` en un `--home` compartido.
+- El `node_modules` reutilizado de la caché de una app y las capas de `node_modules` cacheadas también usan la versión de Acropolis como clave: un plan de instalación más nuevo no reutiliza lo que una versión anterior buildeó a partir del mismo lockfile.
+- Sin lockfile, las imágenes glibc ya no reciben los builds musl de paquetes nativos (`@next/swc-linux-x64-musl`, `@img/sharp-libvips-linuxmusl-x64`): la metadata abreviada del registry no tiene `libc`, así que decide el nombre del paquete, como ya pasaba con lockfile.
+- Sin lockfile, los archivos `package.json` ocupan el lugar del lockfile en los hashes de los pasos: dos apps así en un mismo `--home` (o una app después de cambiar sus dependencias) reutilizaban la capa de `node_modules` cacheada de la otra, y corrían con los paquetes equivocados.
+
+### Salida [#output]
+
+- `info.json` tiene `watchPaths`: las rutas del repo, relativas a la raíz del workspace, cuyos cambios pueden cambiar la imagen (el miembro, los miembros del workspace de los que depende, devDependencies incluidas, y el lockfile, el `package.json` y los archivos de instalación/toolchain de la raíz). `["."]` cuando Acropolis no puede acotarlo.
+
+### Tests
+
+- Nuevas suites: miembros de workspace con un miembro devDependency (bun, pnpm, npm, yarn 1 y berry), los tests de deploy de Next.js (`NEXT_TEST_MODE=deploy`, Next 15.5.27 y 16.4.0), TechEmpower FrameworkBenchmarks sin sus Dockerfiles, y las apps de getting-started de Heroku y los samples de Paketo. Los casos e2e pueden buildear un subdirectorio (`directory`) y correr varios chequeos HTTP contra un mismo contenedor.
+
+### Seguridad [#security-1]
+
+- El YAML (`pnpm-lock.yaml`, `pnpm-workspace.yaml`, `package.yaml`) se parsea con `serde_norway` en lugar de `serde_yaml`, cuyo `unsafe-libyaml` no tiene mantenimiento (RUSTSEC-2024-0449).
+
+## [0.2.1](https://github.com/olimpiacloud/acropolis/releases/tag/v0.2.1) - 2026-10-09
+
+### Empaquetado [#packaging]
+
+- Imagen del builder ~30 % más liviana para descargar (573 → ~400 MB comprimida para amd64): se eliminan los archivos comprimidos de toolchains que `acropolis prewarm` deja en el store; los builds solo usan los toolchains extraídos.
+
+## [0.2.0](https://github.com/olimpiacloud/acropolis/releases/tag/v0.2.0) - 2026-10-09
+
+### Seguridad [#security-2]
+
+- Los pasos de build corren bajo un filtro seccomp (sin nuevos namespaces, mounts, ptrace, keyring ni BPF), los pasos de imagen usan `pivot_root` y los pasos de host ven el sistema de archivos en solo lectura, salvo su directorio de trabajo, la caché de su app, `/tmp` y `/var/tmp`.
+- Se rechazan las redirecciones a hosts privados y los downgrades de https a http; el desempaquetado de archivos tiene límites (32 GiB por archivo, 1 GiB por paquete de npm).
+- El store detecta blobs truncados por un crash de la máquina.
+
+### Builds
+
+- La precedencia de providers coincide con la de Railpack (Go, Rust, Python, Java, ... le ganan a un `package.json`).
+- Rust: un toolchain sin versión fijada se sube al `rust-version` más alto de los crates del lockfile; las apps con sqlx se buildean en el host en vez de dentro de la imagen de rust.
+- Node: las versiones fijadas de servidores buildeados corren sobre distroless/cc con el `node` del toolchain de build (imagen web de olimpia-cloud: 84.5 → 57.1 MB).
+- Reglas de build scripts de pnpm 10, dependencias de miembros de workspaces de bun, checksums de yarn 2.x, capas de `node_modules` con una sola copia.
+- `--info` incluye `errorClass` y `exitCode`; los nombres de archivo que no son UTF-8 fallan temprano con exit 78.
+
+### Empaquetado [#packaging-1]
+
+- Binario de release de 25 MB (ring en vez de aws-lc, `codegen-units = 1`); imagen del builder multi-arquitectura (amd64 y arm64).
+- Documentación en inglés.
+
+## [0.1.0](https://github.com/olimpiacloud/acropolis/releases/tag/v0.1.0) - 2026-10-08
+
+Primera versión pública.
+
+### Construcción de imágenes [#image-building]
+
+- Un único binario `acropolis` con `build`, `plan`, `prewarm` y `cache export|import`. Salida a un registry (`-t`), a un tar OCI que se puede cargar con `docker load` (`--oci`) y un resumen en JSON (`--info`); eventos JSON delimitados por línea con `--events json`.
+- Store direccionado por contenido, descargas verificadas por checksum, segmentadas y con duplicación del segmento que se atrasa; la base se copia de registry a registry por digest y las capas nuevas se comprimen en paralelo.
+- Pasos de build aislados en namespaces de mount, PID y red; pasos dentro del rootfs de imágenes oficiales con overlayfs (Python, Ruby, PHP, Java, .NET, Elixir).
+- Cachés por app que sobreviven a builders efímeros (`acropolis cache export|import`).
+
+### Ecosistemas [#ecosystems]
+
+- Node: instalador propio para npm, pnpm, yarn 1 y bun (yarn berry y `bun.lockb` con sus CLI oficiales), hoisting, install scripts, `patchedDependencies` de bun y pnpm, filtrado de binarios por plataforma en yarn; Next (standalone forzado, Turbopack), Nuxt, Astro, SvelteKit, Remix, React Router, TanStack Start, Angular, Vite (bundler nativo con Rolldown), Nx y Turborepo.
+- Go (módulos verificados contra `go.sum`, `go.work`, apps sin `go.mod`), Rust (toolchain desde el manifiesto del canal y crates vendorizados), Python (uv, poetry, pdm, pipenv, pip), Ruby/Rails, PHP/Laravel, Java, .NET, Elixir, Gleam, Deno, C/C++, sitios estáticos y scripts.
+- Runtimes livianos: distroless para Node, Bun, Go y Rust; imágenes slim oficiales para el resto.
+- Compatible con `railpack.json` y `acropolis.json`.
+
+### Producción [#production]
+
+- Configuración del operador (`ACROPOLIS_CACHE_KEY`, `ACROPOLIS_CACHE_MAX`, `ACROPOLIS_BUILD_TIMEOUT`, `ACROPOLIS_STEP_TIMEOUT`, `ACROPOLIS_BUILD_ID`) separada de la de la app.
+- Endurecimiento de lo que se procesa como root: rutas de lockfile, capas y config validadas, extracción en streaming, límites en logs y cuerpos HTTP, timeout de build por defecto.
+- Códigos de salida tipados (0, 1, 70, 75, 78) y una imagen del builder en Debian 12 en `deploy/builder`.
+- Auditoría de seguridad (D22): pasos de host con su propio namespace de PID, sistema de archivos en solo lectura salvo su directorio de trabajo y la caché de su app, `/proc/sys` y `/sys` en solo lectura, `/dev` mínimo y una allowlist de capabilities; lecturas y escrituras del repo confinadas a la app; límites de tamaño en tar, zips de Go, crates y registry; credenciales del registry enviadas solo a su host. `--info` incluye `errorClass` y `exitCode`.
+- Binario de release sin símbolos (31 MB) y MSRV 1.96.
+
+### Verificación [#verification]
+
+- 154 de 156 casos de los ejemplos de Railpack, 8/8 de la suite de Next.js y 37 de 73 casos de Nixpacks; snapshots de `acropolis plan --json` en `tests/plans`.
