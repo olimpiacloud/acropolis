@@ -42,7 +42,9 @@ Las variables de la app se pasan con `-e KEY=VALUE`. Cada setting se lee primero
 | `NODE_VERSION`, `BUN_VERSION`, `GO_VERSION`, `RUST_VERSION`, `PYTHON_VERSION`, `UV_VERSION`, `RUBY_VERSION`, `PHP_VERSION`, `JDK_VERSION`, `DOTNET_VERSION`, `ELIXIR_VERSION`, `GLEAM_VERSION`, `DENO_VERSION` | Fijan la versión de un toolchain. |
 | `CONFIG_FILE` | Ruta del archivo de configuración, relativa a la app. |
 
-Las variables que pasás con `-e` llegan a los steps del build, pero el plan y `info.json` solo llevan referencias `{env:NAME}`, nunca los valores (las `variables` escritas en los steps personalizados de un archivo de configuración sí forman parte del plan), y la config de la imagen no las recibe: definí las variables de runtime en el contenedor que corre la imagen.
+Las variables comunes de la app que pasás con `-e` (cualquier nombre sin el prefijo `ACROPOLIS_` o `RAILPACK_`) llegan a los steps del build, pero el plan solo lleva referencias `{env:NAME}`, nunca los valores, y la config de la imagen no las recibe: definí las variables de runtime en el contenedor que corre la imagen. Los settings de la tabla de arriba son distintos: Acropolis lee sus valores para armar el plan, así que pueden terminar en el plan que imprime `plan --json` y en la config de la imagen (`START_CMD` pasa a ser el comando de la imagen, por ejemplo). Las `variables` escritas en los steps personalizados de un archivo de configuración también forman parte del plan. Nunca pongas secretos en estos settings.
+
+`info.json` no guarda el plan: tiene el hash del plan, los datos detectados y las versiones de toolchain pedidas y resueltas.
 
 ## Settings del operador [#operator-settings]
 

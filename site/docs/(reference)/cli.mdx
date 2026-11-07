@@ -46,7 +46,7 @@ acropolis build [DIR] [options]
 | `--config FILE` | `acropolis.json`, else `railpack.json` | Config file, relative to the app directory and inside it. Same as `-e ACROPOLIS_CONFIG_FILE=FILE`. |
 | `--compression CODEC` | `zstd` | Layer compression: `zstd` (`zst`), `gzip` (`gz`) or `none` (`tar`). Use `gzip` for runtimes older than Docker 23 or containerd 1.5. |
 | `--level N` | `0` (codec default) | Compression level. For gzip, values above 9 are rejected. |
-| `--hermetic on\|off` | `on` | `off` runs steps as plain host processes, with no namespaces, seccomp filter or read-only filesystem. With `on`, the build fails if the host cannot create network namespaces. |
+| `--hermetic on\|off` | `on` | `off` runs host steps as plain host processes, with no namespaces, seccomp filter or read-only filesystem; host steps the plan marks as offline (such as Go and Rust builds) then fail. Steps inside an official image's rootfs keep their isolation either way. With `on`, the build fails if the host cannot create network namespaces. |
 | `--concurrency N` | `64` | Parallel downloads. Must be at least 1. |
 | `--keep-work` | off | Keep the work directory after the build, for debugging. |
 
@@ -95,7 +95,7 @@ acropolis cache import FILE --key KEY
 | --- | --- | --- |
 | `export` or `import` | | Action. Required. |
 | `FILE` | | Cache file to write or read. Required. |
-| `--key KEY` | `ACROPOLIS_CACHE_KEY` | Per-app cache key. Required, and cannot be empty. |
+| `--key KEY` | `ACROPOLIS_CACHE_KEY` | Per-app cache key. Required, and cannot be empty. Must match the key the build used, with the same home. |
 
 Output on stdout: `cache KEY: exported 12.3 MB to FILE in 1.2s` (or `imported ... from FILE`).
 
@@ -133,7 +133,7 @@ Read from the environment of the `acropolis` process. App settings (`ACROPOLIS_B
 | --- | --- |
 | `ACROPOLIS_HOME` | Same as `--home`. |
 | `ACROPOLIS_MIRRORS` | Same as `--mirror`, comma-separated. |
-| `ACROPOLIS_CACHE_KEY` | Per-app cache key for `build`, and the default `--key` of `cache`. Without it, a build uses a hash of the app path. |
+| `ACROPOLIS_CACHE_KEY` | Per-app cache key for `build`, and the default `--key` of `cache`. Without it, a build uses a hash of the app path. Characters other than letters, digits, `-` and `_` become `_` in the cache directory name, so `team/app` and `team_app` share a cache: keep keys unique after that. |
 | `ACROPOLIS_CACHE_MAX` | After each build, trim the home to this size, like `gc`. |
 | `ACROPOLIS_NO_CACHE` | Build without the per-app cache. |
 | `ACROPOLIS_BUILD_TIMEOUT` | Whole-build timeout; 1 h by default. |

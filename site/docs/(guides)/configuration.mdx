@@ -41,7 +41,9 @@ App variables are passed with `-e KEY=VALUE`. Each setting is read with an `ACRO
 | `NODE_VERSION`, `BUN_VERSION`, `GO_VERSION`, `RUST_VERSION`, `PYTHON_VERSION`, `UV_VERSION`, `RUBY_VERSION`, `PHP_VERSION`, `JDK_VERSION`, `DOTNET_VERSION`, `ELIXIR_VERSION`, `GLEAM_VERSION`, `DENO_VERSION` | Pin a toolchain version. |
 | `CONFIG_FILE` | Config file path, relative to the app. |
 
-Variables passed with `-e` reach build steps, but the plan and `info.json` only carry `{env:NAME}` references, never the values (`variables` written in a config file's custom steps are part of the plan), and the image config doesn't get them: set runtime variables on the container that runs the image.
+Ordinary app variables passed with `-e` (any name without the `ACROPOLIS_` or `RAILPACK_` prefix) reach build steps, but the plan only carries `{env:NAME}` references, never their values, and the image config doesn't get them: set runtime variables on the container that runs the image. The settings in the table above are different: Acropolis reads their values to build the plan, so they can end up in the plan that `plan --json` prints and in the image config (`START_CMD` becomes the image's command, for example). `variables` written in a config file's custom steps are part of the plan too. Never put secrets in these settings.
+
+`info.json` does not store the plan: it has the plan's hash, the detected facts and the requested and resolved toolchain versions.
 
 ## Operator settings
 

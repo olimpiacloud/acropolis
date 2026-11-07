@@ -45,7 +45,7 @@ To verify Acropolis itself, check each release with `SHA256SUMS` and its GitHub 
 - **Where they come from.** The `auths` entries (with an `auth` value) of `$DOCKER_CONFIG/config.json` or `~/.docker/config.json`, and `ACROPOLIS_REGISTRY`, `ACROPOLIS_REGISTRY_USER` and `ACROPOLIS_REGISTRY_PASSWORD`. Credential helpers are not used.
 - **Where they go.** Only to the registry host they belong to: not to a mirror, and not to an upload location on another host. Token realms must be https.
 - **What build steps see.** Nothing. Steps run in their own PID namespace, so they cannot read the environment of `acropolis`, and `$DOCKER_CONFIG`, `$HOME/.docker` and `/root/.docker` are covered by an empty tmpfs inside steps.
-- **App variables are not secrets storage.** `-e` values reach build steps. The plan and `info.json` carry only `{env:NAME}` references (but `variables` written in a config file's custom steps are part of the plan) and the image config does not get them, but a build script can print them to the log.
+- **App variables are not secrets storage.** `-e` values reach build steps. For ordinary app variables, the plan carries only `{env:NAME}` references and the image config does not get them, but a build script can print them to the log. Build settings (`ACROPOLIS_*` or `RAILPACK_*` names such as `ACROPOLIS_START_CMD`) and `variables` in a config file's custom steps go into the plan as values and can reach the image config. `info.json` stores only the plan's hash, not the plan.
 
 An agent should never put registry passwords in `-e`, in `acropolis.json`, or in a command line it shows to the user. Set them in the environment of the process or in the Docker config.
 
@@ -62,7 +62,7 @@ What it doesn't do, and what to do about it:
 
 - **It is not a VM boundary.** Run one build per throwaway container or VM, especially for code from different owners. The [builder image](/install#builder-image) is made for this; see [Running in production](/production).
 - **Steps with network can reach any host the container can reach.** Block the cloud metadata endpoint (`169.254.169.254`) and internal networks outside the container.
-- **`--hermetic off` removes the step isolation.** Steps run as plain host processes. Use it only with code you trust.
+- **`--hermetic off` removes the isolation of host steps.** They run as plain host processes. Use it only with code you trust. Steps inside an official image's rootfs keep their namespaces and seccomp filter, and offline host steps (such as Go and Rust builds) fail instead of running with network.
 
 ## Treat build output as data [#treat-build-output-as-data]
 

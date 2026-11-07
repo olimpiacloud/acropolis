@@ -57,7 +57,7 @@ acropolis plan ./my-app --json
 acropolis build ./my-app --oci image.tar -e NODE_ENV=production -e API_URL=https://api.example.com
 ```
 
-Las variables que pasás con `-e` llegan a los pasos del build, pero el plan e `info.json` solo llevan referencias `{env:NAME}` (las `variables` escritas en los pasos personalizados de un archivo de configuración sí forman parte del plan), y la config de la imagen no las recibe. Definí las variables de runtime en el contenedor que corre la imagen. `plan` acepta los mismos flags `-e`.
+Las variables comunes de la app (nombres sin el prefijo `ACROPOLIS_` o `RAILPACK_`) llegan a los pasos del build, pero el plan solo lleva referencias `{env:NAME}` a ellas y la config de la imagen no las recibe. Definí las variables de runtime en el contenedor que corre la imagen. Los ajustes del build como `-e ACROPOLIS_START_CMD=...` son distintos: sus valores van al plan y pueden llegar a la config de la imagen, así que nunca pongas secretos en ellos. Mirá [Configuración](/configuration#variables). `plan` acepta los mismos flags `-e`.
 
 ## Leer el resultado [#read-the-result]
 
@@ -79,7 +79,7 @@ acropolis build ./my-app -t registry.example.com/team/my-app:latest
 acropolis cache export cache.tar.zst
 ```
 
-`--key` toma por defecto `ACROPOLIS_CACHE_KEY`. Usá la misma clave en el build: sin `ACROPOLIS_CACHE_KEY` usa un hash de la ruta de la app, así que la caché exportada no coincidiría. Si el archivo de caché falta o está roto, `cache import` falla con un código de salida distinto de cero; ignorá ese error (`|| true`) y construí igual: el build funciona sin la caché.
+`--key` toma por defecto `ACROPOLIS_CACHE_KEY`. Usá la misma clave en el build, definida en el entorno del proceso `acropolis` (con `-e` se ignora): sin `ACROPOLIS_CACHE_KEY` el build usa un hash de la ruta de la app, así que la caché exportada no coincidiría. Las claves se sanitizan para convertirlas en nombres de directorio (los caracteres que no son letras, dígitos, `-` ni `_` pasan a ser `_`, así que `team/app` y `team_app` son la misma caché): mantené las claves únicas después de eso. Corré `import`, `build` y `export` con el mismo home: el mismo `--home` o `ACROPOLIS_HOME`, o el mismo usuario. Si importás con tu usuario y construís con `sudo`, usás dos homes distintos. Si el archivo de caché falta o está roto, `cache import` falla con un código de salida distinto de cero; ignorá ese error (`|| true`) y construí igual: el build funciona sin la caché.
 
 ## Precalentar toolchains [#prewarm-toolchains]
 
@@ -112,5 +112,5 @@ Acropolis rechaza `http://` y los hosts privados para lo que descarga por su cue
 ## Runtimes y hosts más viejos [#older-runtimes-and-hosts]
 
 - `--compression gzip` para runtimes anteriores a Docker 23 o containerd 1.5. Las capas son zstd por defecto.
-- `--hermetic off` cuando el host no puede crear network namespaces. En ese caso los pasos corren como procesos comunes del host, sin nada del aislamiento de los pasos, así que usalo solo con código en el que confiás.
+- `--hermetic off` cuando el host no puede crear network namespaces. En ese caso los pasos del host corren como procesos comunes del host, sin nada del aislamiento de los pasos, así que usalo solo con código en el que confiás. Los pasos dentro del rootfs de una imagen oficial conservan sus namespaces y su filtro seccomp. Los pasos que el plan marca como offline, como los pasos de build de Go y Rust, no pueden correr con `--hermetic off` y fallan.
 - `--keep-work` conserva el directorio de trabajo después del build, para depurar.

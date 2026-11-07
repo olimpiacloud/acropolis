@@ -37,4 +37,12 @@ Acá mandan los compiladores (`vp build` ~20 s, `cargo build --release` de la AP
 
 ## Cómo reproducirlo [#reproducing]
 
-`TOOLS=acropolis,docker,railpack FRESH=1 scripts/bench.sh` corre el benchmark contra Docker y Railpack (por defecto, `TOOLS` incluye solo Acropolis; sin `FRESH=1` se reutilizan los resultados cacheados), y `AB=1 scripts/bench.sh` compara dos binarios de Acropolis intercalados (`APPS=`, `RUNS=`). Las apps están en [`bench/apps`](https://github.com/olimpiacloud/acropolis/tree/main/bench/apps).
+`TOOLS=acropolis,docker,railpack FRESH=1 scripts/bench.sh` corre el benchmark contra Docker y Railpack (por defecto, `TOOLS` incluye solo Acropolis; sin `FRESH=1` se reutilizan los resultados cacheados), y `AB=1 scripts/bench.sh` compara dos binarios de Acropolis intercalados (`APPS=`, `RUNS=`).
+
+El script necesita:
+
+- Un build de release (`target/release/acropolis`, o el perfil que indiques en `PROFILE`), que copia a `$ACROPOLIS_EXT/bin`. Ese directorio tiene que existir; por defecto, `ACROPOLIS_EXT` es `../acropolis-ext`.
+- Railpack en `$ACROPOLIS_EXT/tools/railpack`.
+- Un systemd corriendo: se ejecuta como unidad con `systemd-run`.
+
+Con `AB=1`, la base de comparación es `AB_BASE=path/to/binary` o, si no, el binario `acropolis-bench-*` más nuevo que ya esté en `$ACROPOLIS_EXT/bin`. Cada corrida copia su propio binario a `$ACROPOLIS_EXT/bin`, así que si volvés a correr `AB=1` sin cambios en el código, el binario más nuevo ahí es la misma revisión y la corrida lo compara contra sí mismo. Definí `AB_BASE` para elegir la base de comparación de forma explícita. Las apps están en [`bench/apps`](https://github.com/olimpiacloud/acropolis/tree/main/bench/apps).

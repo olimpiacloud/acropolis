@@ -47,7 +47,7 @@ Para verificar Acropolis en sí, chequeá cada release con `SHA256SUMS` y su att
 - **De dónde salen.** Las entradas de `auths` (con un valor `auth`) de `$DOCKER_CONFIG/config.json` o `~/.docker/config.json`, y `ACROPOLIS_REGISTRY`, `ACROPOLIS_REGISTRY_USER` y `ACROPOLIS_REGISTRY_PASSWORD`. No se usan credential helpers.
 - **A dónde van.** Solo al host del registry al que pertenecen: no a un mirror, ni a una ubicación de upload en otro host. Los token realms tienen que ser https.
 - **Qué ven los pasos de build.** Nada. Los pasos corren en su propio PID namespace, así que no pueden leer el entorno de `acropolis`, y `$DOCKER_CONFIG`, `$HOME/.docker` y `/root/.docker` quedan tapados por un tmpfs vacío dentro de los pasos.
-- **Las variables de la app no son un lugar para guardar secretos.** Los valores de `-e` llegan a los pasos de build. El plan e `info.json` llevan solo referencias `{env:NAME}` (pero las `variables` escritas en los pasos personalizados de un archivo de config forman parte del plan) y la config de la imagen no los recibe, pero un script de build puede imprimirlos en el log.
+- **Las variables de la app no son un lugar para guardar secretos.** Los valores de `-e` llegan a los pasos de build. Para las variables comunes de la app, el plan lleva solo referencias `{env:NAME}` y la config de la imagen no los recibe, pero un script de build puede imprimirlos en el log. Las configuraciones de build (nombres `ACROPOLIS_*` o `RAILPACK_*`, como `ACROPOLIS_START_CMD`) y las `variables` de los pasos personalizados de un archivo de config van al plan como valores y pueden llegar a la config de la imagen. `info.json` guarda solo el hash del plan, no el plan.
 
 Un agente nunca debería poner contraseñas de registry en `-e`, en `acropolis.json` ni en una línea de comandos que le muestre al usuario. Configuralas en el entorno del proceso o en la config de Docker.
 
@@ -64,7 +64,7 @@ Lo que no hace, y qué hacer al respecto:
 
 - **No es una frontera de VM.** Corré un build por contenedor o VM descartable, sobre todo para código de distintos dueños. La [imagen del builder](/install#builder-image) está hecha para esto; mirá [Correr en producción](/production).
 - **Los pasos con red pueden llegar a cualquier host al que llegue el contenedor.** Bloqueá el endpoint de metadata de la nube (`169.254.169.254`) y las redes internas desde fuera del contenedor.
-- **`--hermetic off` saca el aislamiento de los pasos.** Los pasos corren como procesos comunes del host. Usalo solo con código en el que confiás.
+- **`--hermetic off` saca el aislamiento de los pasos del host.** Corren como procesos comunes del host. Usalo solo con código en el que confiás. Los pasos dentro del rootfs de una imagen oficial mantienen sus namespaces y su filtro seccomp, y los pasos del host sin red (como los builds de Go y Rust) fallan en vez de correr con red.
 
 ## Tratá la salida del build como datos [#treat-build-output-as-data]
 

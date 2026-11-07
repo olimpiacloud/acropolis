@@ -44,7 +44,7 @@ Si un PR cambia planes, el diff de `tests/plans` tiene que estar en el PR y la d
 
 ## e2e
 
-`scripts/e2e.sh` usa `target/fast/acropolis`, así que primero corré `scripts/build.sh`. Compila cada ejemplo de Railpack, lo corre con `docker run` y verifica la salida; con `--filter <example>` corrés uno solo. No es obligatorio para un PR, pero si tocás la detección, la instalación de dependencias o el armado de capas, correr los ejemplos afectados te ahorra una ronda de revisión.
+`scripts/e2e.sh` usa `target/fast/acropolis`, así que primero corré `scripts/build.sh`. Corre la suite como una unidad de systemd (`systemd-run`, `systemctl`), así que necesita un host con systemd andando: un contenedor privilegiado sin systemd no la puede correr. Compila cada ejemplo de Railpack, lo corre con `docker run` y verifica la salida; con `--filter <example>` corrés uno solo. No es obligatorio para un PR, pero si tocás la detección, la instalación de dependencias o el armado de capas, correr los ejemplos afectados te ahorra una ronda de revisión.
 
 ## Pull requests
 

@@ -56,7 +56,7 @@ acropolis plan ./my-app --json
 acropolis build ./my-app --oci image.tar -e NODE_ENV=production -e API_URL=https://api.example.com
 ```
 
-Variables passed with `-e` reach build steps, but the plan and `info.json` only carry `{env:NAME}` references (`variables` written in a config file's custom steps are part of the plan), and the image config does not get them. Set runtime variables on the container that runs the image. `plan` takes the same `-e` flags.
+Ordinary app variables (names without the `ACROPOLIS_` or `RAILPACK_` prefix) reach build steps, but the plan only carries `{env:NAME}` references to them and the image config does not get them. Set runtime variables on the container that runs the image. Build settings such as `-e ACROPOLIS_START_CMD=...` are different: their values go into the plan and can reach the image config, so never put secrets in them. See [Configuration](/configuration#variables). `plan` takes the same `-e` flags.
 
 ## Read the result
 
@@ -78,7 +78,7 @@ acropolis build ./my-app -t registry.example.com/team/my-app:latest
 acropolis cache export cache.tar.zst
 ```
 
-`--key` defaults to `ACROPOLIS_CACHE_KEY`. Use the same key in the build: without `ACROPOLIS_CACHE_KEY` it uses a hash of the app path, so the exported cache would not match. If the cache file is missing or broken, `cache import` fails with a non-zero exit code; ignore that failure (`|| true`) and build anyway: the build works without the cache.
+`--key` defaults to `ACROPOLIS_CACHE_KEY`. Use the same key in the build, set in the environment of the `acropolis` process (through `-e` it is ignored): without `ACROPOLIS_CACHE_KEY` the build uses a hash of the app path, so the exported cache would not match. Keys are sanitized into directory names (characters other than letters, digits, `-` and `_` become `_`, so `team/app` and `team_app` are the same cache): keep keys unique after that. Run `import`, `build` and `export` with the same home: the same `--home` or `ACROPOLIS_HOME`, or the same user. Importing as your user and building under `sudo` uses two different homes. If the cache file is missing or broken, `cache import` fails with a non-zero exit code; ignore that failure (`|| true`) and build anyway: the build works without the cache.
 
 ## Prewarm toolchains
 
@@ -111,5 +111,5 @@ Acropolis refuses `http://` and private hosts for what it downloads itself. Set 
 ## Older runtimes and hosts
 
 - `--compression gzip` for runtimes older than Docker 23 or containerd 1.5. Layers are zstd by default.
-- `--hermetic off` when the host cannot create network namespaces. Steps then run as plain host processes, with none of the step isolation, so use it only with code you trust.
+- `--hermetic off` when the host cannot create network namespaces. Host steps then run as plain host processes, with none of the step isolation, so use it only with code you trust. Steps inside an official image's rootfs keep their namespaces and seccomp filter. Steps the plan marks as offline, such as the Go and Rust build steps, cannot run with `--hermetic off` and fail.
 - `--keep-work` keeps the work directory after the build, for debugging.

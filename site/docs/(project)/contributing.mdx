@@ -43,7 +43,7 @@ If a PR changes plans, the `tests/plans` diff must be in the PR and the descript
 
 ## e2e
 
-`scripts/e2e.sh` uses `target/fast/acropolis`, so run `scripts/build.sh` first. It builds each Railpack example, runs it with `docker run`, and checks the output; `--filter <example>` runs a single one. It is not required for a PR, but if you touch detection, dependency installation or layer assembly, running the affected examples saves a review round.
+`scripts/e2e.sh` uses `target/fast/acropolis`, so run `scripts/build.sh` first. It runs the suite as a systemd unit (`systemd-run`, `systemctl`), so it needs a host with a running systemd: a privileged container without systemd can't run it. It builds each Railpack example, runs it with `docker run`, and checks the output; `--filter <example>` runs a single one. It is not required for a PR, but if you touch detection, dependency installation or layer assembly, running the affected examples saves a review round.
 
 ## Pull requests
 

@@ -36,4 +36,12 @@ Here the compilers dominate (`vp build` ~20 s, `cargo build --release` of the AP
 
 ## Reproducing
 
-`TOOLS=acropolis,docker,railpack FRESH=1 scripts/bench.sh` runs the benchmark against Docker and Railpack (`TOOLS` defaults to Acropolis only; without `FRESH=1` cached results are reused), and `AB=1 scripts/bench.sh` compares two Acropolis binaries interleaved (`APPS=`, `RUNS=`). The apps are in [`bench/apps`](https://github.com/olimpiacloud/acropolis/tree/main/bench/apps).
+`TOOLS=acropolis,docker,railpack FRESH=1 scripts/bench.sh` runs the benchmark against Docker and Railpack (`TOOLS` defaults to Acropolis only; without `FRESH=1` cached results are reused), and `AB=1 scripts/bench.sh` compares two Acropolis binaries interleaved (`APPS=`, `RUNS=`).
+
+The script needs:
+
+- A release build (`target/release/acropolis`, or the profile in `PROFILE`), which it copies into `$ACROPOLIS_EXT/bin`. That directory must exist; `ACROPOLIS_EXT` defaults to `../acropolis-ext`.
+- Railpack at `$ACROPOLIS_EXT/tools/railpack`.
+- A running systemd: it runs as a unit with `systemd-run`.
+
+With `AB=1`, the baseline is `AB_BASE=path/to/binary`, or else the newest `acropolis-bench-*` binary already in `$ACROPOLIS_EXT/bin`. Every run copies its own binary into `$ACROPOLIS_EXT/bin`, so if you rerun `AB=1` without code changes, the newest binary there is the same revision and the run compares it against itself. Set `AB_BASE` to pick the baseline explicitly. The apps are in [`bench/apps`](https://github.com/olimpiacloud/acropolis/tree/main/bench/apps).
