@@ -1,36 +1,40 @@
 :root {
-  --blume-background: #efe9dd;
-  --blume-foreground: #2b2420;
-  --blume-muted: #e4dbcb;
-  --blume-muted-foreground: #65594f;
-  --blume-border: #d6cbb8;
-  --blume-accent: #9c4a2b;
-  --blume-accent-foreground: #f6f1e7;
-  --blume-action: #2b2420;
-  --blume-action-foreground: #f6f1e7;
-  --blume-code-background: #f6f1e7;
+  --blume-background: #ffffff;
+  --blume-foreground: #0e1726;
+  --blume-muted: #f1f4f8;
+  --blume-muted-foreground: #56627a;
+  --blume-border: #dfe3ea;
+  --blume-accent: #1d63d8;
+  --blume-accent-foreground: #ffffff;
+  --blume-action: #0e1726;
+  --blume-action-foreground: #ffffff;
+  --blume-code-background: #f1f4f8;
   --blume-radius: 0.25rem;
-  --olimpia-card: #f6f1e7;
-  --olimpia-egeo: #4f6f8a;
-  --olimpia-olivo: #6b7862;
-  --olimpia-tinta: #2b2420;
-  --olimpia-pergamino: #f6f1e7;
+  --olimpia-card: #ffffff;
+  --olimpia-egeo: #2f7fe8;
+  --olimpia-olivo: #2e9e6b;
+  --olimpia-tinta: #0e1726;
+  --olimpia-pergamino: #ffffff;
 }
 
 :root[data-theme="dark"] {
-  --blume-background: #1b1714;
-  --blume-foreground: #ebe3d5;
-  --blume-muted: #2f2823;
-  --blume-muted-foreground: #a79a8b;
-  --blume-border: #3b332d;
-  --blume-accent: #d0784f;
-  --blume-accent-foreground: #1b1714;
-  --blume-action: #ebe3d5;
-  --blume-action-foreground: #1b1714;
-  --blume-code-background: #231e1a;
-  --olimpia-card: #231e1a;
-  --olimpia-egeo: #86a3bc;
-  --olimpia-olivo: #9dab91;
+  --blume-background: #070b16;
+  --blume-foreground: #eaf0fb;
+  --blume-muted: #151e33;
+  --blume-muted-foreground: #93a0bb;
+  --blume-border: #222c44;
+  --blume-accent: #6aa8ff;
+  --blume-accent-foreground: #070b16;
+  --blume-action: #eaf0fb;
+  --blume-action-foreground: #070b16;
+  --blume-code-background: #0e1526;
+  --olimpia-card: #0e1526;
+  --olimpia-egeo: #6aa8ff;
+  --olimpia-olivo: #58c492;
+}
+
+img[src^="/arte/"] {
+  image-rendering: pixelated;
 }
 
 h1,
@@ -39,34 +43,11 @@ h3,
 h4,
 .font-display {
   font-weight: 400;
-  letter-spacing: 0.005em;
+  letter-spacing: -0.015em;
 }
 
 ::selection {
   background: color-mix(in oklab, var(--olimpia-egeo) 25%, transparent);
-}
-
-body::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  pointer-events: none;
-  opacity: 0.35;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.45 0 0 0 0 0.38 0 0 0 0 0.3 0 0 0 0.28 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-}
-
-:root[data-theme="dark"] body::after {
-  opacity: 0.3;
-}
-
-@keyframes olimpia-drift {
-  from {
-    transform: scale(1);
-  }
-  to {
-    transform: scale(1.06) translate3d(-1%, 0, 0);
-  }
 }
 
 @keyframes olimpia-enter {
@@ -89,9 +70,9 @@ header a[href="/"] > span.truncate,
 header a[href="/en"] > span.truncate,
 header a[href="/es"] > span.truncate {
   font-family: var(--blume-font-display);
-  font-size: 1.3rem;
+  font-size: 1.35rem;
   font-weight: 400;
-  letter-spacing: 0.03em;
+  letter-spacing: -0.01em;
 }
 
 header a[href="/"] > span:first-child > svg,

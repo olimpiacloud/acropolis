@@ -43,12 +43,12 @@ export function family(product: Product) {
       routeByBrowserLanguage: true,
     },
     theme: {
-      accent: { light: "#9c4a2b", dark: "#d0784f" },
-      background: { light: "#efe9dd", dark: "#1b1714" },
+      accent: { light: "#1d63d8", dark: "#6aa8ff" },
+      background: { light: "#ffffff", dark: "#070b16" },
       radius: "sm" as const,
       mode: "system" as const,
       fonts: {
-        display: { name: "Marcellus", weights: [400], fallback: "serif" },
+        display: { name: "Redaction 10", provider: "fontsource", weights: [400, 700], fallback: "serif" },
         body: { name: "Commissioner", weights: ["100..900"] },
         mono: "jetbrains-mono",
       },
@@ -100,7 +100,7 @@ export function family(product: Product) {
       ],
     },
     seo: {
-      og: { logo: "/logo.svg", palette: { background: "#efe9dd", foreground: "#2b2420", accent: "#9c4a2b" } },
+      og: { logo: "/logo.svg", palette: { background: "#ffffff", foreground: "#0e1726", accent: "#1d63d8" } },
     },
     lastModified: "git" as const,
     deployment: { site: site.url },

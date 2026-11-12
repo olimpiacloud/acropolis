@@ -19,13 +19,11 @@ export const home = {
     title: "Acropolis by Olimpia: source code in, OCI image out",
     description:
       "Acropolis by Olimpia: an experimental, daemonless builder that turns an app's source code into an OCI image with no Dockerfile. A single Rust binary.",
-    og: { image: "/og.jpg", alt: "Acropolis by Olimpia: an acropolis built up in layers facing the bay of Buenos Aires" },
+    og: { image: "/arte/og.png", alt: "Acropolis by Olimpia: an acropolis built up in layers facing the bay of Buenos Aires" },
     eyebrow: "Documentation · Experimental",
     heading: "Source code in. A small image out.",
     lede: "Acropolis detects your app's language and framework, fetches verified toolchains and builds an OCI image with no Dockerfile and no daemon. These docs have two doors: one for your agent and one for you.",
-    tablist: "Choose who the docs are for",
-    agentsTab: "For agents",
-    humansTab: "For humans",
+    doors: { agents: "Let your agent do it", humans: "Do it yourself" },
     agents: {
       intro:
         "Acropolis has no MCP server of its own: your agent runs the CLI and reads its JSON. To build and deploy on Olimpia, connect Olimpia's MCP server and choose Acropolis as the builder.",
@@ -51,19 +49,13 @@ export const home = {
       cta: { href: "/introduction", label: "Read the introduction" },
     },
     art: {
-      mobile: "/art/banner.webp",
-      position: "object-center",
+      mobile: "/arte/banner.webp",
+      
       agents: {
-        src: "/art/banner.webp",
-        alt: "Watercolor: an acropolis built up in layers facing the bay of Buenos Aires",
+        src: "/arte/home.webp",
+        alt: "Illustration: an acropolis built up in layers facing the bay of Buenos Aires",
         quote: "Every layer, verified.",
         caption: "Single binary · No daemon",
-      },
-      humans: {
-        src: "/art/banner.webp",
-        alt: "Watercolor: an acropolis built up in layers facing the bay of Buenos Aires",
-        quote: "What is built on stone, lasts.",
-        caption: "Experimental · by Olimpia",
       },
     },
     features: {
@@ -84,13 +76,11 @@ export const home = {
     title: "Acropolis by Olimpia: código fuente adentro, imagen OCI afuera",
     description:
       "Acropolis by Olimpia: un builder experimental y sin daemon que convierte el código de una app en una imagen OCI, sin Dockerfile. Un solo binario en Rust.",
-    og: { image: "/og.jpg", alt: "Acropolis by Olimpia: una acrópolis construida en capas frente a la bahía de Buenos Aires" },
+    og: { image: "/arte/og.png", alt: "Acropolis by Olimpia: una acrópolis construida en capas frente a la bahía de Buenos Aires" },
     eyebrow: "Documentación · Experimental",
     heading: "Entra el código. Sale una imagen chica.",
     lede: "Acropolis detecta el lenguaje y el framework de tu app, baja toolchains verificadas y arma una imagen OCI sin Dockerfile y sin daemon. Esta documentación tiene dos puertas: una para tu agente y otra para vos.",
-    tablist: "Elegí para quién es la documentación",
-    agentsTab: "Para agentes",
-    humansTab: "Para humanos",
+    doors: { agents: "Que lo haga tu agente", humans: "Hacelo vos" },
     agents: {
       intro:
         "Acropolis no tiene un servidor MCP propio: tu agente corre la CLI y lee su JSON. Para construir y desplegar en Olimpia, conectá el servidor MCP de Olimpia y elegí Acropolis como builder.",
@@ -116,19 +106,13 @@ export const home = {
       cta: { href: "/es/introduction", label: "Leer la introducción" },
     },
     art: {
-      mobile: "/art/banner.webp",
-      position: "object-center",
+      mobile: "/arte/banner.webp",
+      
       agents: {
-        src: "/art/banner.webp",
-        alt: "Acuarela: una acrópolis construida en capas frente a la bahía de Buenos Aires",
+        src: "/arte/home.webp",
+        alt: "Ilustración: una acrópolis construida en capas frente a la bahía de Buenos Aires",
         quote: "Cada capa, verificada.",
         caption: "Un binario · Sin daemon",
-      },
-      humans: {
-        src: "/art/banner.webp",
-        alt: "Acuarela: una acrópolis construida en capas frente a la bahía de Buenos Aires",
-        quote: "Lo que se construye sobre piedra, dura.",
-        caption: "Experimental · de Olimpia",
       },
     },
     features: {
