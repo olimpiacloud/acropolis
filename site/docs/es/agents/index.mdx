@@ -1,0 +1,37 @@
+---
+title: Acropolis para agentes
+description: >-
+  Cómo un agente de código usa Acropolis, el builder experimental de app a
+  imagen, a través de su CLI, su documentación en Markdown y el servidor MCP de
+  Olimpia cuando despliega en Olimpia.
+sidebar:
+  label: Resumen
+  icon: bot
+---
+Acropolis es un builder experimental que convierte el código fuente de una app en una imagen OCI sin Dockerfile y sin daemon. Es un único binario de Rust, `acropolis`, para Linux x86_64 y arm64: detecta el lenguaje y el framework, descarga toolchains y dependencias verificadas, compila y arma la imagen. Es el builder opcional que está detrás de [Olimpia](https://olimpia.dev).
+
+:::caution[Experimental]
+Los flags, el esquema de `--events json`, las claves de `info.json` y los códigos de salida pueden cambiar entre releases `0.x`. Fijá la versión que usa el agente y revisá `acropolis --version` antes de apoyarte en esta referencia. Mirá [Estado](/introduction#status).
+:::
+
+## Cómo lo usa un agente [#how-an-agent-uses-it]
+
+Acropolis no tiene servidor MCP ni paquete de skill publicado. Un agente lo usa de tres maneras:
+
+- **El CLI, con salida legible por máquinas.** `acropolis plan --json` imprime el plan de build como JSON, `acropolis --events json build` escribe un evento JSON por línea de stderr, `--info FILE` escribe un resumen en JSON y el código de salida te dice si reintentar, usar una alternativa o arreglar la app. Mirá [Herramientas](/agents/tools).
+- **Esta documentación, en Markdown.** [`/llms.txt`](https://acropolis.olimpia.dev/llms.txt), [`/llms-full.txt`](https://acropolis.olimpia.dev/llms-full.txt), [`/skill.md`](https://acropolis.olimpia.dev/skill.md) y `.md` en cualquier página. Mirá [Conectar](/agents/connect).
+- **El servidor MCP de Olimpia, cuando la app corre en Olimpia.** Olimpia buildea con Acropolis cuando el builder de una app está configurado en `acropolis`, y un agente conectado al servidor MCP de Olimpia puede configurarlo. Mirá [Buildear en Olimpia](/agents/workflows#build-on-olimpia).
+
+## Qué puede hacer un agente [#what-an-agent-can-do]
+
+| tarea | cómo |
+| --- | --- |
+| Ver si una app se puede buildear, y cómo | `acropolis plan ./app --json` (sin root) |
+| Buildear una imagen a un tar o a un registry | `acropolis --events json build ./app --oci image.tar --info info.json` o `-t REF` |
+| Decidir qué hacer después de una falla | Código de salida, o `errorClass` y `exitCode` en `info.json` |
+| Corregir la detección | `acropolis.json` o variables `-e ACROPOLIS_*`, y después `plan` de nuevo |
+| Conservar cachés en una máquina efímera | `acropolis cache import` y `export` |
+| Inspeccionar una imagen base | `acropolis inspect node:22-bookworm-slim` |
+| Buildear en Olimpia con Acropolis | MCP de Olimpia: `update_app` con `builder: "acropolis"`, y después `deploy` |
+
+Las secuencias paso a paso están en [Flujos de trabajo](/agents/workflows), los pedidos para copiar en [Prompts](/agents/prompts) y qué es seguro correr en [Seguridad](/agents/security).

@@ -1,0 +1,116 @@
+---
+title: Uso
+description: >-
+  Construí una app hacia un registry o un tar, revisá el plan antes, pasá
+  variables, conservá las cachés entre builders y leé la salida.
+sidebar:
+  icon: terminal
+---
+Esta página cubre las tareas comunes. Todos los flags y valores por defecto están en la [referencia de la CLI](/cli). `build` necesita root; `plan` no.
+
+:::caution[Experimental]
+Los flags, la salida y los valores por defecto pueden cambiar entre versiones `0.x`. Fijá la versión que usás y leé el [changelog](/changelog) antes de actualizar.
+:::
+
+## Construir y subir a un registry [#build-and-push-to-a-registry]
+
+```bash
+acropolis build ./my-app -t registry.example.com/team/my-app:latest
+```
+
+El directorio por defecto es `.`. Cuando termina el build, Acropolis imprime la referencia y el digest del manifest en stdout (`registry.example.com/team/my-app:latest@sha256:...`).
+
+### Credenciales del registry [#registry-credentials]
+
+Acropolis lee las credenciales de dos lugares:
+
+- Las entradas `auths` de la config de Docker: `$DOCKER_CONFIG/config.json`, o `~/.docker/config.json` cuando `DOCKER_CONFIG` no está definida. Solo se usan las entradas con un valor `auth` (base64 de `user:password`); no se llama a los credential helpers.
+- `ACROPOLIS_REGISTRY`, `ACROPOLIS_REGISTRY_USER` y `ACROPOLIS_REGISTRY_PASSWORD` en el entorno del proceso `acropolis`, para un único host de registry.
+
+Las credenciales se mandan solo al host al que pertenecen, y los pasos del build no pueden leerlas. Mirá [Seguridad para agentes](/agents/security#registry-credentials).
+
+## Construir a un tar [#build-to-a-tar]
+
+Sin un registry, escribí un tar con layout de imagen OCI y cargalo:
+
+```bash
+acropolis build ./my-app --oci image.tar --info info.json
+docker load -i image.tar
+```
+
+`docker load`, `skopeo` y `regctl image import` aceptan el tar. Sin `-t`, Acropolis imprime solo el digest del manifest en stdout. Las imágenes se construyen para la plataforma del host: construí en arm64 para obtener una imagen arm64.
+
+## Revisá el plan antes [#check-the-plan-first]
+
+`acropolis plan` imprime lo que haría `build`, sin construir y sin root: el provider detectado, los toolchains, los pasos y la base del runtime.
+
+```bash
+acropolis plan ./my-app
+acropolis plan ./my-app --json
+```
+
+`plan` no tiene `--config`: si `build` usa `--config FILE`, pasale `-e ACROPOLIS_CONFIG_FILE=FILE` a `plan`. Si el plan está mal, guiá la detección con un archivo de configuración o con variables: mirá [Configuración](/configuration).
+
+## Pasar variables de la app [#pass-app-variables]
+
+```bash
+acropolis build ./my-app --oci image.tar -e NODE_ENV=production -e API_URL=https://api.example.com
+```
+
+Las variables comunes de la app (nombres sin el prefijo `ACROPOLIS_` o `RAILPACK_`) llegan a los pasos del build, pero el plan solo lleva referencias `{env:NAME}` a ellas y la config de la imagen no las recibe. Definí las variables de runtime en el contenedor que corre la imagen. Los ajustes del build como `-e ACROPOLIS_START_CMD=...` son distintos: sus valores van al plan y pueden llegar a la config de la imagen, así que nunca pongas secretos en ellos. Mirá [Configuración](/configuration#variables). `plan` acepta los mismos flags `-e`.
+
+## Leer el resultado [#read-the-result]
+
+- **stdout** recibe el resultado: la referencia y el digest de la imagen después de `build` (no se imprimen con `--events json`, donde los trae el evento `build_finished`), y el plan después de `plan`.
+- **stderr** recibe los eventos de progreso. `--events human` (por defecto) imprime líneas legibles, `--events json` imprime un objeto JSON por línea y `--events quiet` no imprime nada.
+- **`--info FILE`** escribe un resumen en JSON, también cuando el build falla, con `success`, `errorClass` y `exitCode`.
+- **El código de salida** te dice qué hacer después: `1` falló el build de la app, `75` infraestructura (reintentá una vez), `78` la app no se puede construir tal como está configurada, `70` un bug de Acropolis.
+
+El contrato completo está en la referencia de la CLI: [eventos](/cli#events), [`info.json`](/cli#info-json) y [códigos de salida](/cli#exit-codes).
+
+## Conservar las cachés entre builders efímeros [#keep-caches-between-ephemeral-builders]
+
+Los builds de Go y Cargo, `node_modules`, `.next/cache` y el resto viven en una caché por app dentro del home. En una máquina que arranca vacía, llevala como archivo:
+
+```bash
+export ACROPOLIS_CACHE_KEY=my-app
+acropolis cache import cache.tar.zst || true
+acropolis build ./my-app -t registry.example.com/team/my-app:latest
+acropolis cache export cache.tar.zst
+```
+
+`--key` toma por defecto `ACROPOLIS_CACHE_KEY`. Usá la misma clave en el build, definida en el entorno del proceso `acropolis` (con `-e` se ignora): sin `ACROPOLIS_CACHE_KEY` el build usa un hash de la ruta de la app, así que la caché exportada no coincidiría. Las claves se sanitizan para convertirlas en nombres de directorio (los caracteres que no son letras, dígitos, `-` ni `_` pasan a ser `_`, así que `team/app` y `team_app` son la misma caché): mantené las claves únicas después de eso. Corré `import`, `build` y `export` con el mismo home: el mismo `--home` o `ACROPOLIS_HOME`, o el mismo usuario. Si importás con tu usuario y construís con `sudo`, usás dos homes distintos. Si el archivo de caché falta o no es zstd válido, `cache import` falla con un código de salida distinto de cero; ignorá ese error (`|| true`) y construí igual: el build funciona sin la caché. Una importación fallida puede dejar un directorio `<key>.import-<pid>` en `cache/apps` del home: borralo si el disco está justo. Un archivo dañado de otra forma (por ejemplo, un tar truncado dentro de un zstd válido) se puede importar sin error y dejar una caché incompleta; si un build falla después de importar, volvé a correrlo con `ACROPOLIS_NO_CACHE=1`.
+
+## Precalentar toolchains [#prewarm-toolchains]
+
+Descargá los toolchains en el home de antemano, como hace la imagen del builder:
+
+```bash
+acropolis prewarm --tools node:lts,go:latest,bun:latest,uv:latest,python:3.13
+```
+
+Sin `--tools`, la lista es `node:lts,node:22,node:24,go:latest,bun:latest,uv:latest`.
+
+## Mantener el home chico [#keep-the-home-small]
+
+```bash
+acropolis gc --max-size 20G
+```
+
+Las entradas que usan los builds en curso se conservan; mientras corren builds, solo se borran las entradas inactivas hace más de una hora. `ACROPOLIS_CACHE_MAX=20G` recorta el home de la misma forma después de cada build.
+
+## Mirrors y registries privados [#mirrors-and-private-registries]
+
+```bash
+acropolis --mirror docker.io=mirror.example.com build ./my-app --oci image.tar
+```
+
+`--mirror` (o `ACROPOLIS_MIRRORS`) acepta pares `REGISTRY=MIRROR`, repetidos o separados por comas. Si no se puede llegar a Docker Hub, Acropolis pasa a `mirror.gcr.io` por su cuenta; cada manifest y cada blob se siguen verificando por digest.
+
+Acropolis rechaza `http://` y los hosts privados para lo que descarga por su cuenta. Definí `ACROPOLIS_ALLOW_PRIVATE_REGISTRY=1` en su entorno para permitirlos.
+
+## Runtimes y hosts más viejos [#older-runtimes-and-hosts]
+
+- `--compression gzip` para runtimes anteriores a Docker 23 o containerd 1.5. Las capas son zstd por defecto.
+- `--hermetic off` cuando el host no puede crear network namespaces. En ese caso los pasos del host corren como procesos comunes del host, sin nada del aislamiento de los pasos, así que usalo solo con código en el que confiás. Los pasos dentro del rootfs de una imagen oficial conservan sus namespaces y su filtro seccomp. Los pasos que el plan marca como offline, como los pasos de build de Go y Rust, no pueden correr con `--hermetic off` y fallan.
+- `--keep-work` conserva el directorio de trabajo después del build, para depurar.

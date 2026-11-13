@@ -1,0 +1,106 @@
+---
+title: Workflows
+description: The command sequences an agent uses to check an app, build and run an image, react to failures, fix detection, keep caches in CI, and build on Olimpia.
+sidebar:
+  label: Workflows
+  icon: route
+---
+
+## Check that an app can be built
+
+```bash
+acropolis plan ./app --json > plan.json
+```
+
+1. Read `provider` and `facts` (framework, package manager, runtime) and compare them with the repo.
+2. Read `image.cmd`: it is how the container will start.
+3. Read `warnings`.
+4. If something is wrong, see [Fix detection](#fix-detection).
+
+If `plan` fails, read the exit code: it is `78` (`config`) when detection or the config is the problem (no provider detected, no start command, invalid or unsupported config, paths outside the app), and can be another class otherwise, such as `75` for a network error or `70` for an unrecognized error: an invalid `package.json` gives `70`, and the error says `parsing package.json`, so read the message too. No root or image is needed for this step.
+
+## Build an image and run it
+
+```bash
+acropolis --events json build ./app --oci image.tar --info info.json 2> events.jsonl
+docker load -i image.tar
+docker run --rm -p 3000:3000 -e PORT=3000 <image id from docker load>
+```
+
+- The build needs root on Linux x86_64 or arm64.
+- Read `info.json` first: `success`, then `errorClass` and `exitCode` on failure.
+- Runtime variables go on `docker run`, not on `build`: build variables do not reach the image config.
+- Publish ports on `127.0.0.1` (`-p 127.0.0.1:3000:3000`) when the machine is reachable from a network.
+
+## React to a failed build
+
+```bash
+jq -r '.exitCode, .errorClass, .error' info.json
+```
+
+| `exitCode` | next step |
+| --- | --- |
+| `1` | Read the `step_failed` and `log` events in `events.jsonl`, fix the app's code or build command, build again. |
+| `75` | Retry once with the same inputs. |
+| `78` | Read `error`. Fix the config (see below) or build with another tool. |
+| `70` | Build with another tool and report the bug with the `error` text and `acropolis --version`. |
+
+Don't loop on the same failing build without a change, except one retry on `75`.
+
+## Fix detection [#fix-detection]
+
+Most apps need no configuration. When the plan is wrong:
+
+1. Try a variable first and re-run `plan` with it:
+
+   ```bash
+   acropolis plan ./app --json -e ACROPOLIS_START_CMD="node dist/server.js"
+   acropolis plan ./app --json -e ACROPOLIS_NODE_VERSION=22
+   acropolis plan ./app --json -e ACROPOLIS_PROVIDER=python
+   ```
+
+2. When it works, make it permanent in `acropolis.json` at the app root, so every build gets it:
+
+   ```json acropolis.json
+   {
+     "deploy": { "startCommand": "node dist/server.js" }
+   }
+   ```
+
+3. Run `plan` again, then `build`.
+
+Unknown keys in `acropolis.json` fail the build. Every key and variable is in [Configuration](/configuration).
+
+## Build in CI with a cache
+
+On a runner that starts empty, carry the per-app cache between runs:
+
+```bash
+export ACROPOLIS_CACHE_KEY=my-app
+acropolis cache import cache.tar.zst || true
+acropolis --events json build . -t registry.example.com/team/my-app:"$GIT_SHA" --info info.json
+acropolis cache export cache.tar.zst
+```
+
+`|| true` keeps the job going when there is no cache yet or the file is broken: `cache import` exits non-zero then, and the build works without it. Store `cache.tar.zst` with the CI system's cache. Run the three commands as the same user, or with the same `--home`, so they use the same home. `ACROPOLIS_CACHE_KEY` must come from the environment of the `acropolis` process: through `-e` it is ignored, and without it the build uses a hash of the app path, which differs between runners with different checkout paths. For builds of code you don't control, follow [Running in production](/production).
+
+## Upgrade Acropolis
+
+1. Read the [changelog](/changelog) entries between the installed version (`acropolis --version`) and the new one.
+2. Install the new release with checksum and attestation checks ([Install](/install)).
+3. Run `plan --json` on the apps you build and compare with the previous plans before building.
+
+## Build on Olimpia [#build-on-olimpia]
+
+With [Olimpia's MCP server](/agents/connect#build-on-olimpia) connected, an agent switches an app to Acropolis and deploys it:
+
+```txt
+update_app(app: "web", builder: "acropolis")
+deploy(app: "web")
+get_deployment(app: "web", wait_seconds: 50)   # repeat while it is still building
+get_logs(app: "web", since: "5m")
+```
+
+For a new app, pass `builder: "acropolis"` to `create_app`. If Acropolis cannot build the app, Olimpia continues with the default builder (the Dockerfile, or Railpack when there is none). To go back, `update_app(app: "web", builder: "default")`.
+
+With `builder: "acropolis"` and a GitHub source, a push only redeploys the app when it touches files its image depends on. Olimpia's deploy flow is documented in [Olimpia's agent docs](https://docs.olimpia.dev/agentes/flujos).

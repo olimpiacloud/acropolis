@@ -1,0 +1,8 @@
+node_modules
+dist
+.blume
+.astro
+.cloudflare
+.blume-verify/
+
+art-src

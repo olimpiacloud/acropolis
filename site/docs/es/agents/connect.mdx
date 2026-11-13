@@ -1,0 +1,95 @@
+---
+title: Conectá tu agente
+description: >-
+  No hay un servidor MCP de Acropolis: dale a tu agente esta documentación en
+  Markdown, instalá el binario y usá la salida legible por máquina. Para
+  Olimpia, conectá el servidor MCP de Olimpia.
+sidebar:
+  label: Conectar
+  icon: plug
+---
+Acropolis no tiene servidor MCP ni un paquete de skill publicado. Para trabajar con él, un agente necesita tres cosas: esta documentación, el binario `acropolis` y su salida legible por máquina. Para desplegar en Olimpia con Acropolis, también necesita el [servidor MCP de Olimpia](#build-on-olimpia).
+
+## Dale la documentación al agente [#give-the-agent-the-docs]
+
+Cada página de este sitio se puede leer sin HTML:
+
+| URL | qué es |
+| --- | --- |
+| [`/llms.txt`](https://acropolis.olimpia.dev/llms.txt) | Índice de la documentación, en el orden de la barra lateral, con un resumen de cada página. |
+| [`/llms-full.txt`](https://acropolis.olimpia.dev/llms-full.txt) | Toda la documentación en un solo archivo Markdown. |
+| `/<page>.md` | El Markdown de cualquier página, como [`/cli.md`](https://acropolis.olimpia.dev/cli.md). |
+| [`/skill.md`](https://acropolis.olimpia.dev/skill.md) | Un archivo de skill generado a partir de esta documentación, con un mapa de las páginas. |
+
+Pegá esto al principio de una tarea:
+
+```txt
+Read https://acropolis.olimpia.dev/llms.txt and use it to answer questions about Acropolis.
+```
+
+O traé una sola página:
+
+```bash
+curl https://acropolis.olimpia.dev/cli.md
+```
+
+## Instalá el binario [#install-the-binary]
+
+Acropolis corre en Linux x86_64 o arm64 con glibc 2.36 o más nuevo. `build` necesita root; `plan`, no. Instalá una versión fijada y verificala:
+
+```bash
+v=v0.3.1 target=x86_64-unknown-linux-gnu   # or aarch64-unknown-linux-gnu
+gh release download "$v" -R olimpiacloud/acropolis -p "acropolis-$v-$target.tar.gz" -p SHA256SUMS &&
+  sha256sum --ignore-missing -c SHA256SUMS &&
+  gh attestation verify "acropolis-$v-$target.tar.gz" -R olimpiacloud/acropolis &&
+  tar xzf "acropolis-$v-$target.tar.gz" &&
+  sudo install "acropolis-$v-$target/acropolis" /usr/local/bin/
+acropolis --version
+```
+
+La cadena de `&&` se corta antes de extraer o instalar si falla el checksum o la verificación de la attestation.
+
+En macOS o Windows, corrélo en una VM de Linux o en la [imagen del builder](/install#builder-image). Tenés más opciones en [Instalación](/install).
+
+## Usá la salida legible por máquina [#use-machine-readable-output]
+
+| para obtener | usá |
+| --- | --- |
+| El plan de build en JSON, por stdout | `acropolis plan ./app --json` |
+| Un evento JSON por línea de stderr | `acropolis --events json build ...` (flag global) |
+| Un resumen JSON del build, también si falla | `acropolis build ./app --info info.json` |
+| El digest, el manifest y la config de una imagen, por stdout | `acropolis inspect REF` |
+| Qué hacer después de un fallo | El código de salida: `1`, `70`, `75` o `78` |
+
+Las estructuras y los campos están en [Herramientas](/agents/tools) y en la [referencia de la CLI](/cli).
+
+## Buildeá en Olimpia [#build-on-olimpia]
+
+[Olimpia](https://olimpia.dev) puede buildear una app con Acropolis como builder opcional. Los agentes manejan Olimpia a través de su servidor MCP:
+
+```txt
+https://api.olimpia.dev/mcp
+```
+
+<Tabs>
+  <Tab title="Claude Code">
+    ```bash
+    claude mcp add --transport http olimpia https://api.olimpia.dev/mcp
+    ```
+  </Tab>
+  <Tab title="Codex">
+    ```bash
+    codex mcp add olimpia --url https://api.olimpia.dev/mcp
+    ```
+  </Tab>
+</Tabs>
+
+La primera vez, el cliente abre olimpia.dev para que apruebes la conexión con tu sesión. Los demás clientes están en la [documentación de Olimpia](https://docs.olimpia.dev/agentes/conectar).
+
+La skill de Olimpia le enseña al agente su flujo de despliegue:
+
+```bash
+bunx skills add olimpiacloud/olimpia-skills
+```
+
+Las herramientas `create_app` y `update_app` de Olimpia aceptan `builder`: `"acropolis"` buildea con Acropolis, y `"default"` usa el Dockerfile si hay uno y, si no, Railpack. Si Acropolis no puede buildear la app, Olimpia sigue con el builder por defecto. Mirá [Buildear en Olimpia](/agents/workflows#build-on-olimpia).

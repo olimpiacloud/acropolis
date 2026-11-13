@@ -1,0 +1,208 @@
+---
+title: Referencia de la CLI
+description: >-
+  Todos los comandos y flags de acropolis con su valor por defecto, más
+  variables de entorno, salida, eventos, info.json y códigos de salida.
+sidebar:
+  label: CLI
+  icon: square-terminal
+---
+:::caution[Experimental]
+Esta referencia corresponde a Acropolis v0.3.1. Los comandos, flags, la salida y los códigos de salida pueden cambiar entre versiones `0.x`: revisá el [changelog](/changelog) antes de actualizar.
+:::
+
+```bash
+acropolis [--events human|json|quiet] [--home DIR] [--mirror REGISTRY=MIRROR] <command> [options]
+acropolis --help
+acropolis --version
+```
+
+Comandos: [`build`](#build), [`plan`](#plan), [`inspect`](#inspect), [`cache`](#cache), [`prewarm`](#prewarm) y [`gc`](#gc). `acropolis <command> --help` lista los flags de un comando. El binario también tiene comandos ocultos para el benchmark y el harness e2e del propio proyecto (`bench`, `report`, `e2e`); no se cubren acá y no son una interfaz estable.
+
+## Flags globales [#global-flags]
+
+Los flags globales van antes o después del comando.
+
+| flag | valor por defecto | entorno | qué hace |
+| --- | --- | --- | --- |
+| `--events MODE` | `human` | | `human`: líneas de progreso legibles en stderr. `json`: un evento JSON por línea de stderr. `quiet`: sin eventos. Mirá [Eventos](#events). |
+| `--home DIR` | `$XDG_CACHE_HOME/acropolis`, si no `$HOME/.cache/acropolis` | `ACROPOLIS_HOME` | Store, toolchains, rootfs de imágenes y cachés por app. |
+| `--mirror REGISTRY=MIRROR` | ninguno | `ACROPOLIS_MIRRORS` | Mirror de un registry, como `docker.io=mirror.example.com`. Se puede repetir o separar con comas. |
+
+## build
+
+Construye la app de un directorio y escribe la imagen. Necesita root.
+
+```bash
+acropolis build [DIR] [options]
+```
+
+| argumento o flag | valor por defecto | qué hace |
+| --- | --- | --- |
+| `DIR` | `.` | Directorio de la app. |
+| `-t`, `--tag REF` | ninguno | Sube la imagen a esta referencia. |
+| `--oci FILE` | ninguno | Escribe un tar con layout de imagen OCI que aceptan `docker load`, `skopeo` y `regctl image import`. |
+| `--info FILE` | ninguno | Escribe un resumen en JSON, también cuando el build falla. Mirá [info.json](#info-json). |
+| `-e`, `--env KEY=VALUE` | ninguno | Variable de la app. Se puede repetir. `KEY` no puede estar vacía; el valor sí. Mirá [Configuración](/configuration#variables). |
+| `--config FILE` | `acropolis.json`, si no `railpack.json` | Archivo de configuración, relativo al directorio de la app y dentro de él. Igual que `-e ACROPOLIS_CONFIG_FILE=FILE`. |
+| `--compression CODEC` | `zstd` | Compresión de las capas: `zstd` (`zst`), `gzip` (`gz`) o `none` (`tar`). Usá `gzip` para runtimes anteriores a Docker 23 o containerd 1.5. |
+| `--level N` | `0` (el del códec) | Nivel de compresión. Para gzip, se rechazan valores mayores a 9. |
+| `--hermetic on\|off` | `on` | `off` corre los pasos del host como procesos comunes del host, sin namespaces, sin filtro seccomp y sin sistema de archivos de solo lectura; en ese caso, los pasos del host que el plan marca como offline (como los builds de Go y Rust) fallan. Los pasos dentro del rootfs de una imagen oficial conservan su aislamiento en los dos casos. Con `on`, el build falla si el host no puede crear namespaces de red. |
+| `--concurrency N` | `64` | Descargas en paralelo. Tiene que ser al menos 1. |
+| `--keep-work` | desactivado | Conserva el directorio de trabajo después del build, para depurar. |
+
+Salida en stdout, salvo con `--events json`: `REF@DIGEST` con `-t`, si no `DIGEST`. Con `--events json`, el evento `build_finished` lleva `image` y `digest`.
+
+## plan
+
+Muestra lo que haría `build` sin construir nada: provider, toolchains, pasos y la imagen de runtime. Corre sin root.
+
+```bash
+acropolis plan [DIR] [options]
+```
+
+| argumento o flag | valor por defecto | qué hace |
+| --- | --- | --- |
+| `DIR` | `.` | Directorio de la app. |
+| `-e`, `--env KEY=VALUE` | ninguno | Variable de la app, como en `build`. Se puede repetir. |
+| `--json` | desactivado | Muestra el plan como JSON en vez de texto. |
+
+`plan` no tiene `--config`: para planificar con el archivo de configuración que un build recibe por `--config FILE`, pasá `-e ACROPOLIS_CONFIG_FILE=FILE`.
+
+`--json` imprime en stdout un objeto formateado con las claves `app`, `provider`, `facts` (datos detectados como `framework` o `package-manager`), `steps` (cada uno con `id`, `name`, `action` y `deps`), `image` (`layers`, `workdir`, `env`, `cmd`, `entrypoint`, `ports`, `user`), `warnings` y `hash`. El repo guarda como ejemplos el plan de cada uno de los 131 ejemplos de Railpack en [`tests/plans`](https://github.com/olimpiacloud/acropolis/tree/main/tests/plans).
+
+## inspect
+
+Resuelve una referencia de imagen para la plataforma del host e imprime un JSON con `reference`, `digest`, `manifest` y `config`.
+
+```bash
+acropolis inspect node:22-bookworm-slim
+```
+
+| argumento | qué hace |
+| --- | --- |
+| `REFERENCE` | Referencia de la imagen. Obligatorio. |
+
+## cache
+
+Exporta o importa la caché por app como `tar.zst`, para conservarla entre builders efímeros.
+
+```bash
+acropolis cache export FILE --key KEY
+acropolis cache import FILE --key KEY
+```
+
+| argumento o flag | valor por defecto | qué hace |
+| --- | --- | --- |
+| `export` o `import` | | Acción. Obligatorio. |
+| `FILE` | | Archivo de caché a escribir o leer. Obligatorio. |
+| `--key KEY` | `ACROPOLIS_CACHE_KEY` | Clave de caché por app. Obligatoria, y no puede estar vacía. Tiene que coincidir con la clave que usó el build, con el mismo home. |
+
+Salida en stdout: `cache KEY: exported 12.3 MB to FILE in 1.2s` (o `imported ... from FILE`).
+
+## prewarm
+
+Descarga toolchains en el home por adelantado.
+
+```bash
+acropolis prewarm [--tools LIST]
+```
+
+| flag | valor por defecto | qué hace |
+| --- | --- | --- |
+| `--tools LIST` | `node:lts,node:22,node:24,go:latest,bun:latest,uv:latest` | Lista de `tool:version` separada por comas. Una herramienta sin versión significa `latest`. Se acepta `python`. |
+
+## gc
+
+Recorta el home hasta un tamaño.
+
+```bash
+acropolis gc --max-size SIZE
+```
+
+| flag | valor por defecto | qué hace |
+| --- | --- | --- |
+| `--max-size SIZE` | | Tamaño objetivo. Obligatorio. Un número con un sufijo opcional `K`, `M`, `G` o `T` (potencias de 1024), como `20G`. |
+
+Las entradas que usan builds en curso se conservan; mientras hay builds corriendo, solo se borran las entradas sin uso por más de una hora. Salida en stdout: `gc: 25.10 GB -> 19.80 GB, 312 entries removed`, con `(builds running: only entries idle for over 1h)` cuando había otros builds corriendo.
+
+## Variables de entorno [#environment-variables]
+
+Se leen del entorno del proceso `acropolis`. Los ajustes de la app (`ACROPOLIS_BUILD_CMD`, `ACROPOLIS_NODE_VERSION` y el resto) están en [Configuración](/configuration#variables).
+
+| variable | qué hace |
+| --- | --- |
+| `ACROPOLIS_HOME` | Igual que `--home`. |
+| `ACROPOLIS_MIRRORS` | Igual que `--mirror`, separado por comas. |
+| `ACROPOLIS_CACHE_KEY` | Clave de caché por app para `build`, y el `--key` por defecto de `cache`. Si no está, el build usa un hash de la ruta de la app. Los caracteres que no son letras, dígitos, `-` ni `_` se convierten en `_` en el nombre del directorio de caché, así que `team/app` y `team_app` comparten caché: asegurate de que las claves sigan siendo únicas después de ese reemplazo. |
+| `ACROPOLIS_CACHE_MAX` | Después de cada build, recorta el home a este tamaño, como `gc`. |
+| `ACROPOLIS_NO_CACHE` | Construye sin la caché por app. |
+| `ACROPOLIS_BUILD_TIMEOUT` | Timeout de todo el build; 1 h por defecto. |
+| `ACROPOLIS_STEP_TIMEOUT` | Timeout de cada paso. |
+| `ACROPOLIS_BUILD_ID` | Id del build que se escribe en cada evento JSON. Se genera si no está definido. |
+| `ACROPOLIS_ALLOW_PRIVATE_REGISTRY` | `1` permite hosts privados y `http://` para lo que Acropolis descarga por su cuenta. |
+| `ACROPOLIS_REGISTRY`, `ACROPOLIS_REGISTRY_USER`, `ACROPOLIS_REGISTRY_PASSWORD` | Credenciales para un host de registry. |
+| `DOCKER_CONFIG` | Directorio del `config.json` de Docker cuyas entradas de `auths` se usan como credenciales de registry; `~/.docker` por defecto. |
+| `XDG_CACHE_HOME`, `HOME` | Se usan para el home por defecto. Solo cuentan los valores absolutos. |
+
+Los ajustes de la lista de [ajustes del operador](/configuration#operator-settings) se ignoran cuando llegan por `-e` o por el archivo de configuración.
+
+## Eventos [#events]
+
+`--events` controla qué va a stderr. Con `human`, cada evento es una línea con los segundos desde el inicio como prefijo. Con `json`, cada línea es un objeto JSON con estos campos más los propios del evento:
+
+| campo | significado |
+| --- | --- |
+| `v` | Versión del esquema, actualmente `1`. |
+| `build_id` | `ACROPOLIS_BUILD_ID`, o un id generado. |
+| `ts` | Tiempo Unix en milisegundos. |
+| `t` | Milisegundos desde que arrancó el proceso. |
+| `type` | Tipo de evento, abajo. |
+
+| `type` | campos |
+| --- | --- |
+| `build_started` | `app` |
+| `plan_ready` | `hash`, `steps` |
+| `step_started` | `id`, `name` |
+| `step_finished` | `id`, `name`, `ms` |
+| `step_failed` | `id`, `name`, `error` |
+| `log` | `step`, `line` |
+| `downloaded` | `what`, `bytes`, `ms` |
+| `uploaded` | `what`, `bytes`, `skipped` |
+| `image_pushed` | `reference`, `digest` |
+| `stats` | `bytes_downloaded`, `bytes_uploaded`, `bytes_written`, `requests`, `peak_rss_bytes`, `children_peak_rss_bytes` |
+| `build_finished` | `ms`, `image`, `digest` |
+| `build_failed` | `ms`, `class`, `exit_code`, `error` |
+
+Una ejecución fallida termina con `build_failed`. En los modos `human` y `quiet`, un fallo también imprime `error: ...` y `error class: CLASS (exit N)` en stderr; en modo `json`, stderr tiene solo líneas JSON.
+
+## info.json [#info-json]
+
+`build --info FILE` escribe este JSON, tanto si sale bien como si falla:
+
+| clave | significado |
+| --- | --- |
+| `acropolisVersion` | Versión del binario. |
+| `detectedProviders` | Provider detectado, como lista (compatible con Railpack). |
+| `resolvedPackages` | Toolchains por nombre, con `name`, `resolvedVersion`, `source` y, cuando el plan pidió una, `requestedVersion` (compatible con Railpack). |
+| `metadata` | Los datos del plan, más `nodePackageManager` para apps de Node (compatible con Railpack). |
+| `planHash` | Hash del plan. |
+| `manifestDigest` | Digest del manifiesto de la imagen; `null` si falla. |
+| `warnings` | Advertencias del plan. |
+| `watchPaths` | Rutas del repo, relativas a la raíz del workspace, cuyos cambios pueden cambiar la imagen. `["."]` cuando Acropolis no puede acotarlo. |
+| `success` | `true` o `false`. |
+| `error` | Mensaje de error, o `null`. |
+| `errorClass` | `user`, `infra`, `config` o `internal`, o `null`. |
+| `exitCode` | Código de salida del fallo, o `null`. |
+
+## Códigos de salida [#exit-codes]
+
+| código | clase | significado | qué hacer |
+| --- | --- | --- | --- |
+| `0` | | Éxito. | |
+| `1` | `user` | Falló el build propio de la app, incluidos los timeouts de build y de paso. | Mostrá el log, no reintentes. |
+| `70` | `internal` | Bug de Acropolis, incluido un panic. | Pasá a otro builder y reportalo. |
+| `75` | `infra` | Infraestructura: red, registry, disco, falta de memoria, un paso matado por SIGKILL o que termina con código 137, o el build interrumpido por SIGTERM o SIGINT mientras corren sus pasos (antes, durante la planificación, la señal termina el proceso sin `75`). | Reintentá una vez. |
+| `78` | `config` | La app no se puede construir tal como está configurada: stack o configuración no soportados, rutas fuera de la app, registries privados. | Pasá a otro builder o mostrá el error. |
+
+La clase sale del error: un comando de un paso matado por SIGKILL o que termina con código 137 (en general, falta de memoria) es `infra`, y cualquier otro código distinto de cero o señal, incluidos SIGTERM y SIGSEGV, es `user`; los demás errores se comparan con mensajes conocidos (los errores de red y los rate limits y respuestas 5xx de un registry son `infra`; los stacks no soportados, la configuración inválida, las rutas fuera de la app y los registries privados son `config`), y todo lo que no se reconoce es `internal`, como un registry que responde `403 Forbidden` al pedido de token. Estas clases aplican a todos los comandos. El parser de argumentos rechaza los argumentos inválidos antes de que corra nada, con un mensaje de uso.

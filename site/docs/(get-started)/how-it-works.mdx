@@ -1,0 +1,58 @@
+---
+title: Concepts
+description: "How Acropolis builds an image: the plan, the home and its caches, no builder image, segmented downloads, small runtimes and step isolation."
+sidebar:
+  label: Concepts
+  icon: layers
+---
+
+A build has three phases: detect the app and write a plan, run the plan's steps, and assemble the image. [`acropolis plan`](/cli#plan) prints the first phase on its own.
+
+## Key terms
+
+| term | meaning |
+| --- | --- |
+| **Provider** | The ecosystem Acropolis detected for the app (`node`, `go`, `rust`, `python` and so on), picked with Railpack's precedence. `ACROPOLIS_PROVIDER` forces one. |
+| **Plan** | The list of steps a build will run (toolchains, installs, build commands) plus the runtime image spec. It has a hash, `planHash` in `info.json`. |
+| **Step** | One unit of the plan, with the steps it depends on. Each step runs isolated (see [Isolation](#isolation)). |
+| **Home** | The directory with the content-addressed store, the toolchains, the unpacked image rootfs and the per-app caches. `--home` or `ACROPOLIS_HOME`; by default `$XDG_CACHE_HOME/acropolis`, else `~/.cache/acropolis`. |
+| **Per-app cache** | Build caches of one app inside the home, selected by `ACROPOLIS_CACHE_KEY` (a hash of the app path when it is not set). Keys are sanitized into directory names, so `team/app` and `team_app` share one cache. It can be exported and imported as a file. |
+| **App variables** | `-e KEY=VALUE` values and the config file. They come from the app and are untrusted. |
+| **Operator settings** | The settings listed under [operator settings](/configuration#operator-settings) (`ACROPOLIS_CACHE_KEY`, the timeouts and the others there). Only these are read exclusively from the environment of the `acropolis` process, so an app cannot change them; other `ACROPOLIS_*` settings such as `ACROPOLIS_PROVIDER` can also come from `-e` or the config file. `ACROPOLIS_HOME` and `ACROPOLIS_MIRRORS` are not on that list but are CLI settings, read only from the process environment or from `--home` and `--mirror`. |
+| **Builder image** | `ghcr.io/olimpiacloud/acropolis-builder`, a Debian 12 image with Acropolis and prewarmed toolchains, for running one build per container. |
+
+## Detection and the plan
+
+Acropolis reads the repo (lockfiles, `package.json`, `go.mod`, `Cargo.toml`, `pyproject.toml`, framework configs, `acropolis.json` or `railpack.json`) and picks a provider with Railpack's precedence. The plan lists toolchains, install and build steps, the runtime base and the files each layer takes. Its hash is in `info.json` as `planHash`, and `tests/plans` keeps a snapshot of the plan of each of the 131 Railpack examples, so any detection change shows up as a diff before anything is built.
+
+## No builder image
+
+Node, Go and Rust are downloaded from their official sources with a checksum and run directly. Dependencies (npm, pnpm, yarn, bun, Go modules, crates) are installed by Acropolis itself from the lockfiles and verified while they download: Go modules against `go.sum`, npm packages against their integrity hashes. Go builds then run with `GOPROXY=off` and no network.
+
+Languages without relocatable binaries (Ruby, Python with extensions, PHP, Java, .NET, Elixir) and apt packages run inside the rootfs of the official image instead: its layers are unpacked once, each step gets its own overlayfs upper dir, and that upper dir becomes an OCI layer.
+
+## Downloads that don't hang
+
+Blobs of 12 MB or more are downloaded in 8 MB segments, six in parallel over independent HTTP/1.1 connections. If the segment that blocks in-order output falls behind (more than 2.5 s or 2.5 times the median), a duplicate is started and the first to finish wins; streams with no bytes for 6 s are cut and resumed with `Range`. Copying `node:22-bookworm-slim` (80 MB) from Docker Hub went from 12.2 s to 2.9 s.
+
+## Base layers are copied, not decompressed
+
+When the final image is assembled, the base image's layers are copied registry to registry by digest, starting as soon as the platform manifest arrives, and are never decompressed on that path. Builds that run steps inside an official image's rootfs (see above) do unpack that image's layers once, to run the steps. Only the new layers are compressed: each one is a concatenation of independent ~1 MB zstd frames (or gzip members) compressed in parallel, valid and deterministic. Production `node_modules` is written straight from the store tarballs, without unpacking to disk.
+
+## Small runtimes
+
+- Node servers run on distroless with a minimal busybox shell when nothing from Debian is needed, with exactly the `node` binary they were built with; otherwise on `node:<version>-bookworm-slim`.
+- Next 15+ apps without `output` configured are built as standalone when nothing prevents it (a custom `distDir` or `outputFileTracingRoot`, custom build or start scripts, ...), so the image carries only what the server traces. The exact conditions are in [D17](https://github.com/olimpiacloud/acropolis/blob/main/docs/decisions.md#d17-next-without-output-is-built-as-standalone).
+- Bun apps that start with `bun <file>` run on `distroless/cc` with a bun layer and no `node`.
+- Go runs on `distroless/static` and Rust on `distroless/cc`.
+- SPAs and static sites are served by Caddy.
+
+## Portable caches
+
+Go and Cargo build caches, `.next/cache`, the reused `node_modules` and the rest live in a per-app cache in the home. On an ephemeral builder it travels as a file: [`acropolis cache export|import`](/cli#cache) writes and reads it as a `tar.zst`.
+
+## Isolation
+
+Each build step runs in its own PID namespace (it can't see Acropolis or its variables), with the filesystem read-only except its working directory, its app's cache, `/tmp` and `/var/tmp`, a minimal `/dev`, the capabilities of an unprivileged container, a seccomp filter modeled on Docker's default profile, and its own network namespace when it doesn't need network. What Acropolis processes as root (config, lockfiles, patches, layers, caches) is validated so it cannot read or write outside its tree. With `--hermetic=off` none of this applies to host steps: they run as plain host processes, and host steps the plan marks as offline (such as Go and Rust builds) fail. Steps inside an official image's rootfs keep their namespaces and seccomp filter. See [Running in production](/production) for what that does and doesn't protect.
+
+Every measurement behind these choices, and what was tried and discarded, is in [`docs/decisions.md`](https://github.com/olimpiacloud/acropolis/blob/main/docs/decisions.md).

@@ -1,0 +1,352 @@
+---
+import PageLayout from "blume/components/layout/PageLayout.astro";
+import Icon from "blume/components/Icon.astro";
+import data from "blume:data";
+import { home, type Locale } from "./content";
+
+interface Props {
+  locale: Locale;
+}
+
+interface Link {
+  href: string;
+  label: string;
+}
+
+interface Entry {
+  href: string;
+  icon: string;
+  title: string;
+  body: string;
+}
+
+interface Art {
+  src: string;
+  alt: string;
+  quote: string;
+  caption: string;
+}
+
+interface HomeContent {
+  title: string;
+  description: string;
+  og: { image: string; alt: string };
+  eyebrow: string;
+  heading: string;
+  lede: string;
+  doors: { agents: string; humans: string };
+  agents: {
+    intro: string;
+    clients: { label: string; command: string; logo?: string; icon?: string; invert?: boolean }[];
+    copy: string;
+    machineIntro: string;
+    machine: Link[];
+    tasks: Entry[];
+    cta: Link;
+  };
+  humans: { guides: Entry[]; cta: Link };
+  art: { mobile: string; position?: string; agents: Art };
+  features: {
+    eyebrow: string;
+    heading: string;
+    more: Link;
+    items: { href: string; title: string; body: string; art?: string; icon?: string }[];
+  };
+  soon?: { label: string; href: string; items: string[] };
+}
+
+const { locale } = Astro.props;
+const { config } = data;
+const t: HomeContent = home[locale];
+const defaultLocale = config.i18n?.defaultLocale ?? locale;
+const homeRoute = (code: string) => (code === defaultLocale ? "/" : `/${code}`);
+const route = homeRoute(locale);
+const base = data.navigationByLocale?.[locale] ?? data.navigation;
+const [agentsTab, humansTab] = base.tabs;
+const navigation = {
+  ...base,
+  tabs: [
+    { ...agentsTab, path: agentsTab.href ?? agentsTab.path },
+    { ...humansTab, path: humansTab.href ?? humansTab.path },
+  ],
+};
+const locales = config.i18n?.locales ?? [];
+const localeSwitch = locales.map((item) => ({
+  code: item.code,
+  label: item.label,
+  dir: item.dir ?? "ltr",
+  href: homeRoute(item.code),
+  current: item.code === locale,
+  untranslated: false,
+}));
+const product = config.logo?.text ?? "";
+const brandPrefix = locale === defaultLocale ? "" : `/${locale}`;
+const artPosition = t.art.position ?? "object-top";
+const redirectTargets = Object.fromEntries(
+  locales.filter((item) => item.code !== defaultLocale).map((item) => [item.code, homeRoute(item.code)])
+);
+---
+
+<PageLayout
+  site={{ title: config.title, description: t.description }}
+  logo={config.logo}
+  banner={config.banner}
+  analytics={config.analytics}
+  navigation={navigation}
+  favicon={config.favicon}
+  appleIcon={config.appleIcon}
+  fontCssVars={data.fontCssVars}
+  themeMode={config.theme.mode}
+  searchEnabled={config.search.enabled}
+  siteUrl={config.site}
+  ogEnabled={config.og.enabled}
+  ogImage={t.og.image}
+  ogImageAlt={t.og.alt}
+  ogImageSize={{ width: 1200, height: 630 }}
+  structuredDataEnabled={config.structuredData}
+  locale={locale}
+  localeSwitch={localeSwitch}
+  page={{ title: t.title, description: t.description, route }}
+>
+  {
+    locale === defaultLocale && config.i18n?.routeByBrowserLanguage && (
+      <script is:inline data-default={defaultLocale} data-targets={JSON.stringify(redirectTargets)}>
+        (() => {
+          const script = document.currentScript;
+          try {
+            if (localStorage.getItem("blume-locale")) return;
+            if (document.referrer && new URL(document.referrer).origin === location.origin) return;
+          } catch {
+            return;
+          }
+          const targets = JSON.parse(script.dataset.targets);
+          const fallback = script.dataset.default;
+          for (const wanted of navigator.languages ?? [navigator.language]) {
+            const code = wanted.toLowerCase();
+            const short = code.split("-")[0];
+            if (code === fallback || short === fallback) return;
+            const target = targets[code] ?? targets[short];
+            if (target) {
+              location.replace(target + location.hash);
+              return;
+            }
+          }
+        })();
+      </script>
+    )
+  }
+  <script is:inline data-product={product} data-prefix={brandPrefix}>
+    (() => {
+      const script = document.currentScript;
+      const home = script.dataset.prefix || "/";
+      const link = document.querySelector("header a[href='" + home + "']") ?? document.querySelector("header a[href='/']");
+      if (!link || link.parentElement.classList.contains("family-brand")) return;
+      const product = script.dataset.product;
+      const brand = document.createElement("span");
+      brand.className = "family-brand";
+      link.replaceWith(brand);
+      brand.append(link);
+      link.setAttribute("href", home);
+      if (product !== "Olimpia") {
+        const by = document.createElement("span");
+        by.className = "family-by";
+        by.textContent = "by Olimpia";
+        brand.append(by);
+      }
+      if (product === "Acropolis") {
+        const badge = document.createElement("a");
+        badge.className = "family-badge";
+        badge.href = script.dataset.prefix + "/introduction#status";
+        badge.textContent = "Experimental";
+        brand.append(badge);
+      }
+    })();
+  </script>
+  <div class="home" data-home>
+    <section class="mx-auto grid w-full max-w-[1400px] gap-6 px-4 pt-6 pb-16 sm:px-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.05fr)] lg:gap-10 lg:px-8">
+      <div class="flex flex-col justify-center py-8 lg:py-16 lg:pl-8">
+        <div class="home-enter relative mb-10 h-56 overflow-hidden rounded-xl ring-1 ring-[color-mix(in_oklab,var(--blume-foreground)_8%,transparent)] sm:h-72 lg:hidden">
+          <img src={t.art.mobile} alt="" class="absolute inset-0 size-full object-cover" />
+        </div>
+        <p class="home-enter flex items-center gap-3 text-xs tracking-[0.24em] text-muted-foreground uppercase">
+          <span aria-hidden="true" class="h-px w-8 bg-current opacity-60"></span>
+          {t.eyebrow}
+        </p>
+        <h1 class="home-enter mt-6 max-w-xl font-display text-5xl leading-[1.05] text-balance sm:text-6xl" style="animation-delay: 60ms">
+          {t.heading}
+        </h1>
+        <p class="home-enter mt-6 max-w-lg text-lg leading-relaxed text-pretty text-muted-foreground" style="animation-delay: 120ms">
+          {t.lede}
+        </p>
+
+        <div class="home-enter mt-10 max-w-xl" style="animation-delay: 180ms">
+          <p class="text-pretty text-muted-foreground">{t.agents.intro}</p>
+          <ul class="mt-6 space-y-2.5">
+            {
+              t.agents.clients.map((client) => (
+                <li class="flex items-center gap-3 rounded-blume border border-border bg-[var(--olimpia-card)] py-2 pr-2 pl-3">
+                  {client.logo ? <img src={client.logo} alt="" width="18" height="18" class:list={["size-[18px] shrink-0", client.invert && "dark:invert"]} /> : <span class="grid size-[18px] shrink-0 place-items-center text-accent"><Icon icon={client.icon ?? "terminal"} size={16} /></span>}
+                  <span class="w-24 shrink-0 text-sm font-medium">{client.label}</span>
+                  <code class="min-w-0 flex-1 truncate font-mono text-[12.5px] text-muted-foreground" title={client.command}>{client.command}</code>
+                  <button type="button" data-copy={client.command} class="home-copy grid size-8 shrink-0 place-items-center rounded-blume text-muted-foreground transition-colors duration-150 hover:bg-[var(--blume-muted)] hover:text-foreground" aria-label={`${t.agents.copy} ${client.label}`}>
+                    <span class="home-copy-idle"><Icon icon="copy" size={15} /></span>
+                    <span class="home-copy-done"><Icon icon="check" size={15} /></span>
+                  </button>
+                </li>
+              ))
+            }
+          </ul>
+          <p class="mt-6 text-sm text-muted-foreground">
+            {t.agents.machineIntro}
+            {
+              t.agents.machine.map((item, index) => (
+                <>
+                  {index > 0 && <span aria-hidden="true"> · </span>}
+                  <a href={item.href} class="font-mono text-[12.5px] text-foreground underline decoration-border underline-offset-4 hover:decoration-current">{item.label}</a>
+                </>
+              ))
+            }
+          </p>
+        </div>
+      </div>
+
+      <aside class="home-art relative hidden min-h-[640px] overflow-hidden rounded-xl bg-[var(--olimpia-card)] shadow-[0_24px_60px_-24px_rgb(14_23_38/0.35)] ring-1 ring-[color-mix(in_oklab,var(--blume-foreground)_8%,transparent)] lg:block lg:h-[calc(100dvh-7rem)] lg:max-h-[920px]">
+        <img src={t.art.agents.src} alt={t.art.agents.alt} class:list={["absolute inset-0 size-full origin-top object-cover", artPosition]} />
+        <div class="absolute inset-x-0 bottom-0 bg-linear-to-t from-[rgb(14_23_38/0.92)] via-[rgb(14_23_38/0.6)] to-transparent px-12 pt-40 pb-12 text-[var(--olimpia-pergamino)]">
+          <p class="max-w-md font-display text-4xl leading-[1.1] text-balance">“{t.art.agents.quote}”</p>
+          <p class="mt-5 flex items-center gap-3 text-sm tracking-[0.18em] uppercase opacity-85">
+            <span aria-hidden="true" class="h-px w-8 bg-current opacity-70"></span>
+            {t.art.agents.caption}
+          </p>
+        </div>
+      </aside>
+    </section>
+
+    <section class="mx-auto w-full max-w-[1400px] px-4 pb-16 sm:px-6 lg:px-8">
+      <div class="grid gap-12 border-t border-border pt-14 lg:grid-cols-2 lg:gap-16 lg:px-8">
+        {
+          [
+            { id: "agents", icon: "bot", title: t.doors.agents, items: t.agents.tasks, cta: t.agents.cta },
+            { id: "humans", icon: "book-open", title: t.doors.humans, items: t.humans.guides, cta: t.humans.cta },
+          ].map((door) => (
+            <div id={door.id} class="scroll-mt-24">
+              <h2 class="flex items-center gap-3 font-display text-3xl">
+                <span class="grid size-9 place-items-center rounded-blume border border-border bg-[var(--olimpia-card)] text-accent">
+                  <Icon icon={door.icon} size={17} />
+                </span>
+                {door.title}
+              </h2>
+              <ul class="mt-6 divide-y divide-border border-y border-border">
+                {door.items.map((item) => (
+                  <li>
+                    <a href={item.href} class="group flex items-start gap-4 py-4 transition-colors duration-150 hover:text-foreground">
+                      <span class="mt-0.5 grid size-8 shrink-0 place-items-center rounded-blume border border-border bg-[var(--olimpia-card)] text-accent">
+                        <Icon icon={item.icon} size={15} />
+                      </span>
+                      <span class="min-w-0 flex-1">
+                        <span class="block font-medium">{item.title}</span>
+                        <span class="mt-0.5 block text-sm text-muted-foreground">{item.body}</span>
+                      </span>
+                      <span aria-hidden="true" class="mt-1.5 text-muted-foreground transition-transform duration-300 ease-[cubic-bezier(0.23,1,0.32,1)] group-hover:translate-x-1 group-hover:text-foreground">→</span>
+                    </a>
+                  </li>
+                ))}
+              </ul>
+              <a href={door.cta.href} class="mt-8 inline-flex items-center gap-2 rounded-full bg-action px-5 py-2.5 text-sm font-medium text-action-foreground transition-transform duration-150 active:scale-[0.97]">
+                {door.cta.label}
+                <span aria-hidden="true">→</span>
+              </a>
+            </div>
+          ))
+        }
+      </div>
+    </section>
+
+    <section class="mx-auto w-full max-w-[1400px] px-4 pb-24 sm:px-6 lg:px-8">
+      <div class="border-t border-border pt-14 lg:px-8">
+        <div class="flex flex-wrap items-end justify-between gap-6">
+          <div>
+            <p class="text-xs tracking-[0.24em] text-muted-foreground uppercase">{t.features.eyebrow}</p>
+            <h2 class="mt-3 font-display text-3xl sm:text-4xl">{t.features.heading}</h2>
+          </div>
+          <a href={t.features.more.href} class="group text-sm text-muted-foreground transition-colors duration-150 hover:text-foreground">
+            {t.features.more.label}
+            <span aria-hidden="true" class="inline-block transition-transform duration-300 group-hover:translate-x-1">→</span>
+          </a>
+        </div>
+        <ul class="mt-10 grid gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-2 lg:grid-cols-3">
+          {
+            t.features.items.map((feature) => (
+              <li class="bg-[var(--olimpia-card)]">
+                <a href={feature.href} class="group flex h-full gap-5 p-6 transition-colors duration-200 hover:bg-background">
+                  {feature.art ? (
+                    <img src={feature.art} alt="" width="72" height="72" loading="lazy" class="size-[72px] shrink-0 object-contain transition-transform duration-500 ease-[cubic-bezier(0.23,1,0.32,1)] group-hover:-translate-y-1" />
+                  ) : (
+                    <span class="grid size-[72px] shrink-0 place-items-center rounded-blume border border-border bg-background text-accent transition-transform duration-500 ease-[cubic-bezier(0.23,1,0.32,1)] group-hover:-translate-y-1">
+                      <Icon icon={feature.icon ?? "sparkles"} size={28} />
+                    </span>
+                  )}
+                  <span>
+                    <span class="block font-display text-xl">{feature.title}</span>
+                    <span class="mt-2 block text-sm leading-relaxed text-pretty text-muted-foreground">{feature.body}</span>
+                  </span>
+                </a>
+              </li>
+            ))
+          }
+        </ul>
+        {
+          t.soon && (
+            <div class="mt-10 flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
+              <a href={t.soon.href} class="mr-2 hover:text-foreground">{t.soon.label}</a>
+              {t.soon.items.map((item) => <span class="rounded-full border border-dashed border-border px-3 py-1">{item}</span>)}
+            </div>
+          )
+        }
+      </div>
+    </section>
+  </div>
+</PageLayout>
+
+<style>
+  .home-enter {
+    animation: olimpia-enter 0.9s cubic-bezier(0.23, 1, 0.32, 1) both;
+  }
+
+  .home-copy-done,
+  .home-copy[data-copied] .home-copy-idle {
+    display: none;
+  }
+
+  .home-copy[data-copied] .home-copy-done {
+    display: inline;
+    color: var(--olimpia-olivo);
+  }
+</style>
+
+<script>
+  function setup() {
+    const root = document.querySelector<HTMLElement>("[data-home]");
+    if (!root || root.dataset.ready) return;
+    root.dataset.ready = "true";
+
+    for (const button of root.querySelectorAll<HTMLButtonElement>("[data-copy]")) {
+      button.addEventListener("click", async () => {
+        const code = button.parentElement?.querySelector("code");
+        try {
+          await navigator.clipboard.writeText(button.dataset.copy!);
+        } catch {
+          if (code) getSelection()?.selectAllChildren(code);
+          return;
+        }
+        button.dataset.copied = "";
+        setTimeout(() => delete button.dataset.copied, 1600);
+      });
+    }
+
+    if (location.hash === "#humanos") document.getElementById("humans")?.scrollIntoView();
+  }
+
+  document.addEventListener("astro:page-load", setup);
+  setup();
+</script>

@@ -1,0 +1,115 @@
+:root {
+  --blume-background: #ffffff;
+  --blume-foreground: #0e1726;
+  --blume-muted: #f1f4f8;
+  --blume-muted-foreground: #56627a;
+  --blume-border: #dfe3ea;
+  --blume-accent: #1d63d8;
+  --blume-accent-foreground: #ffffff;
+  --blume-action: #0e1726;
+  --blume-action-foreground: #ffffff;
+  --blume-code-background: #f1f4f8;
+  --blume-radius: 0.25rem;
+  --olimpia-card: #ffffff;
+  --olimpia-egeo: #2f7fe8;
+  --olimpia-olivo: #2e9e6b;
+  --olimpia-tinta: #0e1726;
+  --olimpia-pergamino: #ffffff;
+}
+
+:root[data-theme="dark"] {
+  --blume-background: #070b16;
+  --blume-foreground: #eaf0fb;
+  --blume-muted: #151e33;
+  --blume-muted-foreground: #93a0bb;
+  --blume-border: #222c44;
+  --blume-accent: #6aa8ff;
+  --blume-accent-foreground: #070b16;
+  --blume-action: #eaf0fb;
+  --blume-action-foreground: #070b16;
+  --blume-code-background: #0e1526;
+  --olimpia-card: #0e1526;
+  --olimpia-egeo: #6aa8ff;
+  --olimpia-olivo: #58c492;
+}
+
+img[src^="/arte/"] {
+  image-rendering: pixelated;
+}
+
+h1,
+h2,
+h3,
+h4,
+.font-display {
+  font-weight: 400;
+  letter-spacing: -0.015em;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--olimpia-egeo) 25%, transparent);
+}
+
+@keyframes olimpia-enter {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+    filter: blur(4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  @keyframes olimpia-enter {
+    from {
+      opacity: 0;
+    }
+  }
+}
+
+header a[href="/"] > span.truncate,
+header a[href="/en"] > span.truncate,
+header a[href="/es"] > span.truncate {
+  font-family: var(--blume-font-display);
+  font-size: 1.35rem;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+
+header a[href="/"] > span:first-child > svg,
+header a[href="/en"] > span:first-child > svg,
+header a[href="/es"] > span:first-child > svg {
+  height: 1.6rem;
+}
+
+.family-brand {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.family-by {
+  color: var(--blume-muted-foreground);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.family-badge {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid color-mix(in oklab, var(--blume-accent) 55%, transparent);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--blume-accent) 14%, transparent);
+  color: var(--blume-accent);
+  padding: 0.1rem 0.55rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+@media (max-width: 40rem) {
+  .family-by {
+    display: none;
+  }
+}

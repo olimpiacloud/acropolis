@@ -1,0 +1,39 @@
+---
+title: Producción
+description: >-
+  Un build por contenedor, la imagen del builder, privilegios, red, cachés y
+  cómo tiene que reaccionar una plataforma a cada código de salida.
+sidebar:
+  icon: server
+---
+:::caution[Experimental]
+Acropolis es experimental. Olimpia lo ofrece como builder opcional que vuelve a Railpack o al Dockerfile cuando un build falla; hacé lo mismo con los códigos de salida `70` y `78`, y fijá la versión que corrés.
+:::
+
+## Un build por contenedor [#one-build-per-container]
+
+Acropolis corre como root porque usa namespaces de mount y de PID, y overlayfs. El sandbox del build no es un límite de VM: para builds de clientes distintos, usá un contenedor (o una VM) descartable por build.
+
+La [imagen del builder](/install#builder-image) está hecha para esto. Necesita `CAP_SYS_ADMIN` y ningún perfil de seccomp o AppArmor que bloquee `mount`/`unshare`. `--privileged` funciona; también `--cap-add SYS_ADMIN --security-opt seccomp=unconfined --security-opt apparmor=unconfined`. `/var/lib/acropolis/work` no puede estar sobre overlayfs: la imagen lo declara como `VOLUME`, y en otros runtimes ahí hace falta un volumen, un `emptyDir` o un tmpfs.
+
+## El contrato para una plataforma [#the-contract-for-a-platform]
+
+```bash
+ACROPOLIS_BUILD_ID=<deploy id> ACROPOLIS_CACHE_KEY=<app id> ACROPOLIS_BUILD_TIMEOUT=1800 \
+  acropolis --events json build "/src/$ROOT_DIR" -e KEY=VALUE... --oci /out/image.tar --info /out/info.json
+```
+
+- **Configuración.** La configuración del operador sale del entorno del proceso; las variables del cliente van por `-e`. Mirá [Configuración](/configuration#operator-settings).
+- **Salida.** `--oci` escribe un tar que aceptan `regctl image import`, `skopeo` o `docker load`; `-t` lo sube a un registry. Las capas van en zstd por defecto.
+- **Logs.** `--events json` imprime un evento JSON por línea de stderr, y termina con `build_failed` si falla. Mirá [eventos](/cli#events).
+- **Códigos de salida.** `1`: mostrá el log, no reintentes. `75`: reintentá una vez. `78`: pasá a otro builder o mostrá el error. `70`: pasá a otro builder y reportalo. Mirá [códigos de salida](/cli#exit-codes).
+- **Cachés.** `acropolis cache import` antes del build y `acropolis cache export` después, con el mismo `ACROPOLIS_CACHE_KEY`.
+- **Watch paths.** `info.json` tiene `watchPaths`, las rutas del repo cuyos cambios pueden cambiar la imagen (para un miembro de un workspace: el miembro, los miembros de los que depende, y el lockfile y los archivos de instalación de la raíz). Vale `["."]` cuando Acropolis no puede acotarlo.
+
+## Red [#network]
+
+Los pasos del build con red (instalaciones con scripts, `next build`) pueden llegar a cualquier host al que llegue el contenedor. Bloqueá el endpoint de metadata de la nube (`169.254.169.254`) y las redes internas desde fuera del contenedor. Acropolis solo rechaza registries privados y `http://` para lo que descarga él mismo (`ACROPOLIS_ALLOW_PRIVATE_REGISTRY=1` los permite).
+
+## Apps con Dockerfile [#dockerfile-apps]
+
+Los builds con Dockerfile siguen en BuildKit. Para servir los dos desde una sola imagen, extendé la imagen del builder con BuildKit y sobrescribí el entrypoint, como se explica en [`deploy/builder`](https://github.com/olimpiacloud/acropolis/tree/main/deploy/builder).

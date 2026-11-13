@@ -1,0 +1,58 @@
+---
+title: Cómo contribuir
+description: >-
+  Compilá y probá Acropolis, corré los snapshots de planes y los e2e, y abrí un
+  pull request.
+sidebar:
+  icon: git-pull-request
+---
+Los issues y PRs son bienvenidos en español o en inglés; el código, los mensajes de error y los commits van en inglés. La guía completa está en [`CONTRIBUTING.md`](https://github.com/olimpiacloud/acropolis/blob/main/CONTRIBUTING.md).
+
+## Requisitos [#requirements]
+
+- Linux x86_64 o arm64 (en otros sistemas te sirve una VM o un contenedor `--privileged`).
+- Un Rust estable reciente (como mínimo la `rust-version` de `Cargo.toml`) con `rustfmt` y `clippy`, y un compilador de C.
+- Root para los builds completos y los tests del sandbox; Docker para la suite e2e.
+
+## Compilar y probar [#build-and-test]
+
+```bash
+cargo build --bin acropolis           # target/debug/acropolis
+cargo test --workspace                # unit tests
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER='sudo -E' \
+CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER='sudo -E' cargo test --workspace  # as root, like CI
+cargo fmt --all
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+El CI corre lo mismo, más `cargo deny check`, la versión mínima de Rust y los snapshots de planes.
+
+## Snapshots de planes [#plan-snapshots]
+
+`tests/plans` guarda la salida de `acropolis plan --json` para los 131 ejemplos de Railpack. Es la forma más rápida de ver si un cambio altera la detección:
+
+```bash
+mkdir -p ../acropolis-ext
+git clone https://github.com/railwayapp/railpack ../acropolis-ext/railpack
+git -C ../acropolis-ext/railpack checkout <RAILPACK_REF from .github/workflows/ci.yml>
+cargo build --bin acropolis
+BIN=target/debug/acropolis scripts/plans.sh            # compare
+BIN=target/debug/acropolis scripts/plans.sh update     # regenerate, if the change is intended
+```
+
+Si un PR cambia planes, el diff de `tests/plans` tiene que estar en el PR y la descripción tiene que explicar por qué.
+
+## e2e
+
+`scripts/e2e.sh` usa `target/fast/acropolis`, así que primero corré `scripts/build.sh`. Corre la suite como una unidad de systemd (`systemd-run`, `systemctl`), así que necesita un host con systemd andando: un contenedor privilegiado sin systemd no la puede correr. Compila cada ejemplo de Railpack, lo corre con `docker run` y verifica la salida; con `--filter <example>` corrés uno solo. No es obligatorio para un PR, pero si tocás la detección, la instalación de dependencias o el armado de capas, correr los ejemplos afectados te ahorra una ronda de revisión.
+
+## Pull requests
+
+- Un cambio por PR, con un test de comportamiento que falle sin el cambio, siempre que se pueda.
+- El título del PR sigue [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) (`feat(npm): ...`, `fix(oci): ...`, `docs: ...`). Los PRs se mergean con squash, y release-plz arma la próxima versión y el `CHANGELOG.md` a partir de los títulos.
+- Las decisiones de diseño con mediciones van en [`docs/decisions.md`](https://github.com/olimpiacloud/acropolis/blob/main/docs/decisions.md).
+- Las vulnerabilidades se reportan en privado: mirá [`SECURITY.md`](https://github.com/olimpiacloud/acropolis/blob/main/SECURITY.md).
+
+## Este sitio [#this-site]
+
+La documentación vive en [`site/`](https://github.com/olimpiacloud/acropolis/tree/main/site) y se construye con [Blume](https://useblume.dev). `cd site && bun install && bun run dev` la sirve en `localhost:4321`. Blume corre con el `node` de tu `PATH`, que tiene que ser 22.23.4 o posterior (lo que pide su Astro; Blume solo pide 22.19.0).

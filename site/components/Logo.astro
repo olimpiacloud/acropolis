@@ -1,0 +1,15 @@
+---
+import BlumeLogo from "blume/components/layout/Logo.astro";
+import data from "blume:data";
+
+const { logo, locale, ...rest } = Astro.props;
+const defaultLocale = data.config.i18n?.defaultLocale;
+const prefix = locale && locale !== defaultLocale ? `/${locale}` : "";
+const product = logo?.text ?? "";
+---
+
+<span class="family-brand">
+  <BlumeLogo {...rest} logo={logo && { ...logo, href: prefix || "/" }} />
+  {product !== "Olimpia" && <span class="family-by">by Olimpia</span>}
+  {product === "Acropolis" && <a class="family-badge" href={`${prefix}/introduction#status`}>Experimental</a>}
+</span>
