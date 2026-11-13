@@ -19,7 +19,7 @@ acropolis plan ./app --json > plan.json
 3. Leé `warnings`.
 4. Si algo está mal, mirá [Corregir la detección](#fix-detection).
 
-Si `plan` falla, leé el código de salida: es `78` (`config`) cuando el problema está en la detección o en la configuración (no se detectó ningún provider, no hay comando de arranque, configuración inválida o no soportada, rutas fuera de la app), y en otros casos puede ser otra clase, como `75` para un error de red o `70` para un error no reconocido. Para este paso no necesitás root ni una imagen.
+Si `plan` falla, leé el código de salida: es `78` (`config`) cuando el problema está en la detección o en la configuración (no se detectó ningún provider, no hay comando de arranque, configuración inválida o no soportada, rutas fuera de la app), y en otros casos puede ser otra clase, como `75` para un error de red o `70` para un error no reconocido: un `package.json` inválido da `70`, y el error dice `parsing package.json`, así que leé también el mensaje. Para este paso no necesitás root ni una imagen.
 
 ## Construí una imagen y corrila [#build-an-image-and-run-it]
 

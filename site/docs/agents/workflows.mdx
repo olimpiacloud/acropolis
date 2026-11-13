@@ -17,7 +17,7 @@ acropolis plan ./app --json > plan.json
 3. Read `warnings`.
 4. If something is wrong, see [Fix detection](#fix-detection).
 
-If `plan` fails, read the exit code: it is `78` (`config`) when detection or the config is the problem (no provider detected, no start command, invalid or unsupported config, paths outside the app), and can be another class otherwise, such as `75` for a network error or `70` for an unrecognized error. No root or image is needed for this step.
+If `plan` fails, read the exit code: it is `78` (`config`) when detection or the config is the problem (no provider detected, no start command, invalid or unsupported config, paths outside the app), and can be another class otherwise, such as `75` for a network error or `70` for an unrecognized error: an invalid `package.json` gives `70`, and the error says `parsing package.json`, so read the message too. No root or image is needed for this step.
 
 ## Build an image and run it
 
