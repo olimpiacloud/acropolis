@@ -9,7 +9,6 @@ BLUE = (47, 127, 232)
 WHITE = (255, 255, 255)
 
 SCENES = {"banner": ("banner.webp", (1000, 333), None), "home": ("banner.webp", (512, 632), (0.3, 0)), "intro": ("acropolis-banner.jpg", (900, 300), None)}
-CARD = "banner.webp"
 
 
 def atkinson(v, levels):
@@ -55,11 +54,6 @@ def main(src, out):
     for name, (file, size, focus) in SCENES.items():
         scene(frame(Image.open(src / file).convert("RGB"), size, focus), size).save(out / f"{name}.webp", lossless=True, method=6)
         print(name)
-    card = Image.open(src / CARD).convert("RGB")
-    width = min(card.width, card.height * 1200 // 630)
-    height = width * 630 // 1200
-    left, top = (card.width - width) // 2, (card.height - height) // 2
-    scene(card.crop((left, top, left + width, top + height)), (600, 315)).quantize(4).save(out / "og.png", optimize=True)
 
 
 main(*sys.argv[1:3])
