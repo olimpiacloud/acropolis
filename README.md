@@ -1,6 +1,6 @@
 # Acropolis
 
-![Acropolis: an acropolis built up in layers facing the bay of Buenos Aires](docs/assets/acropolis-banner.jpg)
+![Acropolis: an acropolis built up in layers facing the bay of Buenos Aires](docs/assets/acropolis-banner.png)
 
 [![CI](https://github.com/olimpiacloud/acropolis/actions/workflows/ci.yml/badge.svg)](https://github.com/olimpiacloud/acropolis/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/olimpiacloud/acropolis)](https://github.com/olimpiacloud/acropolis/releases/latest)
