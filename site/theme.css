@@ -1,3 +1,9 @@
+@font-face {
+  font-family: "Departure Mono";
+  src: url(/fonts/departure-mono.woff2) format("woff2");
+  font-display: swap;
+}
+
 :root {
   --blume-background: #ffffff;
   --blume-foreground: #0e1726;
@@ -69,16 +75,23 @@ h4,
 header a[href="/"] > span.truncate,
 header a[href="/en"] > span.truncate,
 header a[href="/es"] > span.truncate {
-  font-family: var(--blume-font-display);
-  font-size: 1.35rem;
+  font-family: "Departure Mono", ui-monospace, monospace;
+  font-size: 22px;
   font-weight: 400;
-  letter-spacing: -0.01em;
+  line-height: 1;
+  letter-spacing: 4px;
+  text-transform: uppercase;
 }
 
 header a[href="/"] > span:first-child > svg,
 header a[href="/en"] > span:first-child > svg,
 header a[href="/es"] > span:first-child > svg {
-  height: 1.6rem;
+  height: 2rem;
+  width: 2rem;
+}
+
+:root[data-theme="dark"] .olimpia-cielo {
+  fill: #6aa8ff;
 }
 
 .family-brand {
