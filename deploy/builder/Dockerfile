@@ -2,7 +2,7 @@
 # Base images are pinned by digest. To bump one, resolve the tag and replace the digest:
 #   docker buildx imagetools inspect rust:1.98-bookworm      (at least rust-version in Cargo.toml; Dependabot bumps it)
 #   docker buildx imagetools inspect debian:bookworm-slim
-FROM rust:1.98-bookworm@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e AS build
+FROM rust:1.100-bookworm@sha256:ade39a710ef85f3506cffcfec3e8a24ba090badef1dff2fb798f71d878833fea AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates crates
@@ -12,7 +12,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release --locked --bin acropolis \
  && cp target/release/acropolis /usr/local/bin/acropolis
 
-FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 LABEL org.opencontainers.image.title="acropolis-builder" \
       org.opencontainers.image.description="Acropolis: daemonless app-to-OCI-image builder" \
       org.opencontainers.image.source="https://github.com/olimpiacloud/acropolis" \
